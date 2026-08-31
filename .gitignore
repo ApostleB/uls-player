@@ -1,0 +1,10 @@
+node_modules/
+.svelte-kit/
+build/
+.env
+.env.*
+!.env.example
+
+# 런타임 데이터 — 3.1GB 미디어와 JSON 저장소는 커밋하지 않는다
+data/
+media/
