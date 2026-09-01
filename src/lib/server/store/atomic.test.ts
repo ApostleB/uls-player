@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -53,6 +53,31 @@ describe('updateJson', () => {
         throw new Error('boom');
       }, { n: 0 })
     ).rejects.toThrow('boom');
+    expect((await readJson(file, { n: 0 })).n).toBe(5);
+  });
+
+  it('쓰기 실패 후 임시 파일을 정리한다', async () => {
+    // 초기 데이터 쓰기
+    await updateJson(file, () => ({ n: 5 }), { n: 0 });
+    expect((await readJson(file, { n: 0 })).n).toBe(5);
+
+    // fs.rename을 실패하도록 mock
+    const renameSpy = vi.spyOn(fs, 'rename').mockRejectedValueOnce(
+      new Error('simulated rename failure')
+    );
+
+    // 쓰기 시도 - 실패해야 함
+    await expect(
+      updateJson(file, () => ({ n: 10 }), { n: 0 })
+    ).rejects.toThrow('simulated rename failure');
+
+    renameSpy.mockRestore();
+
+    // .tmp 파일이 남아있지 않아야 함
+    const entries = await fs.readdir(path.dirname(file));
+    expect(entries).toEqual(['data.json']);
+
+    // 원본 파일은 그대로여야 함
     expect((await readJson(file, { n: 0 })).n).toBe(5);
   });
 });

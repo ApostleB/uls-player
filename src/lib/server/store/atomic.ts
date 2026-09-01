@@ -23,12 +23,18 @@ async function writeAtomic(filePath: string, data: unknown): Promise<void> {
   } finally {
     await handle.close();
   }
-  await fs.rename(tmp, filePath);
+  try {
+    await fs.rename(tmp, filePath);
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => undefined);
+    throw err;
+  }
 }
 
 /**
  * 현재 값을 읽어 mutate를 적용하고 원자적으로 쓴다.
  * 같은 filePath에 대한 호출은 순차 실행되므로 갱신이 유실되지 않는다.
+ * 실패해도 체인은 계속 진행한다 (.catch()로 인해).
  */
 export function updateJson<T>(
   filePath: string,
@@ -36,24 +42,15 @@ export function updateJson<T>(
   fallback: T
 ): Promise<T> {
   const prev = chains.get(filePath) ?? Promise.resolve();
-  const next = prev.then(
-    async () => {
-      const current = await readJson(filePath, fallback);
-      const updated = mutate(current);
-      await writeAtomic(filePath, updated);
-      return updated;
-    },
-    async () => {
-      // 앞 작업이 실패해도 체인은 이어간다
-      const current = await readJson(filePath, fallback);
-      const updated = mutate(current);
-      await writeAtomic(filePath, updated);
-      return updated;
-    }
-  );
+  const next = prev.then(async () => {
+    const current = await readJson(filePath, fallback);
+    const updated = mutate(current);
+    await writeAtomic(filePath, updated);
+    return updated;
+  });
   chains.set(
     filePath,
-    next.catch(() => undefined)
+    next.then(() => undefined).catch(() => undefined)
   );
   return next;
 }
