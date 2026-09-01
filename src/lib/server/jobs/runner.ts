@@ -7,7 +7,7 @@ import { convert } from '../media/convert';
 import { probe } from '../media/probe';
 import { generatePeaks } from '../media/waveform';
 import { savePeaks } from '../store/waveforms';
-import { addMany, newId } from '../store/recordings';
+import { addMany, newId, patch } from '../store/recordings';
 import { JobQueue, JobFailure, type Worker } from './queue';
 import { pendingRecordings } from './registry';
 
@@ -97,19 +97,28 @@ export function makeRunner(cfg: AppConfig): Worker {
       original: { ext, bytes: (await fs.stat(originalPath)).size }
     };
     const result: Record<string, JobStatus> = {};
+    const formatErrors: string[] = [];
 
     for (const spec of cfg.formats) {
-      if (job.formats[spec.name] === 'done') {
-        result[spec.name] = 'done';
-        continue;
-      }
       const out = path.join(cfg.mediaDir, spec.name, `${job.recordingId}.${spec.ext}`);
+
+      if (job.formats[spec.name] === 'done') {
+        try {
+          files[spec.name] = { bytes: (await fs.stat(out)).size };
+          result[spec.name] = 'done';
+          continue;
+        } catch {
+          // 파일이 사라졌으면 done 표시를 믿지 않고 다시 만든다
+        }
+      }
+
       try {
         await convert(originalPath, out, meta.audioStreamIndex, spec);
         files[spec.name] = { bytes: (await fs.stat(out)).size };
         result[spec.name] = 'done';
-      } catch {
+      } catch (err) {
         result[spec.name] = 'failed';
+        formatErrors.push(`${spec.name}: ${(err as Error).message}`);
       }
     }
 
@@ -122,10 +131,21 @@ export function makeRunner(cfg: AppConfig): Worker {
 
       // 저장소 기록은 파이프라인이 여기까지 온 뒤에만 한다.
       // 앞에서 던지면 목록에 반쪽짜리 항목이 남지 않는다.
+      // 최초 실행은 추가, 재시도는 patch — take()가 성공한 뒤에만 드롭해서
+      // 쓰기 도중 던지면 레지스트리에 레코딩이 남아 다음 재시도가 쓸 수 있다.
       const rec = pendingRecordings.take(job.recordingId);
-      if (rec) await addMany(cfg, [{ ...rec, files }]);
+      if (rec) {
+        await addMany(cfg, [{ ...rec, files }]);
+        pendingRecordings.drop(job.recordingId);
+      } else {
+        await patch(cfg, job.recordingId, { files });
+      }
     } catch (err) {
       throw new JobFailure((err as Error).message, result);
+    }
+
+    if (formatErrors.length) {
+      throw new JobFailure(formatErrors.join('\n'), result);
     }
 
     return result;

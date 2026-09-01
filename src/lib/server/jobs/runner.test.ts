@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppConfig, ScanItem } from '$lib/types';
+import type { AppConfig, JobStatus, ScanItem } from '$lib/types';
 import { loadConfig } from '../config';
 import { listAll } from '../store/recordings';
 import { loadPeaks } from '../store/waveforms';
@@ -172,5 +172,102 @@ describe('재시도 안전성 (부분 진행 보존)', () => {
     // 변환 자체는 mp3·wav 둘 다 성공했다 — 그 상태가 실려 있어야
     // 재시도가 멀쩡한 파일을 다시 변환하다 지우는 일이 없다.
     expect((caught as JobFailure).formats).toEqual({ mp3: 'done', wav: 'done' });
+  });
+});
+
+
+/**
+ * 조정자 확인: FINDING 1·2 — 브리프 그대로는 재시도 시 저장소에 같은 id의
+ * 중복·불완전 항목이 남고(각 항목 모두 files가 불완전), 포맷별 ffmpeg 오류
+ * 메시지가 통째로 버려진다. 두 결함 모두 뮤테이션으로 실측 확인했다
+ * (task-11-report.md 참고). 아래 세 테스트가 각각을 지킨다.
+ */
+describe('재시도 안전성 (저장소 무결성과 오류 메시지)', () => {
+  it('부분 실패 후 재시도하면 항목이 하나만 남고 두 포맷이 모두 채워진다', async () => {
+    const { recordings, jobs } = buildJobs(cfg, [
+      { scan: scan[0], title: 't', description: '', tags: [] }
+    ]);
+
+    // 1차 시도: mp3만 실패시킨다(wav는 실제 변환대로 성공)
+    vi.mocked(convertModule.convert).mockImplementationOnce(async () => {
+      throw new Error('강제 mp3 실패');
+    });
+
+    const worker = makeRunner(cfg);
+    let firstErr: unknown;
+    try {
+      await worker(jobs[0]);
+    } catch (err) {
+      firstErr = err;
+    }
+    expect(firstErr).toBeInstanceOf(JobFailure);
+    const partial = (firstErr as JobFailure).formats!;
+    expect(partial).toEqual({ mp3: 'failed', wav: 'done' });
+
+    // 1차 시도만으로도 저장소 기록은 이미 한 번 일어났어야 한다(개별 포맷
+    // 실패는 저장 자체를 막지 않는다) — 이 시점엔 mp3가 빠져 있을 수 있다.
+    const afterFirst = await listAll(cfg);
+    expect(afterFirst).toHaveLength(1);
+
+    // 2차 시도: JobQueue.retryFailed와 같은 모양으로 formats를 구성한다
+    // (done은 유지, 나머지는 pending으로 되돌린다)
+    const retryFormats: Record<string, JobStatus> = {};
+    for (const k of Object.keys(partial)) {
+      retryFormats[k] = partial[k] === 'done' ? 'done' : 'pending';
+    }
+    const retryJob = { ...jobs[0], formats: retryFormats };
+    await worker(retryJob);
+
+    const afterRetry = await listAll(cfg);
+    // 중복 항목이 생기면 안 된다 — 같은 id로 하나만 남아야 한다.
+    expect(afterRetry).toHaveLength(1);
+    expect(afterRetry[0].id).toBe(recordings[0].id);
+    // original·mp3·wav 세 개가 한 항목에 전부 모여 있어야 한다.
+    expect(Object.keys(afterRetry[0].files).sort()).toEqual(['mp3', 'original', 'wav']);
+    expect(afterRetry[0].files.mp3.bytes).toBeGreaterThan(0);
+    expect(afterRetry[0].files.wav.bytes).toBeGreaterThan(0);
+  });
+
+  it('done으로 표시된 포맷의 산출물이 사라지면 다시 만든다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    const result = await worker(jobs[0]);
+    expect(result).toEqual({ mp3: 'done', wav: 'done' });
+
+    const id = jobs[0].recordingId;
+    const mp3Path = path.join(cfg.mediaDir, 'mp3', `${id}.mp3`);
+    await fs.rm(mp3Path);
+
+    const before = vi.mocked(convertModule.convert).mock.calls.length;
+    const retryJob = { ...jobs[0], formats: result };
+    const retryResult = await worker(retryJob);
+    const after = vi.mocked(convertModule.convert).mock.calls.length;
+
+    // done 표시를 무조건 믿었다면 여기서 convert가 한 번도 안 불렸을 것이다.
+    expect(after - before).toBe(1);
+    expect(retryResult.mp3).toBe('done');
+    expect((await fs.stat(mp3Path)).size).toBeGreaterThan(0);
+  });
+
+  it('포맷 변환이 실패하면 ffmpeg 메시지가 JobFailure에 담긴다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    vi.mocked(convertModule.convert).mockImplementationOnce(async () => {
+      throw new Error('변환 실패 (mp3): 가짜 ffmpeg stderr 메시지');
+    });
+
+    let caught: unknown;
+    try {
+      await worker(jobs[0]);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(JobFailure);
+    const message = (caught as JobFailure).message;
+    expect(message).toContain('mp3');
+    expect(message).toContain('가짜 ffmpeg stderr 메시지');
   });
 });
