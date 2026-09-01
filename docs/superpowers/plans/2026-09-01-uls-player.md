@@ -1927,14 +1927,23 @@ git commit -m "feat: 파형 피크 생성과 저장
 `src/lib/server/scan.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { AppConfig, Recording } from '$lib/types';
 import { loadConfig } from './config';
 import { addMany, newId } from './store/recordings';
-import { scanFolder } from './scan';
+import { scanFolder, AUDIO_EXTENSIONS } from './scan';
+import * as probeModule from './media/probe';
+
+// probe를 스파이 가능하게 감싸되, 기본 동작은 실제 구현 그대로 통과시킨다.
+// 완료 순서를 강제로 뒤섞어야 하는 테스트에서만 mockImplementation으로
+// 지연을 얹고, 끝나면 다시 실제 구현으로 되돌린다.
+vi.mock('./media/probe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./media/probe')>();
+  return { ...actual, probe: vi.fn(actual.probe) };
+});
 
 const FIX_DB = path.resolve('tests/fixtures/CloudRecordings.db');
 const SPATIAL = path.resolve('tests/fixtures/audio/spatial.qta');
@@ -2040,6 +2049,92 @@ describe('scanFolder', () => {
   it('없는 폴더면 던진다', async () => {
     await expect(scanFolder(cfg, path.join(dir, 'nope'))).rejects.toThrow();
   });
+
+  it('readdir 이후 사라진 파일은 error를 달고 나머지는 정상 처리된다', async () => {
+    const VANISHED = 'vanished.m4a';
+    await fs.copyFile(PLAIN, path.join(src, VANISHED));
+
+    // stat이 이 파일에서만 ENOENT로 실패하게 만든다 — readdir과 stat
+    // 사이에 iCloud/Finder 동기화로 파일이 사라진 상황을 재현한다.
+    // 나머지 파일은 실제 fs.stat을 그대로 통과시킨다.
+    const realStat = fs.stat.bind(fs);
+    const spy = vi.spyOn(fs, 'stat').mockImplementation(async (p, ...rest) => {
+      if (path.basename(String(p)) === VANISHED) {
+        const err = new Error(
+          `ENOENT: no such file or directory, stat '${p}'`
+        ) as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return realStat(p as string, ...(rest as []));
+    });
+
+    try {
+      const items = await scanFolder(cfg, src);
+      const vanished = items.find((i) => i.sourceName === VANISHED)!;
+      expect(vanished.error).toBeTruthy();
+      expect(items.find((i) => i.sourceName === QTA_NAME)!.error).toBeNull();
+      expect(items.find((i) => i.sourceName === M4A_NAME)!.error).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('probe 완료 순서가 뒤섞여도 결과는 정렬 전 입력 순서를 지킨다', async () => {
+    // extra: recordedAt이 서로 다른 두 원본을 번갈아 복사한다. 완료 순서가
+    // 뒤섞여도 이름-데이터 대응이 깨지지 않는지(교차 오염 여부) 본다.
+    const extra = ['ex1.qta', 'ex2.m4a', 'ex3.qta', 'ex4.m4a'];
+    for (const [i, n] of extra.entries()) {
+      await fs.copyFile(i % 2 === 0 ? SPATIAL : PLAIN, path.join(src, n));
+    }
+
+    // tied: 전부 같은 원본(PLAIN)이라 recordedAt이 완전히 같다. ScanItem에는
+    // id가 없어 compareByRecordedAtDesc가 동률에서 항상 0을 반환하므로,
+    // 안정 정렬 하에서는 "정렬에 넘기기 전 배열 순서(= readdir이 내놓은 순서)"가
+    // 그대로 타이브레이크로 남는다. 최종 정렬은 recordedAt만으로 전체 순서를
+    // 다시 매기므로, 서로 다른 시각을 가진 항목의 최종 위치만 봐서는 동시성
+    // 풀이 입력 순서를 지켰는지 알 수 없다 — 동률 항목의 상대 순서만이 그
+    // 신호를 남긴다.
+    const tiedNames = ['t1.m4a', 't2.m4a', 't3.m4a', 't4.m4a', 't5.m4a', 't6.m4a'];
+    for (const n of tiedNames) {
+      await fs.copyFile(PLAIN, path.join(src, n));
+    }
+
+    // scanFolder가 내부적으로 보게 될 readdir 순서를 그대로 재현해 캡처한다.
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    const inputOrder = entries
+      .filter((e) => e.isFile() && AUDIO_EXTENSIONS.has(path.extname(e.name).toLowerCase()))
+      .map((e) => e.name);
+    const tiedInputOrder = inputOrder.filter((n) => tiedNames.includes(n));
+
+    // 입력 순서와 정반대로 끝나도록 지연을 준다 — "완료 순서 == 입력 순서"인
+    // 우연이 결과를 가려주지 못하게 한다.
+    const actual = await vi.importActual<typeof import('./media/probe')>('./media/probe');
+    vi.mocked(probeModule.probe).mockImplementation(async (filePath: string) => {
+      const result = await actual.probe(filePath);
+      const idx = inputOrder.indexOf(path.basename(filePath));
+      const delay = idx === -1 ? 0 : (inputOrder.length - idx) * 8;
+      await new Promise((r) => setTimeout(r, delay));
+      return result;
+    });
+
+    try {
+      const items = await scanFolder(cfg, src);
+
+      const bySource = new Map(items.map((i) => [i.sourceName, i]));
+      expect(bySource.get(QTA_NAME)!.appleAutoTitle).toBe('새로운 녹음 2');
+      expect(bySource.get(M4A_NAME)!.appleAutoTitle).toBe('화양동 16 2');
+      expect(bySource.get('ex1.qta')!.appleAutoTitle).toBe('새로운 녹음 2');
+      expect(bySource.get('ex2.m4a')!.appleAutoTitle).toBe('화양동 16 2');
+      expect(bySource.get('ex3.qta')!.appleAutoTitle).toBe('새로운 녹음 2');
+      expect(bySource.get('ex4.m4a')!.appleAutoTitle).toBe('화양동 16 2');
+
+      const tiedOutputOrder = items.map((i) => i.sourceName).filter((n) => tiedNames.includes(n));
+      expect(tiedOutputOrder).toEqual(tiedInputOrder);
+    } finally {
+      vi.mocked(probeModule.probe).mockImplementation(actual.probe);
+    }
+  });
 });
 ```
 
@@ -2067,6 +2162,35 @@ export const AUDIO_EXTENSIONS = new Set([
   '.qta', '.m4a', '.mp3', '.wav', '.aac', '.caf', '.aiff', '.aif', '.flac', '.ogg', '.opus'
 ]);
 
+/**
+ * 코어 몇 개만 바쁘게 유지하고 몰려드는 것은 피하려는 값이다. 스캔은
+ * 메타데이터만 읽으므로 변환 동시성(CONVERT_CONCURRENCY)과 맞출 필요는 없다.
+ */
+const SCAN_CONCURRENCY = 8;
+
+/**
+ * 동시 실행 개수만 제한하고 입력 순서는 그대로 지킨다. 완료 순서가
+ * 뒤섞여도 결과는 항상 원래 인덱스 자리에 들어가므로, 최종 정렬만이
+ * 출력 순서를 결정한다. mapper는 실패해도 reject하지 않는다는 전제다
+ * (inspect가 그렇다) — 여기서 개별 실패를 따로 잡지 않는 이유다.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await mapper(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 /** UTC ISO를 로컬 오프셋 표기로 바꾼다. */
 function toLocalIso(utcIso: string): string {
   const d = new Date(utcIso);
@@ -2086,7 +2210,6 @@ async function inspect(
   apple: AppleEntry | undefined,
   duplicate: boolean
 ): Promise<ScanItem> {
-  const bytes = (await fs.stat(filePath)).size;
   const ext = path.extname(name).slice(1);
   const base: ScanItem = {
     sourcePath: filePath,
@@ -2096,13 +2219,19 @@ async function inspect(
     recordedAt: '',
     durationSec: 0,
     ext,
-    bytes,
+    // stat이 실패하면 크기를 알 수 없다 — 0으로 명시한다.
+    bytes: 0,
     audioStreamIndex: 0,
     duplicate,
     error: null
   };
 
+  // stat도 probe와 함께 이 블록 안에서 실패해야 한다. readdir과 stat
+  // 사이에 파일이 사라지는 일(iCloud/Finder 동기화 중이면 실제로 일어난다)이
+  // probe 실패와 마찬가지로 이 파일 하나만 error로 남기고 나머지는
+  // 계속 처리되게 하려면 여기서부터 감싸야 한다.
   try {
+    const bytes = (await fs.stat(filePath)).size;
     const p = await probe(filePath);
     // 제목 우선순위: DB 사용자 제목 → 파일 메타 title → 파일명
     const title = apple?.title || p.title || base.title;
@@ -2111,6 +2240,7 @@ async function inspect(
 
     return {
       ...base,
+      bytes,
       title,
       appleAutoTitle: p.title,
       recordedAt,
@@ -2132,8 +2262,8 @@ export async function scanFolder(cfg: AppConfig, folder: string): Promise<ScanIt
   const apple = dbPath ? await readTitleMap(dbPath) : new Map<string, AppleEntry>();
   const known = await existingSourceNames(cfg);
 
-  const items = await Promise.all(
-    names.map((n) => inspect(path.join(folder, n), n, apple.get(n), known.has(n)))
+  const items = await mapWithConcurrency(names, SCAN_CONCURRENCY, (n) =>
+    inspect(path.join(folder, n), n, apple.get(n), known.has(n))
   );
 
   // 문자열 비교가 아니라 실제 시각으로 정렬한다. recordedAt에 오프셋이

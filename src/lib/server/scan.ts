@@ -9,6 +9,35 @@ export const AUDIO_EXTENSIONS = new Set([
   '.qta', '.m4a', '.mp3', '.wav', '.aac', '.caf', '.aiff', '.aif', '.flac', '.ogg', '.opus'
 ]);
 
+/**
+ * 코어 몇 개만 바쁘게 유지하고 몰려드는 것은 피하려는 값이다. 스캔은
+ * 메타데이터만 읽으므로 변환 동시성(CONVERT_CONCURRENCY)과 맞출 필요는 없다.
+ */
+const SCAN_CONCURRENCY = 8;
+
+/**
+ * 동시 실행 개수만 제한하고 입력 순서는 그대로 지킨다. 완료 순서가
+ * 뒤섞여도 결과는 항상 원래 인덱스 자리에 들어가므로, 최종 정렬만이
+ * 출력 순서를 결정한다. mapper는 실패해도 reject하지 않는다는 전제다
+ * (inspect가 그렇다) — 여기서 개별 실패를 따로 잡지 않는 이유다.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await mapper(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 /** UTC ISO를 로컬 오프셋 표기로 바꾼다. */
 function toLocalIso(utcIso: string): string {
   const d = new Date(utcIso);
@@ -28,7 +57,6 @@ async function inspect(
   apple: AppleEntry | undefined,
   duplicate: boolean
 ): Promise<ScanItem> {
-  const bytes = (await fs.stat(filePath)).size;
   const ext = path.extname(name).slice(1);
   const base: ScanItem = {
     sourcePath: filePath,
@@ -38,13 +66,19 @@ async function inspect(
     recordedAt: '',
     durationSec: 0,
     ext,
-    bytes,
+    // stat이 실패하면 크기를 알 수 없다 — 0으로 명시한다.
+    bytes: 0,
     audioStreamIndex: 0,
     duplicate,
     error: null
   };
 
+  // stat도 probe와 함께 이 블록 안에서 실패해야 한다. readdir과 stat
+  // 사이에 파일이 사라지는 일(iCloud/Finder 동기화 중이면 실제로 일어난다)이
+  // probe 실패와 마찬가지로 이 파일 하나만 error로 남기고 나머지는
+  // 계속 처리되게 하려면 여기서부터 감싸야 한다.
   try {
+    const bytes = (await fs.stat(filePath)).size;
     const p = await probe(filePath);
     // 제목 우선순위: DB 사용자 제목 → 파일 메타 title → 파일명
     const title = apple?.title || p.title || base.title;
@@ -53,6 +87,7 @@ async function inspect(
 
     return {
       ...base,
+      bytes,
       title,
       appleAutoTitle: p.title,
       recordedAt,
@@ -74,8 +109,8 @@ export async function scanFolder(cfg: AppConfig, folder: string): Promise<ScanIt
   const apple = dbPath ? await readTitleMap(dbPath) : new Map<string, AppleEntry>();
   const known = await existingSourceNames(cfg);
 
-  const items = await Promise.all(
-    names.map((n) => inspect(path.join(folder, n), n, apple.get(n), known.has(n)))
+  const items = await mapWithConcurrency(names, SCAN_CONCURRENCY, (n) =>
+    inspect(path.join(folder, n), n, apple.get(n), known.has(n))
   );
 
   // 문자열 비교가 아니라 실제 시각으로 정렬한다. recordedAt에 오프셋이
