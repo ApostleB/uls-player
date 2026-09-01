@@ -55,7 +55,7 @@ describe('applyFilter', () => {
 
 describe('URL 왕복', () => {
   it('파라미터를 필터로 읽는다', () => {
-    const f = filterFromParams(new URLSearchParams('q=레&tags=데모,1절&mode=or&from=2026-07-01'));
+    const f = filterFromParams(new URLSearchParams('q=레&tags=데모&tags=1절&mode=or&from=2026-07-01'));
     expect(f).toEqual({ q: '레', tags: ['데모', '1절'], tagMode: 'or', from: '2026-07-01', to: '' });
   });
 
@@ -72,8 +72,12 @@ describe('URL 왕복', () => {
     expect(filterFromParams(filterToParams(f))).toEqual(f);
   });
 
-  it('쉼표를 포함한 태그도 보존된다', () => {
-    const f = { q: '', tags: ['lo-fi,demo', '싱어'], tagMode: 'and' as const, from: '', to: '' };
+  it('쉼표를 포함한 태그는 단일 파라미터로 보존된다', () => {
+    expect(filterFromParams(new URLSearchParams('tags=lo-fi,demo')).tags).toEqual(['lo-fi,demo']);
+  });
+
+  it('쉼표를 포함한 태그 왕복', () => {
+    const f = { q: '', tags: ['lo-fi,demo'], tagMode: 'and' as const, from: '', to: '' };
     const params = filterToParams(f);
     expect(filterFromParams(params)).toEqual(f);
   });
