@@ -1892,7 +1892,7 @@ export async function loadPeaks(cfg: AppConfig, id: string): Promise<number[] | 
 npx vitest run src/lib/server/media/waveform.test.ts src/lib/server/store/waveforms.test.ts
 ```
 
-Expected: PASS — 7 tests
+Expected: PASS — 9 tests
 
 - [ ] **Step 6: 커밋**
 
@@ -2600,7 +2600,7 @@ export class JobQueue {
 npx vitest run src/lib/server/jobs/queue.test.ts
 ```
 
-Expected: PASS — 7 tests
+Expected: PASS — 9 tests
 
 - [ ] **Step 5: 커밋**
 
@@ -4677,7 +4677,7 @@ export async function loadUnfinished(cfg: AppConfig): Promise<JobItem[]> {
 npx vitest run src/lib/server/disk.test.ts src/lib/server/jobs/persist.test.ts
 ```
 
-Expected: PASS — 7 tests
+Expected: PASS — 9 tests
 
 - [ ] **Step 6: 큐 생성 시 복구 연결**
 
