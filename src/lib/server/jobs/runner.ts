@@ -89,7 +89,23 @@ export function makeRunner(cfg: AppConfig): Worker {
     const originalPath = path.join(cfg.mediaDir, 'original', `${job.recordingId}.${ext}`);
 
     await fs.mkdir(path.dirname(originalPath), { recursive: true });
-    await fs.copyFile(job.sourcePath, originalPath);
+
+    // 원본은 보관용 사본이다 — 재시도한다고 다시 복사해서 얻을 게 없다.
+    // fs.copyFile은 대상을 O_TRUNC로 열므로, 이미 검증된 원본이 있는데
+    // 다시 복사하다가 소스가 끊기면(외장 디스크·iCloud 등) 그 원본을
+    // 잘라먹고 못 채운 채로 남긴다. 대상이 있고 비어 있지 않으면 그대로 둔다.
+    let originalIntact = false;
+    try {
+      originalIntact = (await fs.stat(originalPath)).size > 0;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      // 없으면(ENOENT) 복사해야 한다. 그 외 오류는 원본 상태를 확신할 수
+      // 없다는 뜻이니 그대로 던진다 — 여기서 삼키고 복사를 강행하면
+      // 멀쩡했을 수도 있는 원본을 잘라먹을 위험이 있다.
+    }
+    if (!originalIntact) {
+      await fs.copyFile(job.sourcePath, originalPath);
+    }
 
     const meta = await probe(originalPath);
 
@@ -107,8 +123,13 @@ export function makeRunner(cfg: AppConfig): Worker {
           files[spec.name] = { bytes: (await fs.stat(out)).size };
           result[spec.name] = 'done';
           continue;
-        } catch {
-          // 파일이 사라졌으면 done 표시를 믿지 않고 다시 만든다
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          // 파일이 사라졌을 때만(ENOENT) done 표시를 믿지 않고 다시 만든다.
+          // ENOENT가 아닌 오류(EACCES·EIO·EMFILE 등)는 파일이 멀쩡한데
+          // stat 자체가 안 되는 상황일 수 있다 — 여기서 삼키고 재변환을
+          // 시도하면, 그 재변환도 같은 원인으로 실패할 가능성이 높고
+          // convert의 정리 로직이 멀쩡한 파일을 지울 수 있다.
         }
       }
 
@@ -141,7 +162,13 @@ export function makeRunner(cfg: AppConfig): Worker {
         await patch(cfg, job.recordingId, { files });
       }
     } catch (err) {
-      throw new JobFailure((err as Error).message, result);
+      // 포맷별 변환 오류(formatErrors)가 있는데 여기서도 던지면, 이전에는
+      // formatErrors가 통째로 사라지고 이 catch의 메시지만 남았다. 두 원인이
+      // 다 남도록 합친다.
+      const message = formatErrors.length
+        ? [...formatErrors, (err as Error).message].join('\n')
+        : (err as Error).message;
+      throw new JobFailure(message, result);
     }
 
     if (formatErrors.length) {

@@ -11,6 +11,7 @@ import { JobQueue, JobFailure } from './queue';
 import { buildJobs, makeRunner } from './runner';
 import * as waveformModule from '../media/waveform';
 import * as convertModule from '../media/convert';
+import * as waveformsStoreModule from '../store/waveforms';
 
 // 실제 구현을 감싸는 스파이. 기본 동작은 실제 ffmpeg 호출 그대로 통과시키고,
 // 개별 테스트에서만 mockImplementationOnce로 한 번 실패를 주입한다(자동으로
@@ -24,6 +25,10 @@ vi.mock('../media/convert', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../media/convert')>();
   return { ...actual, convert: vi.fn(actual.convert) };
 });
+vi.mock('../store/waveforms', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../store/waveforms')>();
+  return { ...actual, savePeaks: vi.fn(actual.savePeaks) };
+});
 
 const SPATIAL = path.resolve('tests/fixtures/audio/spatial.qta');
 const QTA_NAME = '20260711 181530-1923A106.qta';
@@ -34,6 +39,18 @@ let cfg: AppConfig;
 let scan: ScanItem[];
 
 beforeEach(async () => {
+  // 이전 테스트가 mockImplementationOnce를 등록해두고 실제로 소비하지 않은 채
+  // 실패(assert 실패 등)했다면, 그 once 구현이 다음 테스트로 새어 들어가
+  // 엉뚱한 실패를 일으킨다. mockClear는 호출 기록만 지우고 구현은 그대로
+  // 두므로(공식 타입 주석: "does not reset implementations") 여기서는 못
+  // 막는다. mockReset은 once 큐를 포함해 구현을 지우되, vi.fn(impl)로 만든
+  // 목은 그 impl로 되돌려놓는다(공식 타입 주석: "Resetting a mock from
+  // vi.fn(impl) will set implementation to impl") — 그래서 매 테스트 시작마다
+  // 기본 동작(실제 구현 통과)으로 확실히 되돌리기 위해 mockClear 대신 쓴다.
+  vi.mocked(waveformModule.generatePeaks).mockReset();
+  vi.mocked(convertModule.convert).mockReset();
+  vi.mocked(waveformsStoreModule.savePeaks).mockReset();
+
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'uls-runner-'));
   src = path.join(dir, 'src');
   await fs.mkdir(src, { recursive: true });
@@ -269,5 +286,117 @@ describe('재시도 안전성 (저장소 무결성과 오류 메시지)', () => 
     const message = (caught as JobFailure).message;
     expect(message).toContain('mp3');
     expect(message).toContain('가짜 ffmpeg stderr 메시지');
+  });
+});
+
+
+/**
+ * 3차 리뷰(조정자)에서 확정된 Important 3건:
+ *   1) done 포맷의 stat 실패를 ENOENT 여부와 상관없이 "파일이 사라졌다"로
+ *      해석해 무조건 재변환으로 흘려보냈다 — EMFILE·EACCES·EIO처럼 파일은
+ *      멀쩡한데 stat 자체가 안 되는 상황에서, 그 재변환도 같은 원인으로
+ *      실패하면 convert의 정리 로직이 멀쩡한 파일을 지운다.
+ *   2) fs.copyFile은 대상을 O_TRUNC로 열어서, 재시도마다 이미 검증된
+ *      원본을 다시 지우고 채운다 — 복사 도중 소스가 끊기면 보관용
+ *      원본이 잘린 채로 복구 불가능하게 남는다.
+ *   3) 포맷별 변환 실패(formatErrors)가 쌓인 상태에서 파형/저장 단계까지
+ *      실패하면, 그 단계의 오류 메시지만 남고 formatErrors는 통째로
+ *      사라졌다 — 두 원인 다 사용자에게 보여야 한다.
+ * 아래 세 테스트가 각각을 지킨다.
+ */
+describe('재시도 안전성 (파일시스템 오류와 이중 실패)', () => {
+  it('done 포맷 산출물이 ENOENT가 아닌 오류로 stat 실패하면 재변환하지도 지우지도 않는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    const result = await worker(jobs[0]);
+    expect(result).toEqual({ mp3: 'done', wav: 'done' });
+
+    const id = jobs[0].recordingId;
+    const mp3Path = path.join(cfg.mediaDir, 'mp3', `${id}.mp3`);
+    const before = await fs.stat(mp3Path);
+
+    // mp3 산출물의 stat만 EACCES로 실패하게 만든다. 나머지 stat 호출은
+    // 실제 구현을 그대로 통과시킨다(scan.test.ts와 같은 패턴).
+    const realStat = fs.stat.bind(fs);
+    const spy = vi.spyOn(fs, 'stat').mockImplementation(async (p, ...rest) => {
+      if (String(p) === mp3Path) {
+        const err = new Error('EACCES: permission denied, stat') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return realStat(p as string, ...(rest as []));
+    });
+
+    const beforeConvertCalls = vi.mocked(convertModule.convert).mock.calls.length;
+    try {
+      const retryJob = { ...jobs[0], formats: result };
+      await expect(worker(retryJob)).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    const afterConvertCalls = vi.mocked(convertModule.convert).mock.calls.length;
+
+    // ENOENT가 아닌 오류는 "파일이 사라졌다"로 해석해 재변환하면 안 된다.
+    expect(afterConvertCalls - beforeConvertCalls).toBe(0);
+
+    // 재변환을 시도하지 않았으니 convert의 정리 로직도 돌지 않았어야 한다 —
+    // 실제 파일은 손대지 않은 채 그대로 남아 있어야 한다.
+    const after = await fs.stat(mp3Path);
+    expect(after.size).toBe(before.size);
+    expect(after.size).toBeGreaterThan(0);
+  });
+
+  it('재시도는 이미 있는 원본을 다시 복사하지 않는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    const spy = vi.spyOn(fs, 'copyFile');
+    try {
+      const result = await worker(jobs[0]);
+      expect(spy).toHaveBeenCalledTimes(1); // 최초 실행은 당연히 복사한다
+
+      const ext = path.extname(jobs[0].sourcePath).slice(1);
+      const originalPath = path.join(cfg.mediaDir, 'original', `${jobs[0].recordingId}.${ext}`);
+      const before = await fs.stat(originalPath);
+
+      const retryJob = { ...jobs[0], formats: result };
+      await worker(retryJob);
+
+      // 재시도에서 원본을 또 복사하면 안 된다 — 호출 횟수가 늘면 안 된다.
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      const after = await fs.stat(originalPath);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+      expect(after.size).toBe(before.size);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('포맷 실패 후 파형/저장 단계도 실패하면 두 원인이 모두 JobFailure 메시지에 남는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    vi.mocked(convertModule.convert).mockImplementationOnce(async () => {
+      throw new Error('변환 실패 (mp3): 가짜 ffmpeg stderr');
+    });
+    vi.mocked(waveformsStoreModule.savePeaks).mockImplementationOnce(async () => {
+      throw new Error('강제 EACCES: 파형 저장 실패');
+    });
+
+    let caught: unknown;
+    try {
+      await worker(jobs[0]);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(JobFailure);
+    const message = (caught as JobFailure).message;
+    // 포맷 실패 원인과 파형/저장 단계 실패 원인이 둘 다 남아야 한다.
+    expect(message).toContain('mp3');
+    expect(message).toContain('가짜 ffmpeg stderr');
+    expect(message).toContain('강제 EACCES');
   });
 });
