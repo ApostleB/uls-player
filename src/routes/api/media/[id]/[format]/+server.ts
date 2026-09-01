@@ -46,8 +46,19 @@ export const GET: RequestHandler = async ({ params, request }) => {
   }
 
   const m = /bytes=(\d*)-(\d*)/.exec(range);
-  const start = m && m[1] ? Number(m[1]) : 0;
-  const end = m && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+  let start: number;
+  let end: number;
+  if (m && m[1] === '' && m[2] !== '') {
+    // 접미사 형태(bytes=-500): "끝에서부터 N바이트". m[1]이 비어 있다고
+    // start를 0으로 두면(예전 버그) 파일 앞부분을 last-N인 척 돌려주게
+    // 된다. 요청한 접미사 길이가 파일보다 크면 파일 전체를 준다.
+    const suffixLength = Number(m[2]);
+    start = Math.max(size - suffixLength, 0);
+    end = size - 1;
+  } else {
+    start = m && m[1] ? Number(m[1]) : 0;
+    end = m && m[2] ? Math.min(Number(m[2]), size - 1) : size - 1;
+  }
   if (start >= size || start > end) {
     return new Response(null, { status: 416, headers: { 'content-range': `bytes */${size}` } });
   }

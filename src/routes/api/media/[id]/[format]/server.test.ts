@@ -167,4 +167,90 @@ describe('GET /api/media/[id]/[format]', () => {
 
     await expect(GET(event(id, 'mp3'))).rejects.toMatchObject({ status: 404 });
   });
+
+  describe('접미사(suffix) Range — bytes=-N (Finding 2)', () => {
+    it('bytes=-500은 파일의 마지막 500바이트를 준다 (앞부분이 아니다)', async () => {
+      const id = newId();
+      await addMany(config, [makeRecording({ id, files: { mp3: { bytes: 1000 } } })]);
+      const buf = await putMediaFile('mp3', id, 'mp3', 1000);
+
+      const res = await GET(event(id, 'mp3', { range: 'bytes=-500' }));
+
+      expect(res.status).toBe(206);
+      // 고쳐지기 전에는 m[1]이 빈 문자열이라 start가 0으로 떨어져
+      // 'bytes 0-500/1000'(파일 맨 앞)을 잘못 돌려줬다.
+      expect(res.headers.get('content-range')).toBe('bytes 500-999/1000');
+      expect(res.headers.get('content-length')).toBe('500');
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.equals(buf.subarray(500, 1000))).toBe(true);
+    });
+
+    it('접미사 길이가 파일 크기보다 크면 파일 전체를 준다 (음수 시작점이 아니다)', async () => {
+      const id = newId();
+      await addMany(config, [makeRecording({ id, files: { mp3: { bytes: 80 } } })]);
+      const buf = await putMediaFile('mp3', id, 'mp3', 80);
+
+      // 파일은 80바이트인데 마지막 1000바이트를 요청 — 파일 전체가 나와야 한다
+      const res = await GET(event(id, 'mp3', { range: 'bytes=-1000' }));
+
+      expect(res.status).toBe(206);
+      expect(res.headers.get('content-range')).toBe('bytes 0-79/80');
+      expect(res.headers.get('content-length')).toBe('80');
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.equals(buf)).toBe(true);
+    });
+  });
+
+  describe('그 밖의 Range 경계 케이스 (테스트 갭 메우기)', () => {
+    it('멀티 Range(bytes=0-99,200-299)는 첫 구간만 처리한다 (현재 동작 문서화, 멀티파트 미지원)', async () => {
+      const id = newId();
+      await addMany(config, [makeRecording({ id, files: { mp3: { bytes: 1000 } } })]);
+      const buf = await putMediaFile('mp3', id, 'mp3', 1000);
+
+      const res = await GET(event(id, 'mp3', { range: 'bytes=0-99,200-299' }));
+
+      expect(res.status).toBe(206);
+      expect(res.headers.get('content-range')).toBe('bytes 0-99/1000');
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.equals(buf.subarray(0, 100))).toBe(true);
+    });
+
+    it('형식이 잘못된 Range(bytes=abc)는 200이 아니라 206으로 전체 본문을 준다 (리뷰가 지연 처리하기로 한 사소한 conformance 차이, 의도적으로 미수정)', async () => {
+      const id = newId();
+      await addMany(config, [makeRecording({ id, files: { mp3: { bytes: 30 } } })]);
+      const buf = await putMediaFile('mp3', id, 'mp3', 30);
+
+      const res = await GET(event(id, 'mp3', { range: 'bytes=abc' }));
+
+      // RFC 9110대로면 헤더를 무시하고 200을 줘야 하지만, 본문 자체는
+      // 정확히 전체이므로 리뷰가 "conformance만 문제, 조치 불필요"로
+      // 명시적으로 보류했다. 상태 코드가 아니라 본문 정확성만 확인한다.
+      expect(res.status).toBe(206);
+      const body = Buffer.from(await res.arrayBuffer());
+      expect(body.equals(buf)).toBe(true);
+    });
+
+    it('빈 파일(0바이트)은 Range 없이 요청하면 200과 길이 0을 준다', async () => {
+      const id = newId();
+      await addMany(config, [makeRecording({ id, files: { mp3: { bytes: 0 } } })]);
+      await putMediaFile('mp3', id, 'mp3', 0);
+
+      const res = await GET(event(id, 'mp3'));
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-length')).toBe('0');
+      expect(await res.arrayBuffer()).toEqual(new ArrayBuffer(0));
+    });
+
+    it('빈 파일(0바이트)에 Range를 요청하면 416을 준다', async () => {
+      const id = newId();
+      await addMany(config, [makeRecording({ id, files: { mp3: { bytes: 0 } } })]);
+      await putMediaFile('mp3', id, 'mp3', 0);
+
+      const res = await GET(event(id, 'mp3', { range: 'bytes=0-99' }));
+
+      expect(res.status).toBe(416);
+      expect(res.headers.get('content-range')).toBe('bytes */0');
+    });
+  });
 });

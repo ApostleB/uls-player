@@ -93,4 +93,107 @@ describe('PATCH /api/recordings 디스패처', () => {
     expect(removeTagsSpy).not.toHaveBeenCalled();
     expect(softDeleteSpy).not.toHaveBeenCalled();
   });
+
+  it("op: 'patch'는 bookmarks가 온전하면 그대로 patch에 넘긴다", async () => {
+    const bookmarks = [{ id: 'bm-1', atSec: 1.5, endSec: null, note: '메모' }];
+    await PATCH(req({ op: 'patch', id: 'rec-1', bookmarks }));
+
+    expect(patchSpy).toHaveBeenCalledWith(config, 'rec-1', { bookmarks });
+  });
+});
+
+describe('PATCH /api/recordings 본문 형태 검증 (Finding 3, 4)', () => {
+  it("op: 'patch'에 id가 없으면 500이 아니라 400이고, patch를 호출하지 않는다", async () => {
+    // 고쳐지기 전에는 검증이 없어서 store.patch(undefined인 id)까지
+    // 흘러들어갔다 — 실제 store.patch는 못 찾으면 plain Error를 던지고,
+    // 그게 어디서도 잡히지 않아 그대로 500으로 새어나갔다.
+    await expect(PATCH(req({ op: 'patch', title: '제목만 있음' }))).rejects.toMatchObject({
+      status: 400
+    });
+    expect(patchSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'patch'에 id가 문자열이 아니면(숫자 등) 400이고, patch를 호출하지 않는다", async () => {
+    await expect(PATCH(req({ op: 'patch', id: 12345, title: 'x' }))).rejects.toMatchObject({
+      status: 400
+    });
+    expect(patchSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'patch'에 id가 빈 문자열이면 400이다", async () => {
+    await expect(PATCH(req({ op: 'patch', id: '', title: 'x' }))).rejects.toMatchObject({
+      status: 400
+    });
+    expect(patchSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'patch'에서 tags가 배열이 아니라 문자열이면 400이고, patch를 호출하지 않는다", async () => {
+    // 고쳐지기 전에는 이게 그대로 store까지 흘러가 `[...r.tags, ...'abc']`처럼
+    // 문자열을 한 글자씩 스프레드해서 태그를 조용히 망가뜨리고도 200을 줬다.
+    await expect(
+      PATCH(req({ op: 'patch', id: 'rec-1', tags: 'abc' }))
+    ).rejects.toMatchObject({ status: 400 });
+    expect(patchSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'patch'에서 title이 문자열이 아니면 400이다", async () => {
+    await expect(
+      PATCH(req({ op: 'patch', id: 'rec-1', title: 123 }))
+    ).rejects.toMatchObject({ status: 400 });
+    expect(patchSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'patch'에서 bookmarks 항목의 필드 타입이 틀리면 400이다", async () => {
+    const badBookmarks = [{ id: 'bm-1', atSec: '아니다', endSec: null, note: '메모' }];
+    await expect(
+      PATCH(req({ op: 'patch', id: 'rec-1', bookmarks: badBookmarks }))
+    ).rejects.toMatchObject({ status: 400 });
+    expect(patchSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'addTags'에서 tags가 문자열이면(Finding 4 원 시나리오) 400이고, addTags를 호출하지 않는다", async () => {
+    await expect(
+      PATCH(req({ op: 'addTags', ids: ['a', 'b'], tags: '데모' }))
+    ).rejects.toMatchObject({ status: 400 });
+    expect(addTagsSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'addTags'에서 ids가 배열이 아니면 400이다", async () => {
+    await expect(
+      PATCH(req({ op: 'addTags', ids: 'a', tags: ['데모'] }))
+    ).rejects.toMatchObject({ status: 400 });
+    expect(addTagsSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'removeTags'에서 ids 배열 원소가 문자열이 아니면(숫자 섞임) 400이다", async () => {
+    await expect(
+      PATCH(req({ op: 'removeTags', ids: ['a', 1], tags: ['데모'] }))
+    ).rejects.toMatchObject({ status: 400 });
+    expect(removeTagsSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'removeTags'에서 tags 배열에 빈 문자열이 섞이면 400이다", async () => {
+    await expect(
+      PATCH(req({ op: 'removeTags', ids: ['a'], tags: ['데모', ''] }))
+    ).rejects.toMatchObject({ status: 400 });
+    expect(removeTagsSpy).not.toHaveBeenCalled();
+  });
+
+  it("op: 'delete'에서 ids가 배열이 아니면 400이고, softDelete를 호출하지 않는다", async () => {
+    await expect(PATCH(req({ op: 'delete', ids: 'a' }))).rejects.toMatchObject({ status: 400 });
+    expect(softDeleteSpy).not.toHaveBeenCalled();
+  });
+
+  it('본문이 객체가 아니면(문자열) 400이다', async () => {
+    await expect(PATCH(req('그냥 문자열'))).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('본문이 null이면 400이다', async () => {
+    await expect(PATCH(req(null))).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('본문에 op가 없으면 400이다', async () => {
+    await expect(PATCH(req({ id: 'rec-1', title: 'x' }))).rejects.toMatchObject({ status: 400 });
+    expect(patchSpy).not.toHaveBeenCalled();
+  });
 });
