@@ -982,8 +982,17 @@ describe('applyFilter', () => {
 
 describe('URL 왕복', () => {
   it('파라미터를 필터로 읽는다', () => {
-    const f = filterFromParams(new URLSearchParams('q=레&tags=데모,1절&mode=or&from=2026-07-01'));
+    const f = filterFromParams(new URLSearchParams('q=레&tags=데모&tags=1절&mode=or&from=2026-07-01'));
     expect(f).toEqual({ q: '레', tags: ['데모', '1절'], tagMode: 'or', from: '2026-07-01', to: '' });
+  });
+
+  it('쉼표는 구분자가 아니라 태그 내용이다', () => {
+    expect(filterFromParams(new URLSearchParams('tags=lo-fi,demo')).tags).toEqual(['lo-fi,demo']);
+  });
+
+  it('쉼표가 든 태그도 왕복에서 온전하다', () => {
+    const f = { ...EMPTY_FILTER, tags: ['lo-fi,demo'] };
+    expect(filterFromParams(filterToParams(f)).tags).toEqual(['lo-fi,demo']);
   });
 
   it('mode가 없으면 and가 기본이다', () => {
@@ -1016,7 +1025,14 @@ Expected: FAIL — `Failed to resolve import "./filter"`
 ```ts
 import type { Filter, Recording, TagMode } from './types';
 
+/**
+ * 빈 필터의 기준값. 호출부가 `{ ...EMPTY_FILTER, ...f }`로 필터를 만드는데,
+ * `tags`를 덮어쓰지 않으면 같은 배열 참조를 물려받는다. 얼려두면 실수로
+ * 밀어넣었을 때 조용히 공유 상태가 오염되는 대신 즉시 터진다.
+ */
 export const EMPTY_FILTER: Filter = { q: '', tags: [], tagMode: 'and', from: '', to: '' };
+Object.freeze(EMPTY_FILTER.tags);
+Object.freeze(EMPTY_FILTER);
 
 /** recordedAt의 날짜 부분만 뽑는다. 오프셋이 붙어 있으므로 앞 10글자가 로컬 날짜다. */
 function localDate(recordedAt: string): string {
@@ -1043,11 +1059,16 @@ export function applyFilter(recs: Recording[], f: Filter): Recording[] {
   });
 }
 
+/**
+ * 태그는 쉼표로 잇지 않고 파라미터를 반복해서 담는다(`tags=a&tags=b`).
+ * 태그는 사용자가 자유롭게 입력하는 값이라 쉼표가 들어갈 수 있는데,
+ * 쉼표를 구분자로 쓰면 그런 태그가 조용히 둘로 쪼개진다.
+ */
 export function filterFromParams(params: URLSearchParams): Filter {
   const mode = params.get('mode');
   return {
     q: params.get('q') ?? '',
-    tags: (params.get('tags') ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+    tags: params.getAll('tags').map((s) => s.trim()).filter(Boolean),
     tagMode: (mode === 'or' ? 'or' : 'and') as TagMode,
     from: params.get('from') ?? '',
     to: params.get('to') ?? ''
@@ -1057,7 +1078,7 @@ export function filterFromParams(params: URLSearchParams): Filter {
 export function filterToParams(f: Filter): URLSearchParams {
   const p = new URLSearchParams();
   if (f.q) p.set('q', f.q);
-  if (f.tags.length) p.set('tags', f.tags.join(','));
+  for (const tag of f.tags) p.append('tags', tag);
   if (f.tagMode === 'or') p.set('mode', 'or');
   if (f.from) p.set('from', f.from);
   if (f.to) p.set('to', f.to);
