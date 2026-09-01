@@ -60,7 +60,9 @@ describe('scanFolder', () => {
     expect(item.appleAutoTitle).toBe('화양동 16 2'); // 파일 메타의 위치 이름
   });
 
-  it('DB에 행이 없으면 파일 메타 제목으로 채운다', async () => {
+  it('DB 제목과 파일 메타 제목이 같으면 그대로 쓴다', async () => {
+    // 이 파일은 DB 행이 있고 값이 우연히 일치한다. 우선순위를 증명하지는
+    // 못하므로(위 분기 테스트가 그 역할) 일치 케이스가 깨지지 않는지만 본다.
     await fs.copyFile(FIX_DB, path.join(src, 'CloudRecordings.db'));
     const items = await scanFolder(cfg, src);
     const qta = items.find((i) => i.sourceName === QTA_NAME)!;
