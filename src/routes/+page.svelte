@@ -1,10 +1,11 @@
 <script lang="ts">
   import { page } from '$app/state';
   import { replaceState } from '$app/navigation';
-  import type { Filter, Recording } from '$lib/types';
+  import type { Bookmark, Filter, Recording } from '$lib/types';
   import { applyFilter, filterFromParams, filterToParams } from '$lib/filter';
   import FilterBar from '$lib/components/FilterBar.svelte';
   import TagInput from '$lib/components/TagInput.svelte';
+  import Player from '$lib/components/Player.svelte';
 
   let { data } = $props();
 
@@ -37,6 +38,7 @@
   // 목록 접힘도 없다. Task 15가 이 값을 읽어 하단 고정 플레이어에 녹음을
   // 로드한다.
   let selectedId = $state<string | null>(null);
+  const selected = $derived(recordings.find((r) => r.id === selectedId) ?? null);
 
   // data는 SvelteKit이 load를 다시 실행할 때마다(예: /import에서 돌아오는
   // 내비게이션, invalidateAll 등) 새 참조로 바뀐다. 이 이펙트는 그 순간마다
@@ -147,6 +149,15 @@
     }
     tagsDraft = [...rec.tags];
     editingTagsId = rec.id;
+  }
+
+  // 플레이어가 현재 위치에 북마크를 추가할 때 호출한다. id는 서버가 아니라
+  // 여기서 발급한다 — patch가 bookmarks 배열을 통째로 받아 검증하는
+  // 구조라, id 없는 항목을 보내면 그 시점부터 이미 형식이 어긋난다.
+  async function addBookmark(b: Omit<Bookmark, 'id'>) {
+    if (!selected) return;
+    const next = [...selected.bookmarks, { ...b, id: crypto.randomUUID() }];
+    await send({ op: 'patch', id: selected.id, bookmarks: next });
   }
 </script>
 
@@ -302,3 +313,5 @@
     {/each}
   </ul>
 </div>
+
+<Player recording={selected} formats={['original', ...data.formats]} onbookmark={addBookmark} />
