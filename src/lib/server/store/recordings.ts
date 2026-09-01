@@ -29,10 +29,35 @@ async function all(cfg: AppConfig): Promise<Recording[]> {
   return (await readJson<RecordingsFile>(file(cfg), EMPTY)).recordings;
 }
 
+/** recordedAt를 실제 시각(epoch ms)으로 바꾼다. 빈 문자열이거나 파싱할 수 없으면 null. */
+function recordedAtMs(iso: string): number | null {
+  if (iso === '') return null;
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/**
+ * recordedAt 내림차순 비교자. 오프셋이 섞여 있어도 문자열이 아니라 실제 시각 기준으로 비교한다.
+ * recordedAt이 빈 문자열이거나 파싱 불가하면 항상 맨 뒤로 보낸다.
+ * 실제 시각이 같으면 id로 안정 정렬하고, 어느 한쪽이라도 id가 없으면 0을 반환해 원래 순서를 유지한다.
+ * Recording뿐 아니라 { recordedAt, id? } 형태(예: Task 9의 ScanItem)에도 그대로 쓸 수 있다.
+ */
+export function compareByRecordedAtDesc(
+  a: { recordedAt: string; id?: string },
+  b: { recordedAt: string; id?: string }
+): number {
+  const ta = recordedAtMs(a.recordedAt);
+  const tb = recordedAtMs(b.recordedAt);
+  if (ta === null && tb === null) return 0;
+  if (ta === null) return 1;
+  if (tb === null) return -1;
+  if (ta !== tb) return tb - ta;
+  if (a.id === undefined || b.id === undefined) return 0;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
 export async function listAll(cfg: AppConfig): Promise<Recording[]> {
-  return (await all(cfg))
-    .filter((r) => r.deletedAt === null)
-    .sort((a, b) => (a.recordedAt < b.recordedAt ? 1 : a.recordedAt > b.recordedAt ? -1 : 0));
+  return (await all(cfg)).filter((r) => r.deletedAt === null).sort(compareByRecordedAtDesc);
 }
 
 export async function getById(cfg: AppConfig, id: string): Promise<Recording | null> {

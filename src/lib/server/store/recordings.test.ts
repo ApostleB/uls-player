@@ -61,6 +61,25 @@ describe('recordings store', () => {
     expect((await listAll(cfg)).map((r) => r.title)).toEqual(['나중', '먼저']);
   });
 
+  it('recordedAt 오프셋이 달라도 실제 시각 기준으로 내림차순 정렬한다', async () => {
+    await addMany(cfg, [
+      // 2026-07-09T20:00:00+09:00 == 2026-07-09T11:00:00Z
+      rec({ recordedAt: '2026-07-09T20:00:00+09:00', title: '이르다' }),
+      // 2026-07-09T10:00:00-05:00 == 2026-07-09T15:00:00Z, 실제로는 이쪽이 더 나중이다
+      rec({ recordedAt: '2026-07-09T10:00:00-05:00', title: '늦다' })
+    ]);
+    expect((await listAll(cfg)).map((r) => r.title)).toEqual(['늦다', '이르다']);
+  });
+
+  it('recordedAt이 빈 문자열이면 맨 뒤로 가고, 날짜 있는 항목의 순서는 그대로다', async () => {
+    await addMany(cfg, [
+      rec({ recordedAt: '2026-07-09T22:36:13+09:00', title: '먼저' }),
+      rec({ recordedAt: '', title: '날짜없음' }),
+      rec({ recordedAt: '2026-08-30T19:54:04+09:00', title: '나중' })
+    ]);
+    expect((await listAll(cfg)).map((r) => r.title)).toEqual(['나중', '먼저', '날짜없음']);
+  });
+
   it('patch가 updatedAt을 갱신한다', async () => {
     const r = rec();
     await addMany(cfg, [r]);
