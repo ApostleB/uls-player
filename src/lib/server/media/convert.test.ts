@@ -52,6 +52,13 @@ describe('convert', () => {
     await expect(fs.access(out)).rejects.toThrow();
   });
 
+  it('실패 시 기존에 있던 출력 파일도 지운다', async () => {
+    const out = path.join(dir, 'bad.mp3');
+    await fs.writeFile(out, 'junk');
+    await expect(convert(SPATIAL, out, 1, MP3)).rejects.toThrow();
+    await expect(fs.access(out)).rejects.toThrow();
+  });
+
   it('출력 디렉터리가 없으면 만든다', async () => {
     const { audioStreamIndex } = await probe(SPATIAL);
     const out = path.join(dir, 'deep', 'nested', 'a.mp3');
