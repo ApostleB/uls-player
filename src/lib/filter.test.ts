@@ -71,4 +71,24 @@ describe('URL 왕복', () => {
     const f = { q: '레인', tags: ['데모'], tagMode: 'or' as const, from: '2026-07-01', to: '2026-08-01' };
     expect(filterFromParams(filterToParams(f))).toEqual(f);
   });
+
+  it('쉼표를 포함한 태그도 보존된다', () => {
+    const f = { q: '', tags: ['lo-fi,demo', '싱어'], tagMode: 'and' as const, from: '', to: '' };
+    const params = filterToParams(f);
+    expect(filterFromParams(params)).toEqual(f);
+  });
+});
+
+describe('EMPTY_FILTER 불변성', () => {
+  it('EMPTY_FILTER 수정 시도는 에러를 발생시킨다', () => {
+    expect(() => {
+      EMPTY_FILTER.q = 'modified';
+    }).toThrow();
+  });
+
+  it('EMPTY_FILTER의 tags 배열 수정 시도는 에러를 발생시킨다', () => {
+    expect(() => {
+      EMPTY_FILTER.tags.push('new-tag');
+    }).toThrow();
+  });
 });

@@ -1,6 +1,12 @@
 import type { Filter, Recording, TagMode } from './types';
 
-export const EMPTY_FILTER: Filter = { q: '', tags: [], tagMode: 'and', from: '', to: '' };
+export const EMPTY_FILTER: Filter = Object.freeze({
+  q: '',
+  tags: Object.freeze([]),
+  tagMode: 'and',
+  from: '',
+  to: ''
+});
 
 /** recordedAt의 날짜 부분만 뽑는다. 오프셋이 붙어 있으므로 앞 10글자가 로컬 날짜다. */
 function localDate(recordedAt: string): string {
@@ -29,9 +35,18 @@ export function applyFilter(recs: Recording[], f: Filter): Recording[] {
 
 export function filterFromParams(params: URLSearchParams): Filter {
   const mode = params.get('mode');
+
+  // Read tags from repeated 'tags' parameters, with legacy fallback for hand-written comma-joined values
+  let tags = params.getAll('tags');
+  if (tags.length === 1 && tags[0].includes(',')) {
+    // Legacy fallback: a single comma-joined value from hand-written URLs
+    tags = tags[0].split(',');
+  }
+  tags = tags.map((s) => s.trim()).filter(Boolean);
+
   return {
     q: params.get('q') ?? '',
-    tags: (params.get('tags') ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+    tags,
     tagMode: (mode === 'or' ? 'or' : 'and') as TagMode,
     from: params.get('from') ?? '',
     to: params.get('to') ?? ''
@@ -41,7 +56,11 @@ export function filterFromParams(params: URLSearchParams): Filter {
 export function filterToParams(f: Filter): URLSearchParams {
   const p = new URLSearchParams();
   if (f.q) p.set('q', f.q);
-  if (f.tags.length) p.set('tags', f.tags.join(','));
+  // Append each tag as a separate parameter so URLSearchParams handles escaping.
+  // A tag containing a comma (e.g. "lo-fi,demo") will be preserved as a single tag.
+  for (const tag of f.tags) {
+    p.append('tags', tag);
+  }
   if (f.tagMode === 'or') p.set('mode', 'or');
   if (f.from) p.set('from', f.from);
   if (f.to) p.set('to', f.to);
