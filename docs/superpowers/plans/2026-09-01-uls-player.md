@@ -1893,10 +1893,12 @@ git commit -m "feat: 파형 피크 생성과 저장
 - Create: `src/lib/server/scan.test.ts`
 
 **Interfaces:**
-- Consumes: `probe` (Task 6), `findDbPath`·`readTitleMap` (Task 5), `existingSourceNames` (Task 3), `AppConfig`·`ScanItem` (Task 1)
+- Consumes: `probe` (Task 6), `findDbPath`·`readTitleMap` (Task 5), `existingSourceNames`·`compareByRecordedAtDesc` (Task 3), `AppConfig`·`ScanItem` (Task 1)
 - Produces:
   - `AUDIO_EXTENSIONS: Set<string>`
   - `scanFolder(cfg: AppConfig, folder: string): Promise<ScanItem[]>`
+
+`compareByRecordedAtDesc`는 Task 3에서 정의한 것을 그대로 쓴다. 정렬 규칙(실제 시각 비교, 날짜 없는 항목은 뒤로)이 저장소와 스캔 두 곳에 갈라져 있으면 어긋나기 쉽다.
 
 제목 우선순위는 **DB 제목 → 파일 메타 title → 확장자 뗀 파일명** 순이다.
 
@@ -2016,7 +2018,7 @@ import path from 'node:path';
 import type { AppConfig, ScanItem } from '$lib/types';
 import { probe } from './media/probe';
 import { findDbPath, readTitleMap, type AppleEntry } from './apple/cloudRecordings';
-import { existingSourceNames } from './store/recordings';
+import { existingSourceNames, compareByRecordedAtDesc } from './store/recordings';
 
 export const AUDIO_EXTENSIONS = new Set([
   '.qta', '.m4a', '.mp3', '.wav', '.aac', '.caf', '.aiff', '.aif', '.flac', '.ogg', '.opus'
@@ -2091,7 +2093,10 @@ export async function scanFolder(cfg: AppConfig, folder: string): Promise<ScanIt
     names.map((n) => inspect(path.join(folder, n), n, apple.get(n), known.has(n)))
   );
 
-  return items.sort((a, b) => (a.recordedAt < b.recordedAt ? 1 : a.recordedAt > b.recordedAt ? -1 : 0));
+  // 문자열 비교가 아니라 실제 시각으로 정렬한다. recordedAt에 오프셋이
+  // 붙어 있어 사전식으로 비교하면 타임존이 섞였을 때 순서가 뒤집힌다.
+  // 날짜를 못 읽은 항목(recordedAt === '')은 뒤로 간다.
+  return items.sort(compareByRecordedAtDesc);
 }
 ```
 
