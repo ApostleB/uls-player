@@ -33,6 +33,13 @@ function rec(over: Partial<Recording> & { id: string }): Recording {
   };
 }
 
+// Locator에는 키 입력 메서드가 없다(fill()은 값만 바로 채우고 keydown을
+// 만들지 않는다) — TagInput은 Enter keydown으로 칩을 추가하므로, 그
+// 이벤트를 실제 input 엘리먼트에 직접 디스패치한다.
+function pressEnter(el: HTMLElement | SVGElement) {
+  el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+}
+
 function baseData() {
   return {
     recordings: [
@@ -64,7 +71,7 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
     const { getByPlaceholder, getByRole } = render(Page, { data: baseData() });
 
     await getByPlaceholder('제목 검색').fill('레인');
-    await getByRole('button', { name: '데모' }).click();
+    await getByRole('button', { name: /^데모\d/ }).click();
 
     const expected = filterToParams({
       q: '레인',
@@ -87,7 +94,7 @@ describe('+page.svelte — 초기화 버튼', () => {
     await expect.element(getByText('2 / 2')).toBeInTheDocument();
 
     await getByPlaceholder('제목 검색').fill('아무거나');
-    await getByRole('button', { name: '데모' }).click();
+    await getByRole('button', { name: /^데모\d/ }).click();
     await expect.element(getByText('0 / 2')).toBeInTheDocument();
 
     await getByRole('button', { name: '초기화' }).click();
@@ -98,7 +105,7 @@ describe('+page.svelte — 초기화 버튼', () => {
     // filter.tags = [...] 대입이 던지면서 클릭 핸들러가 중간에 멈추고
     // 아래 카운트는 절대 "1 / 2"로 바뀌지 않는다 — 리셋 이후에도 필터
     // 객체가 진짜 새 객체(얼지 않은)인지를 이 재클릭으로 검증한다.
-    await getByRole('button', { name: '데모' }).click();
+    await getByRole('button', { name: /^데모\d/ }).click();
     await expect.element(getByText('1 / 2')).toBeInTheDocument();
   });
 });
@@ -174,5 +181,189 @@ describe('+page.svelte — data 재동기화', () => {
     await expect.element(getByText('새로_가져온_녹음')).toBeInTheDocument();
     await expect.element(getByText('레인')).not.toBeInTheDocument();
     await expect.element(getByText('정류장')).not.toBeInTheDocument();
+  });
+});
+
+describe('+page.svelte — 인라인 편집(설명·태그)', () => {
+  it('설명을 더블클릭해 고치면 PATCH { op: "patch", id, description }를 보내고, 응답으로 화면을 갱신한다', async () => {
+    // 서버가 돌려주는 값을 직접 입력한 값과 다르게 만들어서, 화면이 응답을
+    // 반영하는지(로컬 입력값을 그대로 붙잡고 있는 게 아닌지) 구분한다.
+    const serverResponse = {
+      recordings: [
+        rec({ id: '1', title: '레인', tags: ['데모'], description: '서버가 확정한 설명' }),
+        rec({ id: '2', title: '정류장', tags: [] })
+      ],
+      tags: [{ tag: '데모', count: 1 }]
+    };
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify(serverResponse), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getByText, getByLabelText } = render(Page, { data: baseData() });
+
+    // 두 행 모두 설명이 비어 있어 "설명 없음"이 두 번 뜬다 — 첫 번째(레인)
+    // 것만 편집한다.
+    await getByText('설명 없음').first().dblClick();
+    await getByLabelText('설명 수정').fill('내가 입력한 설명');
+    // 이 컴포넌트에는 blur 전용 API가 없으니, 편집 중인 입력 밖의 다른
+    // 요소를 눌러 실제 blur를 일으킨다.
+    await getByText('ULS Player').click();
+
+    await expect.element(getByText('서버가 확정한 설명')).toBeInTheDocument();
+    await expect.element(getByText('내가 입력한 설명')).not.toBeInTheDocument();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0];
+    expect(JSON.parse(call[1]!.body as string)).toEqual({
+      op: 'patch',
+      id: '1',
+      description: '내가 입력한 설명'
+    });
+  });
+
+  it('행의 태그를 더블클릭해 TagInput으로 고치고 완료를 누르면 PATCH { op: "patch", id, tags }를 보내고, 응답으로 화면을 갱신한다', async () => {
+    const serverResponse = {
+      recordings: [
+        rec({ id: '1', title: '레인', tags: ['데모', '서버가확정한태그'] }),
+        rec({ id: '2', title: '정류장', tags: [] })
+      ],
+      tags: [
+        { tag: '데모', count: 1 },
+        { tag: '서버가확정한태그', count: 1 }
+      ]
+    };
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify(serverResponse), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getByRole, getByPlaceholder, getByText } = render(Page, { data: baseData() });
+
+    // row1의 태그 칩 묶음(태그가 '데모' 하나뿐이라 이름이 정확히 "데모"인
+    // 버튼) — FilterBar의 칩은 항상 개수가 붙어("데모1") exact 매치로
+    // 자연히 구분된다.
+    await getByRole('button', { name: '데모', exact: true }).dblClick();
+
+    const tagInput = getByPlaceholder('태그 입력 후 Enter');
+    await tagInput.fill('내가입력한태그');
+    pressEnter(tagInput.element());
+
+    await getByRole('button', { name: '완료' }).click();
+
+    // exact 매치가 필요하다 — FilterBar 칩은 "서버가확정한태그1"처럼
+    // 개수가 뒤에 바로 붙어서, 부분일치로는 행의 태그 칩과 함께 걸린다.
+    await expect.element(getByText('서버가확정한태그', { exact: true })).toBeInTheDocument();
+    await expect.element(getByText('내가입력한태그', { exact: true })).not.toBeInTheDocument();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0];
+    expect(JSON.parse(call[1]!.body as string)).toEqual({
+      op: 'patch',
+      id: '1',
+      tags: ['데모', '내가입력한태그']
+    });
+  });
+});
+
+describe('+page.svelte — 일괄 태그 추가/제거', () => {
+  it('일부 행만 고르고 태그를 일괄 추가하면 선택된 ids만으로 PATCH { op: "addTags", ids, tags }를 보내고, 응답으로 목록과 필터바 태그 칩이 함께 갱신된다', async () => {
+    // 두 행 중 하나만 선택한다 — recordings 전체 id를 보내는 실수와
+    // selectedIds만 보내는 정상 동작이 여기서 갈린다(전부 선택했다면
+    // 두 경우가 우연히 같은 ids가 되어 구분이 안 된다).
+    const serverResponse = {
+      recordings: [
+        rec({ id: '1', title: '레인', tags: ['데모', '메모'] }),
+        rec({ id: '2', title: '정류장', tags: [] })
+      ],
+      tags: [
+        { tag: '데모', count: 1 },
+        { tag: '메모', count: 1 }
+      ]
+    };
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify(serverResponse), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getByRole, getByPlaceholder, getByText } = render(Page, { data: baseData() });
+
+    const checkboxes = getByRole('checkbox');
+    await checkboxes.nth(0).click();
+    await expect.element(getByText('1개 선택됨')).toBeInTheDocument();
+
+    const tagInput = getByPlaceholder('태그 입력 후 Enter');
+    await tagInput.fill('메모');
+    pressEnter(tagInput.element());
+
+    await getByRole('button', { name: '태그 추가' }).click();
+
+    // 눈에 보이는 결과: 필터바의 태그 칩 카운트가 응답을 따라 갱신된다.
+    await expect.element(getByRole('button', { name: /^메모\d/ })).toBeInTheDocument();
+    // 삭제와 달리 태그 추가는 선택을 비우지 않는다 — 같은 선택으로 다른
+    // 태그를 더 붙이거나 이어서 지울 수 있어야 한다.
+    await expect.element(getByText('1개 선택됨')).toBeInTheDocument();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0];
+    expect(JSON.parse(call[1]!.body as string)).toEqual({
+      op: 'addTags',
+      ids: ['1'],
+      tags: ['메모']
+    });
+  });
+
+  it('일부 행만 고르고 태그를 일괄 제거하면 선택된 ids만으로 PATCH { op: "removeTags", ids, tags }를 보내고, 응답으로 필터바 태그 칩이 사라진다', async () => {
+    // 여기서도 한 행만 선택한다 — recordings 전체 id로 잘못 보내는 실수를
+    // ids 불일치로 잡아내려면 선택하지 않은 행이 최소 하나는 있어야 한다.
+    const serverResponse = {
+      recordings: [
+        rec({ id: '1', title: '레인', tags: [] }),
+        rec({ id: '2', title: '정류장', tags: [] })
+      ],
+      tags: []
+    };
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify(serverResponse), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getByRole, getByPlaceholder, getByText } = render(Page, { data: baseData() });
+
+    const checkboxes = getByRole('checkbox');
+    await checkboxes.nth(0).click();
+
+    const tagInput = getByPlaceholder('태그 입력 후 Enter');
+    await tagInput.fill('데모');
+    pressEnter(tagInput.element());
+
+    await getByRole('button', { name: '태그 제거' }).click();
+
+    // FilterBar는 tags.length가 0이면 태그 칩 영역 자체를 렌더링하지 않는다.
+    await expect.element(getByRole('button', { name: /^데모\d/ })).not.toBeInTheDocument();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0];
+    expect(JSON.parse(call[1]!.body as string)).toEqual({
+      op: 'removeTags',
+      ids: ['1'],
+      tags: ['데모']
+    });
   });
 });
