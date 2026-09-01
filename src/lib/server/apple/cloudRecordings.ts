@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 
 export interface AppleEntry {
   title: string;
+  /** ISO 8601 + 오프셋 (예: 2026-07-11T18:15:30+09:00). ZDATE가 NULL이면 빈 문자열. */
   recordedAt: string;
   durationSec: number;
 }
@@ -44,6 +45,9 @@ function toIsoWithOffset(unixSeconds: number): string {
  *
  * DB는 WAL 모드다. -wal/-shm이 함께 있어야 최신 내용이 보이므로 셋을 임시
  * 위치로 복사한 뒤 읽는다. 원본은 손대지 않는다.
+ *
+ * ZDATE가 NULL인 행은 recordedAt을 빈 문자열로 준다 — "항상 오프셋 포함
+ * ISO"라는 규칙의 의도적인 예외다.
  */
 export async function readTitleMap(dbPath: string): Promise<Map<string, AppleEntry>> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'uls-cloudrec-'));
@@ -53,8 +57,13 @@ export async function readTitleMap(dbPath: string): Promise<Map<string, AppleEnt
     for (const suffix of ['-wal', '-shm']) {
       try {
         await fs.copyFile(dbPath + suffix, copy + suffix);
-      } catch {
-        // 없으면 넘어간다. 체크포인트가 끝난 DB에는 없다.
+      } catch (err) {
+        // ENOENT만 "사이드카가 없다"는 정상 상태다 — 체크포인트가 끝난 DB에는
+        // 없다. 그 외 오류(권한, I/O 실패 등)를 삼키면 WAL의 최신 내용 없이
+        // 조용히 진행하게 되므로 그대로 던진다.
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw err;
+        }
       }
     }
 
