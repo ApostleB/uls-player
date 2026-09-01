@@ -14,6 +14,14 @@ const PLAIN = path.resolve('tests/fixtures/audio/plain.m4a');
 const QTA_NAME = '20260711 181530-1923A106.qta';
 const M4A_NAME = '20260725 210049-B752B57A.m4a';
 
+/**
+ * 픽스처 DB에 있는 행 중 사용자 제목("비와 당신")과 파일 메타의 위치 이름이
+ * 서로 다른 것. 대응 오디오 파일은 저장소에 없지만, 스캔은 파일명으로 DB를
+ * 찾으므로 plain.m4a를 이 이름으로 복사하면 분기 상황을 만들 수 있다.
+ * plain.m4a 자신의 메타 title은 "화양동 16 2"라 DB 제목과 확실히 갈린다.
+ */
+const DIVERGENT_NAME = '20260725 005422-39A2B8E8.m4a';
+
 let dir: string;
 let src: string;
 let cfg: AppConfig;
@@ -39,7 +47,20 @@ describe('scanFolder', () => {
     expect(items.map((i) => i.sourceName).sort()).toEqual([M4A_NAME, QTA_NAME].sort());
   });
 
-  it('DB가 있으면 사용자 제목을 쓴다', async () => {
+  it('DB 제목이 파일 메타 제목을 이긴다', async () => {
+    // 이 모듈이 존재하는 이유가 이 한 줄이다. 둘이 같은 파일로 검증하면
+    // 우선순위를 뒤집어도 테스트가 통과해 아무것도 증명하지 못한다.
+    await fs.copyFile(PLAIN, path.join(src, DIVERGENT_NAME));
+    await fs.copyFile(FIX_DB, path.join(src, 'CloudRecordings.db'));
+
+    const items = await scanFolder(cfg, src);
+    const item = items.find((i) => i.sourceName === DIVERGENT_NAME)!;
+
+    expect(item.title).toBe('비와 당신');        // DB의 사용자 지정 제목
+    expect(item.appleAutoTitle).toBe('화양동 16 2'); // 파일 메타의 위치 이름
+  });
+
+  it('DB에 행이 없으면 파일 메타 제목으로 채운다', async () => {
     await fs.copyFile(FIX_DB, path.join(src, 'CloudRecordings.db'));
     const items = await scanFolder(cfg, src);
     const qta = items.find((i) => i.sourceName === QTA_NAME)!;
