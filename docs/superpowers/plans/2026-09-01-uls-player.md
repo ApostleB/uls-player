@@ -926,7 +926,7 @@ CRUD, 태그 일괄 추가/제거, 소프트 삭제, 태그 집계.
 
 ```ts
 import { describe, it, expect } from 'vitest';
-import type { Recording } from './types';
+import type { Filter, Recording } from './types';
 import { EMPTY_FILTER, applyFilter, filterFromParams, filterToParams } from './filter';
 
 function rec(over: Partial<Recording>): Recording {
@@ -944,8 +944,7 @@ const data = [
   rec({ id: '3', title: '빨래', tags: ['1절'], recordedAt: '2026-08-30T19:54:04+09:00' })
 ];
 
-const ids = (f: Partial<Recording extends never ? never : typeof EMPTY_FILTER>) =>
-  applyFilter(data, { ...EMPTY_FILTER, ...f }).map((r) => r.id);
+const ids = (f: Partial<Filter>) => applyFilter(data, { ...EMPTY_FILTER, ...f }).map((r) => r.id);
 
 describe('applyFilter', () => {
   it('빈 필터는 전부 통과시킨다', () => {
