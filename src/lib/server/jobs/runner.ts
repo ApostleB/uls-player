@@ -94,6 +94,11 @@ export function makeRunner(cfg: AppConfig): Worker {
     // fs.copyFile은 대상을 O_TRUNC로 열므로, 이미 검증된 원본이 있는데
     // 다시 복사하다가 소스가 끊기면(외장 디스크·iCloud 등) 그 원본을
     // 잘라먹고 못 채운 채로 남긴다. 대상이 있고 비어 있지 않으면 그대로 둔다.
+    // 한계: size > 0만으로는 "완전한 원본"과 "복사 도중 끊겨서 일부만
+    // 써진, 그래도 0바이트는 아닌 파일"을 구분하지 못한다. 후자라면 그
+    // 불완전한 파일이 이후의 모든 재시도에서 계속 "멀쩡하다"고 신뢰된다.
+    // 크기 기반 판정 방식 자체의 한계이고, 해시 검증 등 더 강한 확인이
+    // 없는 한 남아 있다.
     let originalIntact = false;
     try {
       originalIntact = (await fs.stat(originalPath)).size > 0;
@@ -124,12 +129,23 @@ export function makeRunner(cfg: AppConfig): Worker {
           result[spec.name] = 'done';
           continue;
         } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            // ENOENT가 아닌 오류(EACCES·EIO·EMFILE 등)는 파일이 멀쩡한데
+            // stat 자체가 안 되는 상황일 수 있다 — 여기서 삼키고 재변환을
+            // 시도하면, 그 재변환도 같은 원인으로 실패할 가능성이 높고
+            // convert의 정리 로직이 멀쩡한 파일을 지울 수 있다.
+            //
+            // 그냥 던지면 큐가 실행 이전 상태로 되돌리는데, cfg.formats
+            // 순서상 이 포맷보다 먼저 처리된 포맷이 이번 실행에서 막
+            // 새로 변환됐을 수 있다(result에 담겨 있다) — 그 상태가
+            // pending으로 되돌아가면 다음 재시도가 방금 멀쩡하게 만든
+            // 파일을 다시 변환하다, 같은 원인으로 또 실패하면 convert의
+            // 정리 로직이 그 파일을 지운다. Finding 1이 막으려던 것과
+            // 같은 사고가 다른 경로로 벌어지는 셈이라, 지금까지 모은
+            // result를 실어 보내 이미 done인 포맷을 지킨다.
+            throw new JobFailure((err as Error).message, result);
+          }
           // 파일이 사라졌을 때만(ENOENT) done 표시를 믿지 않고 다시 만든다.
-          // ENOENT가 아닌 오류(EACCES·EIO·EMFILE 등)는 파일이 멀쩡한데
-          // stat 자체가 안 되는 상황일 수 있다 — 여기서 삼키고 재변환을
-          // 시도하면, 그 재변환도 같은 원인으로 실패할 가능성이 높고
-          // convert의 정리 로직이 멀쩡한 파일을 지울 수 있다.
         }
       }
 
