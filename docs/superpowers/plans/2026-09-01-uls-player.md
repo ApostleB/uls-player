@@ -2512,10 +2512,12 @@ import type {
   AppConfig, FileEntry, JobItem, JobStatus, Recording, ScanItem
 } from '$lib/types';
 import { convert } from '../media/convert';
+import { probe } from '../media/probe';
 import { generatePeaks } from '../media/waveform';
 import { savePeaks } from '../store/waveforms';
 import { addMany, newId } from '../store/recordings';
 import { JobQueue, type Worker } from './queue';
+import { pendingRecordings } from './registry';
 
 export interface PendingItem {
   scan: ScanItem;
@@ -2577,6 +2579,8 @@ export function buildJobs(
     });
   }
 
+  // 변환이 끝난 뒤 저장소에 넣을 수 있도록 레지스트리에 맡겨둔다
+  pendingRecordings.put(recordings);
   return { jobs, recordings };
 }
 
@@ -2595,7 +2599,6 @@ export function makeRunner(cfg: AppConfig): Worker {
     await fs.mkdir(path.dirname(originalPath), { recursive: true });
     await fs.copyFile(job.sourcePath, originalPath);
 
-    const { probe } = await import('../media/probe');
     const meta = await probe(originalPath);
 
     const files: Record<string, FileEntry> = {
@@ -2623,7 +2626,6 @@ export function makeRunner(cfg: AppConfig): Worker {
 
     // 저장소 기록은 파이프라인이 여기까지 온 뒤에만 한다.
     // 앞에서 던지면 목록에 반쪽짜리 항목이 남지 않는다.
-    const { pendingRecordings } = await import('./registry');
     const rec = pendingRecordings.take(job.recordingId);
     if (rec) await addMany(cfg, [{ ...rec, files }]);
 
@@ -2672,25 +2674,7 @@ class PendingRecordings {
 export const pendingRecordings = new PendingRecordings();
 ```
 
-`runner.test.ts`가 `buildJobs`만 부르고 `pendingRecordings.put`을 부르지 않으므로, `buildJobs`가 직접 등록하도록 `runner.ts`의 `buildJobs` 마지막에 다음을 추가한다.
-
-```ts
-// buildJobs의 return 직전에 넣는다
-pendingRecordings.put(recordings);
-return { jobs, recordings };
-```
-
-그리고 `runner.ts` 상단에 임포트를 추가한다.
-
-```ts
-import { pendingRecordings } from './registry';
-```
-
-`makeRunner` 안의 동적 임포트(`await import('./registry')`)는 지우고 위 정적 임포트를 쓴다. 마찬가지로 `probe`도 정적 임포트로 바꾼다.
-
-```ts
-import { probe } from '../media/probe';
-```
+`registry.ts`는 `runner.ts`가 임포트하므로 두 파일을 함께 만든다. Step 3의 `runner.ts`에 이미 `import { pendingRecordings } from './registry';`와 `buildJobs` 안의 `pendingRecordings.put(recordings);`가 들어 있다.
 
 - [ ] **Step 5: 테스트 통과 확인**
 
@@ -2879,22 +2863,34 @@ export const GET: RequestHandler = async () => {
   const queue = getQueue(config);
   const encoder = new TextEncoder();
 
+  // 정리 함수를 클로저에 둬야 cancel에서 실제로 부를 수 있다.
+  // controller에 매달아두면 호출되지 않아 구독과 타이머가 새어나간다.
+  let cleanup = () => {};
+
   const stream = new ReadableStream({
     start(controller) {
       const send = (items: unknown) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(items)}\n\n`));
       };
       send(queue.snapshot());
+
       const off = queue.subscribe(send);
       // 프록시가 유휴 연결을 끊지 않게 주기적으로 주석 프레임을 보낸다
-      const beat = setInterval(() => controller.enqueue(encoder.encode(': beat\n\n')), 15000);
-      (controller as unknown as { _cleanup?: () => void })._cleanup = () => {
+      const beat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': beat\n\n'));
+        } catch {
+          cleanup();
+        }
+      }, 15000);
+
+      cleanup = () => {
         off();
         clearInterval(beat);
       };
     },
-    cancel(reason) {
-      void reason;
+    cancel() {
+      cleanup();
     }
   });
 
@@ -4229,6 +4225,7 @@ git commit -m "test: 가져오기부터 재생까지 E2E
 ```ts
 import { describe, it, expect } from 'vitest';
 import os from 'node:os';
+import path from 'node:path';
 import { loadConfig } from './config';
 import { freeBytes, estimateBytes } from './disk';
 
@@ -4237,8 +4234,9 @@ describe('freeBytes', () => {
     expect(await freeBytes(os.tmpdir())).toBeGreaterThan(0);
   });
 
-  it('없는 경로면 던진다', async () => {
-    await expect(freeBytes('/nope/nope/nope')).rejects.toThrow();
+  it('아직 없는 경로는 존재하는 상위로 올라가서 잰다', async () => {
+    // media/ 는 첫 변환 전까지 없다. 그래도 여유를 잴 수 있어야 한다.
+    expect(await freeBytes(path.join(os.tmpdir(), 'not-created-yet', 'deeper'))).toBeGreaterThan(0);
   });
 });
 
@@ -4349,6 +4347,7 @@ Expected: FAIL — `Failed to resolve import "./disk"` / `"./persist"`
 
 ```ts
 import { statfs } from 'node:fs/promises';
+import path from 'node:path';
 import type { AppConfig } from '$lib/types';
 
 export class DiskShortage extends Error {
@@ -4362,9 +4361,23 @@ export class DiskShortage extends Error {
   }
 }
 
+/**
+ * 여유 공간을 잰다. 경로가 아직 없으면 존재하는 가장 가까운 상위로 올라간다.
+ * media/ 는 첫 변환 전까지 없을 수 있다.
+ */
 export async function freeBytes(dirPath: string): Promise<number> {
-  const s = await statfs(dirPath);
-  return Number(s.bavail) * Number(s.bsize);
+  let p = path.resolve(dirPath);
+  for (;;) {
+    try {
+      const s = await statfs(p);
+      return Number(s.bavail) * Number(s.bsize);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      const parent = path.dirname(p);
+      if (parent === p) throw err;
+      p = parent;
+    }
+  }
 }
 
 /**
@@ -4467,16 +4480,14 @@ import { freeBytes, estimateBytes, DiskShortage } from '$lib/server/disk';
 // 반쯤 변환된 파일들이 남아 정리가 어렵다.
 const need = estimateBytes(config, pending.map((p) => p.scan.bytes));
 try {
-  const free = await freeBytes(config.mediaDir.split(path.sep).slice(0, 2).join(path.sep) || '/');
+  const free = await freeBytes(config.mediaDir);
   if (need > free) return fail(507, { message: new DiskShortage(need, free).message });
 } catch {
   // 여유를 잴 수 없으면 막지 않고 진행한다
 }
 ```
 
-`import path from 'node:path';`를 상단에 추가한다.
-
-`config.mediaDir`가 아직 없을 수 있으므로 존재하는 상위 경로로 잰다.
+`freeBytes`가 없는 경로를 만나면 존재하는 상위로 올라가므로, `media/`가 아직 만들어지지 않았어도 그대로 넘기면 된다.
 
 - [ ] **Step 8: 수동 확인**
 
