@@ -86,19 +86,18 @@ describe('updateJson', () => {
     await updateJson(file, () => ({ n: 5 }), { n: 0 });
     expect((await readJson(file, { n: 0 })).n).toBe(5);
 
-    // fs.open을 mock하여 writeFile이 실패하도록
-    const mockHandle = {
-      writeFile: vi.fn().mockRejectedValueOnce(new Error('write failed')),
-      sync: vi.fn(),
-      close: vi.fn().mockResolvedValue(undefined),
-    };
-
-    const openSpy = vi.spyOn(fs, 'open').mockResolvedValueOnce(mockHandle as any);
+    // fs.open을 실제로 실행하되, writeFile만 실패하도록
+    const realOpen = fs.open;
+    const openSpy = vi.spyOn(fs, 'open').mockImplementationOnce(async (...args) => {
+      const handle = await realOpen.apply(fs, args as never);
+      handle.writeFile = () => Promise.reject(new Error('쓰기 실패'));
+      return handle;
+    });
 
     // 쓰기 시도 - 실패해야 함
     await expect(
       updateJson(file, () => ({ n: 10 }), { n: 0 })
-    ).rejects.toThrow('write failed');
+    ).rejects.toThrow('쓰기 실패');
 
     openSpy.mockRestore();
 
