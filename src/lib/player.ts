@@ -7,11 +7,19 @@
 /**
  * 단축키를 무시해야 하는 포커스 대상인지 판정한다. 목록 화면의 제목·설명·
  * 태그 입력 필드에 스페이스를 치면 재생/정지가 아니라 그냥 공백이 들어가야
- * 한다.
+ * 한다. SELECT도 포함한다 — 재생기의 배속 <select>가 같은
+ * svelte:window keydown 아래 있어서, 이걸 빼먹으면 배속을 고르려고
+ * 포커스한 채 ↑/↓나 Space를 누를 때마다 볼륨이 바뀌거나 재생이
+ * 토글된다.
  */
 export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
-  return target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+  return (
+    target.tagName === 'INPUT' ||
+    target.tagName === 'TEXTAREA' ||
+    target.tagName === 'SELECT' ||
+    target.isContentEditable
+  );
 }
 
 /** 파형 위 클릭 좌표를 0~1 진행률로 바꾼다. 캔버스 바깥 좌표도 0~1로 clamp한다. */

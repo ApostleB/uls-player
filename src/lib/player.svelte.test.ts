@@ -5,9 +5,12 @@ import { isTypingTarget } from './player';
 // 분리했다 — Space가 재생을 토글하는 대신 제목 입력창에 공백을 넣는지를
 // 좌우하는 판정이라, 실제 DOM 요소로 검증한다.
 describe('isTypingTarget — 단축키를 무시해야 하는 포커스 대상 판정', () => {
-  it('INPUT·TEXTAREA는 타이핑 대상이다', () => {
+  it('INPUT·TEXTAREA·SELECT는 타이핑 대상이다', () => {
     expect(isTypingTarget(document.createElement('input'))).toBe(true);
     expect(isTypingTarget(document.createElement('textarea'))).toBe(true);
+    // 배속 select도 svelte:window keydown 아래 있다 — 빠지면 배속을
+    // 고르려고 포커스한 채 ↑/↓/Space를 누를 때 볼륨·재생이 반응한다.
+    expect(isTypingTarget(document.createElement('select'))).toBe(true);
   });
 
   it('contentEditable 요소도 타이핑 대상이다', () => {

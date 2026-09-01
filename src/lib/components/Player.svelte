@@ -13,7 +13,22 @@
 
   let audio = $state<HTMLAudioElement | null>(null);
   let format = $state('mp3');
-  let playing = $state(false);
+  /**
+   * <audio>의 paused와 양방향 바인딩한다(직접 playing 플래그를 관리하지
+   * 않는다). 재생 중 다른 녹음으로 넘어가면(src 재할당) HTML 미디어
+   * 스펙의 로드 알고리즘 abort 단계가 pause 이벤트 없이 paused를 그냥
+   * true로 되돌린다 — onplay/onpause만으로 playing을 관리하면 그 경우
+   * 토글 버튼이 "일시정지"에 박제된 채 다시는 안 바뀐다(버튼을 눌러도
+   * 이미 paused인 엘리먼트에 pause()를 또 호출하는 것뿐이라 아무 일도
+   * 안 생긴다). bind:paused는 play/pause 이벤트 말고 canplay도 듣는데
+   * (Svelte 소스 bind_paused의 주석: "If someone switches the src while
+   * media is playing, the player will pause. Listen to the canplay event
+   * to get notified of this situation."), 새 src가 재생 가능해지는
+   * 시점에 실제 paused 값으로 다시 맞춰준다 — 그래서 이 경로를 따로
+   * 처리할 필요가 없다.
+   */
+  let paused = $state(true);
+  const playing = $derived(!paused);
   let current = $state(0);
   let volume = $state(1);
   let muted = $state(false);
@@ -46,6 +61,13 @@
    * 사라진다 — switchFormat이 지키려는 것과 정확히 같은 문제를 다른
    * 경로로 깨뜨리는 셈이다. format·available 읽기는 untrack으로 감싸,
    * switchFormat이 format을 바꿔도 이 이펙트가 재실행되지 않게 한다.
+   *
+   * 의도적 결정: 녹음을 바꿀 때 이전 녹음이 재생 중이었어도 새 녹음을
+   * 자동 재생하지 않는다. 목록을 필터링하며 다음 항목을 고르는 화면
+   * 특성상, 행을 클릭했을 뿐인데 소리가 갑자기 튀어나오는 쪽이 더
+   * 당황스럽다고 판단했다 — 그리고 이건 별도 코드가 필요 없는
+   * 기본값이기도 하다: src가 바뀌면 브라우저가 어차피 paused를 true로
+   * 되돌리고, bind:paused가 그 값을 그대로 반영한다.
    */
   let lastId: string | null = null;
   $effect(() => {
@@ -91,9 +113,13 @@
     });
   }
 
+  /**
+   * paused를 뒤집기만 한다 — 실제 play()/pause() 호출은 bind:paused의
+   * 내부 이펙트가 담당한다. audio.play()/pause()를 여기서 직접 부르면
+   * bind:paused가 반응형 상태와 다시 어긋날 여지가 생긴다.
+   */
   function toggle() {
-    if (!audio) return;
-    playing ? audio.pause() : void audio.play();
+    paused = !paused;
   }
 
   function seek(sec: number) {
@@ -110,6 +136,26 @@
     // A-B 구간 반복. 저장되지 않는 일시적 재생 상태다.
     const wrap = loopWrapTarget(current, { loopA, loopB });
     if (wrap !== null) audio.currentTime = wrap;
+  }
+
+  /**
+   * timeupdate는 대략 250ms 간격으로만 도니, B가 끝자락 가까이 있으면
+   * 문턱을 넘는 tick 없이 그대로 ended에 도달해 루프가 조용히 멈출 수
+   * 있다 — ended를 보조 안전망으로 둬서 A-B 구간이 살아있으면 거기서도
+   * A로 되감는다. 구간이 없으면(평범하게 끝까지 재생) ended는 pause
+   * 이벤트 없이 paused만 true로 바꿔놓으므로(bind:paused는 ended를
+   * 듣지 않는다) 여기서 명시적으로 정리해 토글 버튼이 실제 상태를
+   * 따라가게 한다.
+   */
+  function onEnded() {
+    if (!audio) return;
+    const wrapTo = loopWrapTarget(Number.POSITIVE_INFINITY, { loopA, loopB });
+    if (wrapTo !== null) {
+      audio.currentTime = wrapTo;
+      void audio.play();
+    } else {
+      paused = true;
+    }
   }
 
   function markLoop() {
@@ -155,9 +201,9 @@
       bind:volume
       bind:muted
       bind:playbackRate={rate}
-      onplay={() => (playing = true)}
-      onpause={() => (playing = false)}
+      bind:paused
       ontimeupdate={onTimeUpdate}
+      onended={onEnded}
     ></audio>
 
     <div class="mx-auto max-w-6xl space-y-2">
