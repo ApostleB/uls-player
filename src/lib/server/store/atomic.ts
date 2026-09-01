@@ -18,12 +18,12 @@ async function writeAtomic(filePath: string, data: unknown): Promise<void> {
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   const handle = await fs.open(tmp, 'w');
   try {
-    await handle.writeFile(JSON.stringify(data, null, 2), 'utf8');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
+    try {
+      await handle.writeFile(JSON.stringify(data, null, 2), 'utf8');
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await fs.rename(tmp, filePath);
   } catch (err) {
     await fs.unlink(tmp).catch(() => undefined);

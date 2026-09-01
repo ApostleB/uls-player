@@ -56,7 +56,7 @@ describe('updateJson', () => {
     expect((await readJson(file, { n: 0 })).n).toBe(5);
   });
 
-  it('쓰기 실패 후 임시 파일을 정리한다', async () => {
+  it('쓰기 실패 후 임시 파일을 정리한다 (rename 실패)', async () => {
     // 초기 데이터 쓰기
     await updateJson(file, () => ({ n: 5 }), { n: 0 });
     expect((await readJson(file, { n: 0 })).n).toBe(5);
@@ -72,6 +72,35 @@ describe('updateJson', () => {
     ).rejects.toThrow('simulated rename failure');
 
     renameSpy.mockRestore();
+
+    // .tmp 파일이 남아있지 않아야 함
+    const entries = await fs.readdir(path.dirname(file));
+    expect(entries).toEqual(['data.json']);
+
+    // 원본 파일은 그대로여야 함
+    expect((await readJson(file, { n: 0 })).n).toBe(5);
+  });
+
+  it('쓰기 실패 후 임시 파일을 정리한다 (writeFile 실패)', async () => {
+    // 초기 데이터 쓰기
+    await updateJson(file, () => ({ n: 5 }), { n: 0 });
+    expect((await readJson(file, { n: 0 })).n).toBe(5);
+
+    // fs.open을 mock하여 writeFile이 실패하도록
+    const mockHandle = {
+      writeFile: vi.fn().mockRejectedValueOnce(new Error('write failed')),
+      sync: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const openSpy = vi.spyOn(fs, 'open').mockResolvedValueOnce(mockHandle as any);
+
+    // 쓰기 시도 - 실패해야 함
+    await expect(
+      updateJson(file, () => ({ n: 10 }), { n: 0 })
+    ).rejects.toThrow('write failed');
+
+    openSpy.mockRestore();
 
     // .tmp 파일이 남아있지 않아야 함
     const entries = await fs.readdir(path.dirname(file));
