@@ -2164,7 +2164,7 @@ DB가 없으면 파일 메타로 대체하고, 손상 파일은 error만 달고 
 ```ts
 import { describe, it, expect, vi } from 'vitest';
 import type { JobItem, JobStatus } from '$lib/types';
-import { JobQueue } from './queue';
+import { JobQueue, JobFailure } from './queue';
 
 function item(id: string): JobItem {
   return {
@@ -2259,6 +2259,39 @@ describe('JobQueue', () => {
     const q = new JobQueue(2, async () => ok);
     await expect(q.idle()).resolves.toBeUndefined();
   });
+
+  it('워커가 JobFailure에 부분 진행을 실어 던지면 그 상태를 남긴다', async () => {
+    const q = new JobQueue(1, async () => {
+      throw new JobFailure('파형 생성 실패', { mp3: 'done', wav: 'done' });
+    });
+    q.enqueue([item('a')]);
+    await q.idle();
+
+    const a = q.snapshot()[0];
+    expect(a.status).toBe('failed');
+    // 실행 이전 상태(전부 pending)로 되돌아가면 안 된다
+    expect(a.formats).toEqual({ mp3: 'done', wav: 'done' });
+  });
+
+  it('부분 진행이 남으면 재시도가 이미 만든 포맷을 다시 만들지 않는다', async () => {
+    let seen: Record<string, JobStatus> | null = null;
+    let calls = 0;
+    const q = new JobQueue(1, async (i) => {
+      calls++;
+      if (calls === 1) throw new JobFailure('파형 생성 실패', { mp3: 'done', wav: 'done' });
+      seen = i.formats;
+      return ok;
+    });
+
+    q.enqueue([item('a')]);
+    await q.idle();
+    q.retryFailed();
+    await q.idle();
+
+    // 재시도 워커가 받은 formats에 done이 보존돼야 러너가 convert를 건너뛴다
+    expect(seen).toEqual({ mp3: 'done', wav: 'done' });
+    expect(q.snapshot()[0].status).toBe('done');
+  });
 });
 ```
 
@@ -2278,6 +2311,22 @@ Expected: FAIL — `Failed to resolve import "./queue"`
 import type { JobItem, JobStatus } from '$lib/types';
 
 export type Worker = (item: JobItem) => Promise<Record<string, JobStatus>>;
+
+/**
+ * 워커가 도중에 실패했지만 일부 포맷은 이미 만들어졌을 때 던지는 에러.
+ * 여기 실린 formats가 없으면 큐는 실행 이전 상태를 그대로 남기게 되고,
+ * 그러면 이미 성공한 포맷이 pending으로 되돌아가 재시도 때 다시 변환된다.
+ * 그 재시도가 실패하면 convert의 정리 로직이 멀쩡한 파일을 지운다.
+ */
+export class JobFailure extends Error {
+  constructor(
+    message: string,
+    readonly formats?: Record<string, JobStatus>
+  ) {
+    super(message);
+    this.name = 'JobFailure';
+  }
+}
 
 /**
  * 인메모리 변환 큐. 요청과 무관하게 돌아가고, 진행 상황은 구독자에게 흘린다.
@@ -2374,7 +2423,15 @@ export class JobQueue {
       });
     } catch (err) {
       const cur = this.items.get(id)!;
-      this.items.set(id, { ...cur, status: 'failed', error: (err as Error).message });
+      // 워커가 부분 진행 상태를 실어 보냈으면 그것을 남긴다. 그러지 않으면
+      // 이미 성공한 포맷이 pending으로 되돌아가 재시도 때 다시 변환된다.
+      const formats = err instanceof JobFailure && err.formats ? err.formats : cur.formats;
+      this.items.set(id, {
+        ...cur,
+        status: 'failed',
+        formats,
+        error: (err as Error).message
+      });
     } finally {
       this.running--;
       this.emit();
@@ -2541,7 +2598,7 @@ import { probe } from '../media/probe';
 import { generatePeaks } from '../media/waveform';
 import { savePeaks } from '../store/waveforms';
 import { addMany, newId } from '../store/recordings';
-import { JobQueue, type Worker } from './queue';
+import { JobQueue, JobFailure, type Worker } from './queue';
 import { pendingRecordings } from './registry';
 
 export interface PendingItem {
@@ -2646,13 +2703,20 @@ export function makeRunner(cfg: AppConfig): Worker {
       }
     }
 
-    const peaks = await generatePeaks(originalPath, meta.audioStreamIndex, cfg.waveformPeaks);
-    await savePeaks(cfg, job.recordingId, peaks);
+    // 여기서부터 던지는 오류는 이미 만들어진 포맷 정보를 실어 보내야 한다.
+    // 그러지 않으면 큐가 실행 이전 상태(전부 pending)를 남기고, 재시도가
+    // 멀쩡한 파일을 다시 변환하다 실패하면 convert가 그 파일을 지운다.
+    try {
+      const peaks = await generatePeaks(originalPath, meta.audioStreamIndex, cfg.waveformPeaks);
+      await savePeaks(cfg, job.recordingId, peaks);
 
-    // 저장소 기록은 파이프라인이 여기까지 온 뒤에만 한다.
-    // 앞에서 던지면 목록에 반쪽짜리 항목이 남지 않는다.
-    const rec = pendingRecordings.take(job.recordingId);
-    if (rec) await addMany(cfg, [{ ...rec, files }]);
+      // 저장소 기록은 파이프라인이 여기까지 온 뒤에만 한다.
+      // 앞에서 던지면 목록에 반쪽짜리 항목이 남지 않는다.
+      const rec = pendingRecordings.take(job.recordingId);
+      if (rec) await addMany(cfg, [{ ...rec, files }]);
+    } catch (err) {
+      throw new JobFailure((err as Error).message, result);
+    }
 
     return result;
   };
