@@ -63,7 +63,9 @@ describe('JobQueue', () => {
 
   it('retryFailed는 실패한 것만 다시 돌린다', async () => {
     let attempt = 0;
+    const calls: string[] = [];
     const q = new JobQueue(1, async (i) => {
+      calls.push(i.id);
       attempt++;
       if (i.id === 'b' && attempt <= 2) throw new Error('일시 실패');
       return ok;
@@ -72,9 +74,12 @@ describe('JobQueue', () => {
     await q.idle();
     expect(q.snapshot().find((i) => i.id === 'b')!.status).toBe('failed');
 
+    const aCallsBeforeRetry = calls.filter((id) => id === 'a').length;
     q.retryFailed();
     await q.idle();
     expect(q.snapshot().every((i) => i.status === 'done')).toBe(true);
+    // 이미 성공한 'a'는 재시도 때 워커가 다시 호출되면 안 된다
+    expect(calls.filter((id) => id === 'a').length).toBe(aCallsBeforeRetry);
   });
 
   it('구독자에게 변경을 알린다', async () => {
@@ -128,4 +133,38 @@ describe('JobQueue', () => {
     expect(seen).toEqual({ mp3: 'done', wav: 'done' });
     expect(q.snapshot()[0].status).toBe('done');
   });
+
+  it('JobFailure의 formats가 일부만 있으면 기존 formats와 병합한다', async () => {
+    const q = new JobQueue(1, async () => {
+      // wav는 언급하지 않는다 — 기존 pending 상태가 유지돼야 한다
+      throw new JobFailure('부분 실패', { mp3: 'done' });
+    });
+    q.enqueue([item('a')]);
+    await q.idle();
+
+    const a = q.snapshot()[0];
+    expect(a.formats).toEqual({ mp3: 'done', wav: 'pending' });
+  });
+
+  it(
+    '구독자 하나가 던져도 나머지 구독자와 idle에 영향이 없다',
+    async () => {
+      const notified: JobItem[][] = [];
+      const q = new JobQueue(1, async () => ok);
+      const offBad = q.subscribe(() => {
+        throw new Error('subscriber boom');
+      });
+      const offGood = q.subscribe((items) => notified.push(items));
+
+      q.enqueue([item('a')]);
+      await q.idle();
+
+      expect(notified.length).toBeGreaterThan(0);
+      expect(q.snapshot()[0].status).toBe('done');
+
+      offBad();
+      offGood();
+    },
+    2000
+  );
 });
