@@ -51,6 +51,21 @@ function baseData() {
   };
 }
 
+// baseData()의 두 행은 recordedAt·durationSec이 우연히 같아서(rec()의
+// 기본값) 날짜·길이 텍스트로 행을 구분할 수 없다. 행 클릭 테스트는 li
+// 안의 "다른 동작이 없는 영역"을 정확히 짚어야 하므로, 길이가 서로
+// 다른 별도 데이터를 쓴다.
+function twoRowDataWithDistinctDurations() {
+  return {
+    recordings: [
+      rec({ id: '1', title: '레인', tags: ['데모'], durationSec: 65 }),
+      rec({ id: '2', title: '정류장', tags: [], durationSec: 200 })
+    ],
+    tags: [{ tag: '데모', count: 1 }],
+    formats: ['mp3', 'wav']
+  };
+}
+
 beforeEach(() => {
   replaceStateMock.mockClear();
 });
@@ -365,5 +380,119 @@ describe('+page.svelte — 일괄 태그 추가/제거', () => {
       ids: ['1'],
       tags: ['데모']
     });
+  });
+});
+
+describe('+page.svelte — send() 실패 처리', () => {
+  it('일괄 태그 추가가 실패하면(400) 선택·초안이 그대로 남고, 서버 메시지가 화면에 뜬다', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ message: '동시에 삭제된 행이 있습니다' }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getByRole, getByPlaceholder, getByText } = render(Page, { data: baseData() });
+
+    const checkboxes = getByRole('checkbox');
+    await checkboxes.nth(0).click();
+    await checkboxes.nth(1).click();
+    await expect.element(getByText('2개 선택됨')).toBeInTheDocument();
+
+    const tagInput = getByPlaceholder('태그 입력 후 Enter');
+    await tagInput.fill('실패태그');
+    pressEnter(tagInput.element());
+
+    await getByRole('button', { name: '태그 추가' }).click();
+
+    // 실패해도 선택은 그대로 남는다 — 252개 중 골라둔 걸 다시 고르게
+    // 만들면 안 된다. 예전 코드는 실패 여부와 상관없이 무조건
+    // selectedIds/bulkTags를 비워서, 이 두 assertion이 실패했다.
+    await expect.element(getByText('2개 선택됨')).toBeInTheDocument();
+    await expect.element(getByText('실패태그')).toBeInTheDocument();
+    // 서버가 준 400 메시지를 그대로 보여준다.
+    await expect.element(getByText('동시에 삭제된 행이 있습니다')).toBeInTheDocument();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0];
+    expect(JSON.parse(call[1]!.body as string)).toEqual({
+      op: 'addTags',
+      ids: ['1', '2'],
+      tags: ['실패태그']
+    });
+  });
+});
+
+describe('+page.svelte — 태그 편집 중 다른 행/필터로 전환', () => {
+  it('완료를 누르지 않고 다른 행의 태그를 열면, 이전 행의 초안이 먼저 저장된다', async () => {
+    const serverResponse = {
+      recordings: [
+        rec({ id: '1', title: '레인', tags: ['데모', '전환태그'] }),
+        rec({ id: '2', title: '정류장', tags: [] })
+      ],
+      tags: [
+        { tag: '데모', count: 1 },
+        { tag: '전환태그', count: 1 }
+      ]
+    };
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify(serverResponse), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getByRole, getByPlaceholder, getByText } = render(Page, { data: baseData() });
+
+    // row1(레인)의 태그를 연다 — 태그가 '데모' 하나뿐이라 이름이
+    // 정확히 "데모"인 버튼(FilterBar 칩은 늘 개수가 붙어 "데모1"이라
+    // exact 매치로 자연히 구분된다).
+    await getByRole('button', { name: '데모', exact: true }).dblClick();
+    const tagInput = getByPlaceholder('태그 입력 후 Enter');
+    await tagInput.fill('전환태그');
+    pressEnter(tagInput.element());
+
+    // 완료를 누르지 않고 곧바로 row2(정류장)의 태그를 연다 — 정류장은
+    // 태그가 없어 "태그 없음" 버튼 하나뿐이다.
+    await getByText('태그 없음').dblClick();
+
+    // row1의 초안이 자동으로 저장됐어야 한다 — 완료를 누르지 않았는데도.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const call = fetchMock.mock.calls[0];
+    expect(JSON.parse(call[1]!.body as string)).toEqual({
+      op: 'patch',
+      id: '1',
+      tags: ['데모', '전환태그']
+    });
+
+    // 응답 반영: row1에 새 태그가 실제로 붙었는지 화면으로도 확인.
+    await expect.element(getByText('전환태그', { exact: true })).toBeInTheDocument();
+  });
+});
+
+describe('+page.svelte — 행 클릭으로 재생 대상 선택(Task 15 시접)', () => {
+  it('행의 빈 영역(길이 표시)을 클릭하면 선택되고, 체크박스 클릭은 선택으로 번지지 않는다', async () => {
+    const { getByText, getByRole } = render(Page, { data: twoRowDataWithDistinctDurations() });
+
+    // row2(정류장, 3:20)의 길이 표시 — 그 자체는 아무 동작도 없는 영역이라
+    // 클릭이 li까지 그대로 전파돼 선택돼야 한다.
+    const row2 = getByText('3:20').element().closest('li');
+    if (!row2) throw new Error('행을 찾지 못했다');
+    expect(row2.className).not.toContain('preset-tonal-primary');
+    await getByText('3:20').click();
+    expect(row2.className).toContain('preset-tonal-primary');
+
+    // row1(레인, 1:05)의 체크박스를 눌러도 재생 선택(selectedId)은 안
+    // 번진다 — 체크박스는 일괄 작업용 선택(selectedIds)과 별개다.
+    const row1 = getByText('1:05').element().closest('li');
+    if (!row1) throw new Error('행을 찾지 못했다');
+    await getByRole('checkbox').first().click();
+    expect(row1.className).not.toContain('preset-tonal-primary');
+    // 체크박스 자체는 정상적으로 토글된다(일괄 작업용 선택).
+    await expect.element(getByText('1개 선택됨')).toBeInTheDocument();
   });
 });

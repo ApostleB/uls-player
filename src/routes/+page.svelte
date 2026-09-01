@@ -29,6 +29,10 @@
   // 하나뿐이라 행별 편집(tagsDraft)과는 별개다.
   let bulkTags = $state<string[]>([]);
 
+  // send() 실패를 화면에 보여줄 메시지. /import가 form.message를
+  // preset-tonal-error 카드로 보여주는 것과 같은 패턴을 따른다.
+  let errorMessage = $state<string | null>(null);
+
   // Task 15의 시접(seam): 행을 클릭하면 이 값만 바뀐다 — 페이지 이동도,
   // 목록 접힘도 없다. Task 15가 이 값을 읽어 하단 고정 플레이어에 녹음을
   // 로드한다.
@@ -54,22 +58,57 @@
   // 행 인라인 태그 편집·일괄 태그 추가/제거의 자동완성 후보.
   const tagNames = $derived(tags.map((t) => t.tag));
 
+  // 선택은 필터가 바뀌어도 유지된다(스펙 의도: 필터로 골라낸 뒤 다시
+  // 넓혀서 일괄 작업을 계속할 수 있어야 한다) — 다만 지금 화면에 없는
+  // 선택 행이 섞여 있으면 일괄 작업이 안 보이는 행에도 적용된다는 걸
+  // 툴바에서 알려준다.
+  const hiddenSelectedCount = $derived(
+    [...selectedIds].filter((id) => !shown.some((r) => r.id === id)).length
+  );
+
   // 필터를 URL에 반영해 새로고침과 링크 공유에서 유지되게 한다
   $effect(() => {
     const qs = filterToParams(filter).toString();
     replaceState(qs ? `?${qs}` : '/', {});
   });
 
-  async function send(body: unknown) {
+  // 태그를 편집하던 행이 필터에 걸리거나(검색어 변경 등) 새 load
+  // 결과에서 아예 사라지면(예: 삭제) 완료 버튼이 없는 화면 밖에 초안만
+  // 남는다 — 행을 바꿀 때와 같은 규칙으로 그 자리에서 저장하고 편집을
+  // 닫는다.
+  $effect(() => {
+    if (editingTagsId !== null && !shown.some((r) => r.id === editingTagsId)) {
+      saveTags(editingTagsId, tagsDraft);
+      editingTagsId = null;
+    }
+  });
+
+  // 실패를 호출한 쪽에 boolean으로 돌려준다 — 그래야 각 호출부가
+  // "성공했을 때만" 선택·초안을 비운다. 예전에는 실패해도 그냥
+  // return해서, 호출부는 무조건 .then()에서 상태를 비웠다 — 400/500이
+  // 나도(동시에 삭제된 행, updateJson 쓰기 실패 등) 툴바가 그대로
+  // 닫히며 성공한 것처럼 보이고, 252개 중 골라둔 선택이 이유 없이
+  // 사라졌다.
+  async function send(body: unknown): Promise<boolean> {
     const res = await fetch('/api/recordings', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body)
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+      // API는 400에서 { message } JSON을 돌려준다 — 그 문구를 그대로
+      // 보여준다. 본문을 못 읽으면(예상 밖의 500 등) 상태 코드만이라도.
+      const failure = await res.json().catch(() => null);
+      errorMessage =
+        (failure && typeof failure.message === 'string' && failure.message) ||
+        `요청이 실패했습니다 (${res.status})`;
+      return false;
+    }
+    errorMessage = null;
     const next = await res.json();
     recordings = next.recordings;
     tags = next.tags;
+    return true;
   }
 
   function toggle(id: string) {
@@ -83,14 +122,31 @@
     return `${m}:${String(Math.round(sec % 60)).padStart(2, '0')}`;
   }
 
-  function startEditTags(rec: Recording) {
-    tagsDraft = [...rec.tags];
-    editingTagsId = rec.id;
+  // 순수하게 서버로 보내기만 한다 — editingTagsId를 어떻게 다룰지는
+  // 호출하는 쪽(완료 버튼 vs 다른 행/필터로 전환)이 각자 정한다.
+  // commitTags가 여기서 editingTagsId까지 건드리면, startEditTags가 이미
+  // 다음 행으로 넘어간 뒤에 이전 저장이 뒤늦게 끝나면서 방금 연 행의
+  // 편집 상태를 지워버리는 경쟁 상태가 생긴다.
+  function saveTags(id: string, draftTags: string[]) {
+    return send({ op: 'patch', id, tags: draftTags });
   }
 
   function commitTags(id: string) {
-    send({ op: 'patch', id, tags: tagsDraft });
-    editingTagsId = null;
+    saveTags(id, tagsDraft).then((ok) => {
+      if (ok) editingTagsId = null;
+    });
+  }
+
+  function startEditTags(rec: Recording) {
+    // 다른 행의 태그를 편집하던 중이면(완료를 안 누르고) 그 초안을 먼저
+    // 저장한다 — 제목·설명은 blur로 이미 "옮겨가면 저장된다"가 되어
+    // 있으니 태그도 같은 규칙을 따른다. 저장이 끝나길 기다리지 않는다
+    // — 확인창도, 더러움 표시도 없이 그냥 저장하고 곧장 다음 행을 연다.
+    if (editingTagsId !== null && editingTagsId !== rec.id) {
+      saveTags(editingTagsId, tagsDraft);
+    }
+    tagsDraft = [...rec.tags];
+    editingTagsId = rec.id;
   }
 </script>
 
@@ -102,9 +158,18 @@
 
   <FilterBar bind:filter {tags} total={recordings.length} shown={shown.length} />
 
+  {#if errorMessage}
+    <aside class="card preset-tonal-error p-4">{errorMessage}</aside>
+  {/if}
+
   {#if selectedIds.size}
     <div class="card preset-tonal-primary flex flex-wrap items-center gap-3 p-3">
-      <span class="shrink-0 text-sm">{selectedIds.size}개 선택됨</span>
+      <span class="shrink-0 text-sm">
+        {selectedIds.size}개 선택됨
+        {#if hiddenSelectedCount}
+          <span class="text-surface-500">(현재 필터에 없는 {hiddenSelectedCount}개 포함)</span>
+        {/if}
+      </span>
 
       <!-- 252개 중 여러 행을 골라 태그를 한 번에 붙이는 게 이 화면의
            핵심 동선이라, 삭제보다 먼저·더 넓게 배치한다. -->
@@ -113,23 +178,26 @@
         <button type="button" class="btn btn-sm preset-filled"
           disabled={!bulkTags.length}
           onclick={() =>
-            send({ op: 'addTags', ids: [...selectedIds], tags: bulkTags }).then(
-              () => (bulkTags = [])
-            )}>
+            send({ op: 'addTags', ids: [...selectedIds], tags: bulkTags }).then((ok) => {
+              if (ok) bulkTags = [];
+            })}>
           태그 추가
         </button>
         <button type="button" class="btn btn-sm preset-tonal"
           disabled={!bulkTags.length}
           onclick={() =>
-            send({ op: 'removeTags', ids: [...selectedIds], tags: bulkTags }).then(
-              () => (bulkTags = [])
-            )}>
+            send({ op: 'removeTags', ids: [...selectedIds], tags: bulkTags }).then((ok) => {
+              if (ok) bulkTags = [];
+            })}>
           태그 제거
         </button>
       </div>
 
       <button type="button" class="btn btn-sm preset-tonal"
-        onclick={() => send({ op: 'delete', ids: [...selectedIds] }).then(() => (selectedIds = new Set()))}>
+        onclick={() =>
+          send({ op: 'delete', ids: [...selectedIds] }).then((ok) => {
+            if (ok) selectedIds = new Set();
+          })}>
         목록에서 제거
       </button>
       <button type="button" class="btn btn-sm preset-tonal"
@@ -139,17 +207,41 @@
 
   <ul class="space-y-1">
     {#each shown as rec (rec.id)}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <!-- 행 아무 데나 눌러도 재생 대상으로 고른다(Task 15 시접, 스펙:
+           "행을 클릭하면 하단 플레이어에 로드"). li 자체를 새 키보드
+           타깃으로 만들 필요는 없다 — 제목이 이미 진짜 <button>이라
+           Tab·Enter로도 같은 동작에 닿고, li에 role="button"은
+           listitem이 가질 수 없는 role이라 줄 수도 없다. 그래서 li의
+           클릭은 그 외 빈 영역(날짜·길이·포맷 배지)만을 위한 포인터
+           전용 편의로 남긴다. 체크박스·본문 컬럼(제목/설명/태그와 그
+           편집 컨트롤)은 각자 onclick에서 stopPropagation해 이 클릭이
+           거기까지 번지지 않게 막는다. -->
       <li class="card hover:preset-tonal flex items-center gap-3 p-3"
-        class:preset-tonal-primary={selectedId === rec.id}>
+        class:preset-tonal-primary={selectedId === rec.id}
+        onclick={() => (selectedId = rec.id)}>
         <input type="checkbox" class="checkbox"
-          checked={selectedIds.has(rec.id)} onchange={() => toggle(rec.id)} />
+          checked={selectedIds.has(rec.id)}
+          onchange={() => toggle(rec.id)}
+          onclick={(e) => e.stopPropagation()} />
 
-        <div class="flex min-w-0 grow flex-col gap-1">
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <!-- 이 컬럼 안의 클릭은 행 선택으로 안 번진다 — 제목은 자기
+             onclick으로 이미 선택을 직접 처리하고(그래서 stopPropagation
+             이후에도 그대로 동작), 설명·태그의 보기/편집 컨트롤은 선택과
+             무관한 별개 동작이다. 이 div 자체를 새 상호작용 요소로 만드는
+             게 아니라, 그 안의 실제 컨트롤(버튼·입력·TagInput)에게 이미
+             있는 동작을 행 선택이 가리지 않게 전파만 끊는 것이다. -->
+        <div class="flex min-w-0 grow flex-col gap-1" onclick={(e) => e.stopPropagation()}>
           {#if editingId === rec.id}
             <input class="input" value={rec.title}
               onblur={(e) => {
-                send({ op: 'patch', id: rec.id, title: e.currentTarget.value });
-                editingId = null;
+                send({ op: 'patch', id: rec.id, title: e.currentTarget.value }).then(
+                  (ok) => {
+                    if (ok) editingId = null;
+                  }
+                );
               }} />
           {:else}
             <!-- 재생 대상 선택(Task 15의 시접)과 제목 수정 진입을 같은
@@ -165,8 +257,11 @@
           {#if editingDescriptionId === rec.id}
             <input class="input text-sm" value={rec.description} aria-label="설명 수정"
               onblur={(e) => {
-                send({ op: 'patch', id: rec.id, description: e.currentTarget.value });
-                editingDescriptionId = null;
+                send({ op: 'patch', id: rec.id, description: e.currentTarget.value }).then(
+                  (ok) => {
+                    if (ok) editingDescriptionId = null;
+                  }
+                );
               }} />
           {:else}
             <button type="button" class="text-surface-500 text-left text-sm"
