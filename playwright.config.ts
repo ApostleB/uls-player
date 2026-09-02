@@ -33,6 +33,16 @@ export default defineConfig({
 	// 빠듯하다.
 	expect: { timeout: 15_000 },
 	fullyParallel: false,
+	// 모든 스펙 파일이 위 dataDir/mediaDir(=하나의 웹서버 프로세스, 하나의
+	// 인메모리 변환 큐)를 공유한다 — fullyParallel:false는 한 파일 "안"의
+	// 테스트만 순차 실행을 보장할 뿐, 서로 다른 파일은 기본 워커 수만큼
+	// 여전히 동시에 실행될 수 있다. 스펙 파일이 import-flow.spec.ts
+	// 하나뿐이던 동안은 이게 드러나지 않았지만, upload-flow.spec.ts가
+	// 생기면서 실제로 겪었다: 두 파일이 동시에 돌면 서로의 변환 잡이 같은
+	// 큐에 섞이고 같은 recordings.json에 함께 쌓여, "목록에 정확히 N개
+	// 보인다" 같은 카운트 기반 단언이 다른 파일이 방금 추가한 잡 때문에
+	// 깨진다. workers를 1로 고정해 파일 간에도 항상 순차 실행되게 한다.
+	workers: 1,
 	webServer: {
 		command: 'npm run build && npm run preview',
 		port: 4173,
