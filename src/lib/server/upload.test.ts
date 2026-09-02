@@ -10,6 +10,7 @@ import {
   safeDest,
   isUploadStaging,
   scheduleStagingCleanup,
+  rescheduleStagingCleanup,
   sweepStaleStaging
 } from './upload';
 import { scanFolder } from './scan';
@@ -408,5 +409,59 @@ describe('sweepStaleStaging', () => {
 
     await sweepStaleStaging(cfg);
     await expect(fs.access(untouchable)).resolves.toBeUndefined();
+  });
+});
+
+describe('rescheduleStagingCleanup', () => {
+  // 재시작으로 복구된 잡은 loadUnfinished가 큐에 다시 올려주지만, 그 잡의
+  // 정리 구독은 인메모리라 프로세스와 함께 사라진 상태다. 되살리지 않으면
+  // 이번 프로세스에서 done이 돼도 파일이 남아 다음 재시작의
+  // sweepStaleStaging(최대 24시간)까지 정리가 밀린다.
+  it('복구된 잡이 done이 되면 스테이징 파일과 폴더를 정리한다', async () => {
+    const out = await save(cfg, [await fileFrom(SPATIAL, 'a.qta')]);
+    const restored = [job('j1', path.join(out, 'a.qta'))];
+
+    const q = new JobQueue(1, async () => ({ mp3: 'done' as JobStatus }));
+    // loadUnfinished 성공 경로가 하는 일을 그대로 재현한다: 다시 enqueue하고
+    // 정리 구독을 되건다. 이 호출을 빼면 아래 waitUntilGone이 타임아웃한다.
+    q.enqueue(restored);
+    rescheduleStagingCleanup(q, restored);
+
+    await q.idle();
+    await waitUntilGone(out);
+    await expect(fs.access(out)).rejects.toThrow();
+  });
+
+  it('폴더가 여러 개면 각각 따로 등록한다', async () => {
+    const a = await save(cfg, [await fileFrom(SPATIAL, 'a.qta')]);
+    const b = await save(cfg, [await fileFrom(SPATIAL, 'b.qta')]);
+    const restored = [job('j1', path.join(a, 'a.qta')), job('j2', path.join(b, 'b.qta'))];
+
+    const q = new JobQueue(2, async () => ({ mp3: 'done' as JobStatus }));
+    q.enqueue(restored);
+    rescheduleStagingCleanup(q, restored);
+
+    await q.idle();
+    await waitUntilGone(a);
+    await waitUntilGone(b);
+    await expect(fs.access(a)).rejects.toThrow();
+    await expect(fs.access(b)).rejects.toThrow();
+  });
+
+  it('업로드 스테이징이 아닌 폴더의 잡은 등록하지 않는다', async () => {
+    // 사용자가 "폴더 경로 입력"으로 지정한 실제 폴더가 복구 목록에 섞여
+    // 들어와도 자동 삭제 대상이 되면 안 된다.
+    const real = await fs.mkdtemp(path.join(os.tmpdir(), 'not-uls-upload-'));
+    created.push(real);
+    await fs.copyFile(SPATIAL, path.join(real, 'a.qta'));
+    const restored = [job('j1', path.join(real, 'a.qta'))];
+
+    const q = new JobQueue(1, async () => ({ mp3: 'done' as JobStatus }));
+    q.enqueue(restored);
+    rescheduleStagingCleanup(q, restored);
+
+    await q.idle();
+    await new Promise((r) => setTimeout(r, 50));
+    await expect(fs.access(path.join(real, 'a.qta'))).resolves.toBeUndefined();
   });
 });

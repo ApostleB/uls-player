@@ -11,7 +11,7 @@ import { addMany, newId, patch, RecordingNotFoundError } from '../store/recordin
 import { JobQueue, JobFailure, type Worker } from './queue';
 import { pendingRecordings } from './registry';
 import { persistQueue, loadUnfinished, jobsFilePath } from './persist';
-import { sweepStaleStaging } from '../upload';
+import { sweepStaleStaging, rescheduleStagingCleanup } from '../upload';
 
 export interface PendingItem {
   scan: ScanItem;
@@ -244,7 +244,12 @@ export function getQueue(cfg: AppConfig): JobQueue {
     // 채로 계속 진행하되, 어느 파일이 문제인지는 콘솔에 남긴다.
     void loadUnfinished(cfg).then(
       (items) => {
-        if (items.length) queue!.enqueue(items);
+        if (!items.length) return;
+        queue!.enqueue(items);
+        // 복구된 잡의 스테이징 정리 구독도 되살린다. 이게 없으면 잡이
+        // 이번 프로세스에서 무사히 done이 돼도 파일이 남아, 정리가 다음
+        // 재시작의 sweepStaleStaging까지 밀린다.
+        rescheduleStagingCleanup(queue!, items);
       },
       (err) => {
         console.error(
@@ -255,11 +260,10 @@ export function getQueue(cfg: AppConfig): JobQueue {
     );
 
     // 재시작 사이에 놓친 업로드 스테이징 정리를 시작 시점에 만회한다.
-    // scheduleStagingCleanup은 인메모리 구독이라 프로세스가 죽으면 사라지고,
-    // 위 loadUnfinished는 잡만 다시 큐에 올릴 뿐 그 잡을 위한 정리 구독은
-    // 다시 걸지 않는다 — sweepStaleStaging이 없으면 그 잡이 이번엔 무사히
-    // done이 돼도 스테이징 폴더가 영원히 안 지워진다. 실패를 던지지
-    // 않는(내부에서 콘솔로만 처리하는) 함수라 여기서도 .catch 없이 둔다.
+    // 복구되는 잡의 정리 구독은 위 rescheduleStagingCleanup이 되살리므로,
+    // 여기 남는 몫은 그 경로로 닿지 않는 것들이다 — 저장 전에 버려진 업로드
+    // 폴더, 그리고 잡이 영구히 failed로 남아 done을 못 보는 경우. 실패를
+    // 던지지 않는(내부에서 콘솔로만 처리하는) 함수라 .catch 없이 둔다.
     void sweepStaleStaging(cfg);
   }
   return queue;
