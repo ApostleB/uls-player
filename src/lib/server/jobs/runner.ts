@@ -10,7 +10,7 @@ import { savePeaks } from '../store/waveforms';
 import { addMany, newId, patch } from '../store/recordings';
 import { JobQueue, JobFailure, type Worker } from './queue';
 import { pendingRecordings } from './registry';
-import { persistQueue, loadUnfinished } from './persist';
+import { persistQueue, loadUnfinished, jobsFilePath } from './persist';
 
 export interface PendingItem {
   scan: ScanItem;
@@ -231,9 +231,26 @@ export function getQueue(cfg: AppConfig): JobQueue {
   if (!queue) {
     queue = new JobQueue(cfg.convertConcurrency, makeRunner(cfg));
     persistQueue(cfg, queue);
-    void loadUnfinished(cfg).then((items) => {
-      if (items.length) queue!.enqueue(items);
-    });
+    // jobs.json이 손상됐거나(JSON 파싱 실패) 권한 문제 등 ENOENT가 아닌
+    // 사유로 못 읽히면 readJson이 그대로 던진다. 여기서 .catch 없이
+    // 두면 처리되지 않은 거부가 되어, 재시작 뒤 이 지연 프로미스가
+    // 해소되는 시점(사실상 첫 요청 직후)에 프로세스가 죽는다 — 그것도
+    // "복구를 아예 시도하지 않는 것"보다 나쁘다: 복구를 못 했을 뿐 새
+    // 변환은 받을 수 있어야 하는데, 서버 자체가 못 뜨고 오류 메시지도
+    // 무엇을 지워야 할지 알려주지 않는다(어떤 파일이 문제인지도 모른
+    // 채 재시작 루프에 빠질 수 있다). 실패하면 복구를 포기하고 빈
+    // 채로 계속 진행하되, 어느 파일이 문제인지는 콘솔에 남긴다.
+    void loadUnfinished(cfg).then(
+      (items) => {
+        if (items.length) queue!.enqueue(items);
+      },
+      (err) => {
+        console.error(
+          `jobs.json을 읽을 수 없어 이전 작업을 복구하지 못했습니다: ${jobsFilePath(cfg)}`,
+          err
+        );
+      }
+    );
   }
   return queue;
 }

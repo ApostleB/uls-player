@@ -234,17 +234,22 @@
       </h2>
       <ul class="space-y-1 text-sm">
         {#each jobs as job (job.id)}
-          <li class="flex items-center gap-3">
-            <span class="w-20 shrink-0">
-              {#if job.status === 'done'}<span class="badge preset-tonal-success">완료</span>
-              {:else if job.status === 'running'}<span class="badge preset-tonal-primary">변환중</span>
-              {:else if job.status === 'failed'}<span class="badge preset-tonal-error">실패</span>
-              {:else}<span class="badge preset-tonal">대기</span>{/if}
-            </span>
-            <span class="grow truncate">{job.title}</span>
-            <span class="text-surface-500 shrink-0 font-mono text-xs">
-              {Object.entries(job.formats).map(([k, v]) => `${k}:${v}`).join(' ')}
-            </span>
+          <li class="flex flex-col gap-0.5">
+            <div class="flex items-center gap-3">
+              <span class="w-20 shrink-0">
+                {#if job.status === 'done'}<span class="badge preset-tonal-success">완료</span>
+                {:else if job.status === 'running'}<span class="badge preset-tonal-primary">변환중</span>
+                {:else if job.status === 'failed'}<span class="badge preset-tonal-error">실패</span>
+                {:else}<span class="badge preset-tonal">대기</span>{/if}
+              </span>
+              <span class="grow truncate">{job.title}</span>
+              <span class="text-surface-500 shrink-0 font-mono text-xs">
+                {Object.entries(job.formats).map(([k, v]) => `${k}:${v}`).join(' ')}
+              </span>
+            </div>
+            {#if job.status === 'failed' && job.error}
+              <p class="text-error-500 pl-[5.75rem] text-xs">{job.error}</p>
+            {/if}
           </li>
         {/each}
       </ul>

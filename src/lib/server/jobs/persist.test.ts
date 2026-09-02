@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -145,6 +145,129 @@ describe('persistQueue', () => {
     expect(raw.items.find((i) => i.id === 'old-done-1')!.status).toBe('done');
     expect(raw.items.find((i) => i.id === 'old-done-2')!.status).toBe('done');
     expect(raw.items.find((i) => i.id === 'was-running')!.status).toBe('done');
+  });
+
+  /**
+   * 코드 리뷰 Finding 1(CRITICAL): persistQueue의 updateJson 호출은
+   * await도 .catch도 없는 fire-and-forget이었다 — 이 코드베이스에서
+   * updateJson을 그렇게 부르는 유일한 자리였다(recordings.ts·waveforms.ts는
+   * 전부 await한다). 쓰기가 실패하면(디스크 부족 등) 처리되지 않은 거부가
+   * 되어 Node 기본 핸들러가 프로세스를 죽인다 — "재시작/디스크 압박에도
+   * 살아남게" 만드는 이 태스크가 오히려 디스크 압박을 치명적으로 만드는
+   * 셈이다. .catch로 받아 삼키되(emit()의 구독자 오류 처리와 같은 패턴),
+   * 큐 자체는 계속 정상 동작해야 한다.
+   */
+  it('jobs.json 쓰기 실패가 처리되지 않은 거부로 새지 않고, 큐는 계속 정상 동작한다', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const q = new JobQueue(1, async () => ({ mp3: 'done' }));
+      persistQueue(cfg, q);
+
+      // 이 항목의 첫 쓰기 시도(=enqueue가 만드는 pending 스냅샷 emit)만
+      // rename에서 실패하게 만든다 — writeAtomic이 성공 직전에 던지는
+      // 상황(디스크 부족으로 인한 ENOSPC 등)을 흉내낸다. mockRejectedValueOnce라
+      // 이후 호출은 전부 실제 구현으로 돌아간다.
+      const renameSpy = vi.spyOn(fs, 'rename').mockRejectedValueOnce(
+        Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' })
+      );
+
+      q.enqueue([item('a')]);
+      await q.idle();
+
+      // q.idle()은 큐 자체의 상태(실행 중 개수·대기열)만 보고, persistQueue의
+      // fire-and-forget 쓰기는 추적하지 않는다 — 그 비동기 쓰기가 실제로
+      // mock이 걸린 rename까지 도달할 시간을 따로 기다려야 한다. 여기서
+      // 기다리지 않고 바로 mockRestore하면, 진짜 실패가 일어나기도 전에
+      // mock이 풀려서 이 테스트가 아무것도 검증하지 못한 채 통과해버린다
+      // (실측: 이 대기 없이 처음 작성했을 때 정확히 이렇게 거짓 통과했다).
+      const deadline = Date.now() + 2000;
+      while (consoleSpy.mock.calls.length === 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      renameSpy.mockRestore();
+
+      // 처리되지 않은 거부가 실제로 발생했다면 마이크로태스크가 다 돌
+      // 시간을 준다 — 여기서 잡히지 않으면 이 테스트 프로세스 자체가
+      // 죽거나(대개 vitest가 unhandled rejection으로 실행을 실패시킨다)
+      // 최소한 이 리스너에 걸린다.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(unhandled).toEqual([]);
+
+      // 쓰기 실패를 조용히 완전히 무시하진 않는다는 결정을 확인한다 —
+      // 콘솔에 파일 경로와 원인이 남아야 한다.
+      expect(consoleSpy).toHaveBeenCalled();
+      const loggedArgs = consoleSpy.mock.calls[0];
+      expect(String(loggedArgs[0])).toContain('jobs.json');
+
+      // 큐 자체는 실패와 무관하게 계속 동작해야 한다 — 두 번째 항목이
+      // 정상적으로 처리되고 정상적으로 저장된다.
+      q.enqueue([item('b')]);
+      await q.idle();
+      const raw = await waitForJobsFile(
+        cfg,
+        (r) => r.items.find((i) => i.id === 'b')?.status === 'done'
+      );
+      expect(raw.items.find((i) => i.id === 'b')?.status).toBe('done');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      consoleSpy.mockRestore();
+    }
+  });
+
+  /**
+   * 코드 리뷰 Finding 3(Important): merge-by-id는 재시작 후 done 이력이
+   * 지워지는 버그를 고쳤지만, 그 자체로는 성장을 막지 않는다 — 상한이
+   * 없으면 jobs.json은 앱 수명 내내 무한정 자란다. done만 상한을 넘는
+   * 만큼(오래된 쪽부터) 잘라내고, pending·running·failed는 개수와 무관하게
+   * 전부 남아야 한다(특히 failed를 지우면 재시도 방법이 사라진다).
+   */
+  it('done 이력이 상한을 넘으면 오래된 쪽부터 잘라내고, pending·running·failed는 하나도 잃지 않는다', async () => {
+    await fs.mkdir(cfg.dataDir, { recursive: true });
+
+    const oldDone = Array.from({ length: 510 }, (_, n) => ({
+      ...item(`old-done-${n}`),
+      status: 'done' as const
+    }));
+    const keepers = [
+      { ...item('keep-pending'), status: 'pending' as const },
+      { ...item('keep-running'), status: 'running' as const },
+      { ...item('keep-failed-1'), status: 'failed' as const },
+      { ...item('keep-failed-2'), status: 'failed' as const }
+    ];
+    // keepers를 done 더미보다 앞쪽(=배열상 "더 오래된" 자리)에도 하나 심어
+    // 둔다 — 전부 done 뒤(끝쪽)에만 두면, done만 골라 지우는 옳은 구현과
+    // "앞쪽 N개를 상태와 무관하게 그냥 자르는" 틀린 구현을 이 테스트가
+    // 구분하지 못한다(둘 다 우연히 keepers를 안 건드리게 된다 — 실측: 그렇게
+    // 배치했을 때 뮤테이션 테스트가 이 결함을 놓쳤다). failed 하나를 맨
+    // 앞에 둬서, 자르는 경계가 상태를 보지 않고 위치만 본다면 반드시 걸리게 한다.
+    await fs.writeFile(
+      path.join(cfg.dataDir, 'jobs.json'),
+      JSON.stringify({ version: 1, items: [keepers[2], ...oldDone, keepers[0], keepers[1], keepers[3]] })
+    );
+
+    // 새 항목 하나를 실제로 큐에 태워 persistQueue의 merge+prune 경로를 탄다.
+    const q = new JobQueue(1, async () => ({ mp3: 'done' }));
+    persistQueue(cfg, q);
+    q.enqueue([item('new-one')]);
+    await q.idle();
+
+    const raw = await waitForJobsFile(
+      cfg,
+      (r) => r.items.find((i) => i.id === 'new-one')?.status === 'done'
+    );
+
+    const doneCount = raw.items.filter((i) => i.status === 'done').length;
+    expect(doneCount).toBeLessThanOrEqual(500);
+    // 원래 있던 pending·running·failed는 상한과 무관하게 전부 남아야 한다.
+    for (const k of keepers) {
+      expect(raw.items.find((i) => i.id === k.id)?.status).toBe(k.status);
+    }
+    // 방금 만든 항목(가장 최신)은 당연히 살아남아야 한다.
+    expect(raw.items.find((i) => i.id === 'new-one')?.status).toBe('done');
   });
 });
 
