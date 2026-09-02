@@ -181,7 +181,7 @@
         name="files"
         class="input"
         multiple
-        accept="audio/*,.qta,.m4a,.caf,.db"
+        accept="audio/*,.qta,.m4a,.caf,.db,.db-wal,.db-shm"
         onchange={(e) => e.currentTarget.form?.requestSubmit()}
       />
     </label>

@@ -1,10 +1,17 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppConfig } from '$lib/types';
+import type { AppConfig, JobItem, JobStatus } from '$lib/types';
 import { loadConfig } from './config';
-import { saveUploads, UploadTooLarge } from './upload';
+import {
+  saveUploads,
+  UploadTooLarge,
+  safeDest,
+  isUploadStaging,
+  scheduleStagingCleanup
+} from './upload';
+import { JobQueue } from './jobs/queue';
 
 const SPATIAL = path.resolve('tests/fixtures/audio/spatial.qta');
 
@@ -120,5 +127,120 @@ describe('saveUploads', () => {
 
   it('받을 게 없으면 던진다', async () => {
     await expect(saveUploads(cfg, [])).rejects.toThrow(/오디오/);
+  });
+});
+
+describe('safeDest', () => {
+  // safeDest는 호출자가 이미 basename을 거쳤다는 걸 전제하지 않는 순수
+  // 함수로 검증한다 — "basename을 거치면 도달 불가능하다"는 주장은 이
+  // 코드가 항상 POSIX에서만 돈다고 가정할 때만 성립하고(path.basename은
+  // 실행 OS에 따라 POSIX/win32 규칙이 바뀐다), 그 가정이 배포 환경이
+  // 바뀌는 순간 깨지기 쉽다. saveUploads를 거치지 않고 이 함수를 직접
+  // 호출해서, 호출자가 무엇을 넘기든 자기 방어가 성립함을 보인다.
+  it('구분자를 포함한 이름은 던진다', () => {
+    expect(() => safeDest(dir, '../x.qta')).toThrow();
+  });
+
+  it('".."만 있는 이름도 던진다', () => {
+    expect(() => safeDest(dir, '..')).toThrow();
+  });
+
+  it('구분자가 없는 평범한 이름은 dir 아래 경로를 그대로 돌려준다', () => {
+    expect(safeDest(dir, 'a.qta')).toBe(path.join(dir, 'a.qta'));
+  });
+});
+
+describe('isUploadStaging', () => {
+  it('saveUploads가 만든 폴더는 true다', async () => {
+    const out = await save(cfg, [await fileFrom(SPATIAL, 'a.qta')]);
+    expect(isUploadStaging(out)).toBe(true);
+  });
+
+  it('사용자가 직접 가리킨 실제 폴더는 false다 — enqueue가 실수로 지우면 안 된다', () => {
+    // dir 자체는 이 테스트 파일의 mkdtemp 접두사('uls-upload-test-')가
+    // 우연히 STAGING_PREFIX('uls-upload-')로 시작해 이 검사엔 부적합하다
+    // (그건 saveUploads가 만든 폴더가 아니라 이 테스트의 격리용 샌드박스일
+    // 뿐이다) — 아예 다른 접두사의 실제 사용자 폴더를 흉내낸 경로로 검사한다.
+    expect(isUploadStaging(path.join(os.tmpdir(), 'not-an-upload-folder'))).toBe(false);
+    expect(isUploadStaging('/Volumes/Storage/voice')).toBe(false);
+  });
+});
+
+/** fs.rm이 fire-and-forget이라(scheduleStagingCleanup 참고) idle() 직후에는
+ * 아직 디스크에서 안 지워졌을 수 있다 — 실제로 없어질 때까지 짧게 반복
+ * 확인한다. 순수 microtask가 아니라 실제 파일시스템 I/O를 기다리는 것이므로
+ * setImmediate 한 번으로는 부족하다. */
+async function waitUntilGone(p: string, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  for (;;) {
+    try {
+      await fs.access(p);
+    } catch {
+      return;
+    }
+    if (Date.now() - start > timeoutMs) throw new Error(`${p}가 ${timeoutMs}ms 안에 지워지지 않았다`);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+function job(id: string, sourcePath: string): JobItem {
+  return {
+    id,
+    recordingId: `rec-${id}`,
+    sourcePath,
+    title: id,
+    status: 'pending',
+    formats: { mp3: 'pending' },
+    error: null
+  };
+}
+
+describe('scheduleStagingCleanup', () => {
+  it('배치의 잡이 전부 done이 되면 스테이징 폴더를 지운다', async () => {
+    const out = await save(cfg, [await fileFrom(SPATIAL, 'a.qta')]);
+    const q = new JobQueue(1, async () => ({ mp3: 'done' as JobStatus }));
+    scheduleStagingCleanup(q, out, ['j1']);
+    q.enqueue([job('j1', path.join(out, 'a.qta'))]);
+    await q.idle();
+    await waitUntilGone(out);
+    await expect(fs.access(out)).rejects.toThrow();
+  });
+
+  it('실패한 잡이 있으면 지우지 않는다 — 재시도가 sourcePath를 다시 읽을 수 있다', async () => {
+    const out = await save(cfg, [await fileFrom(SPATIAL, 'a.qta')]);
+    const q = new JobQueue(1, async () => {
+      throw new Error('boom');
+    });
+    scheduleStagingCleanup(q, out, ['j1']);
+    q.enqueue([job('j1', path.join(out, 'a.qta'))]);
+    await q.idle();
+    // rm 자체가 아예 호출되지 않는 경로라 레이스가 없다 — 바로 확인해도 된다.
+    await expect(fs.access(out)).resolves.toBeUndefined();
+  });
+
+  it('실패했던 잡이 재시도로 done이 되면 그제서야 지운다', async () => {
+    const out = await save(cfg, [await fileFrom(SPATIAL, 'a.qta')]);
+    let attempt = 0;
+    const q = new JobQueue(1, async () => {
+      attempt++;
+      if (attempt === 1) throw new Error('boom');
+      return { mp3: 'done' as JobStatus };
+    });
+    scheduleStagingCleanup(q, out, ['j1']);
+    q.enqueue([job('j1', path.join(out, 'a.qta'))]);
+    await q.idle();
+    await expect(fs.access(out)).resolves.toBeUndefined();
+
+    q.retryFailed();
+    await q.idle();
+    await waitUntilGone(out);
+    await expect(fs.access(out)).rejects.toThrow();
+  });
+
+  it('업로드 스테이징 폴더가 아니면 구독조차 하지 않는다', () => {
+    const q = new JobQueue(1, async () => ({ mp3: 'done' as JobStatus }));
+    const subscribeSpy = vi.spyOn(q, 'subscribe');
+    scheduleStagingCleanup(q, '/Volumes/Storage/voice', ['j1']);
+    expect(subscribeSpy).not.toHaveBeenCalled();
   });
 });

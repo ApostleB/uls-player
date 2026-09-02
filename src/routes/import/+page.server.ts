@@ -4,7 +4,7 @@ import type { PendingItem } from '$lib/server/jobs/runner';
 import type { ScanItem } from '$lib/types';
 import { config } from '$lib/server/config';
 import { scanFolder } from '$lib/server/scan';
-import { saveUploads, UploadTooLarge } from '$lib/server/upload';
+import { saveUploads, UploadTooLarge, isUploadStaging, scheduleStagingCleanup } from '$lib/server/upload';
 import { buildJobs, getQueue } from '$lib/server/jobs/runner';
 import { allTags } from '$lib/server/store/recordings';
 import { freeBytes, estimateBytes, DiskShortage } from '$lib/server/disk';
@@ -67,8 +67,35 @@ export const actions: Actions = {
   // enqueue로 넘어가 서버가 방금 만든 임시 폴더가 아닌 엉뚱한 곳을
   // 재스캔하게 된다 — scan 액션과 같은 모양을 맞춰야 하는 이유다.
   upload: async ({ request }) => {
-    const form = await request.formData();
-    const files = form.getAll('files').filter((v): v is File => v instanceof File);
+    // request.formData()는 SvelteKit(정확히는 undici)이 멀티파트 바디
+    // 전체를 파싱하며 메모리에 올린 뒤에야 반환한다 — 이 버퍼링 자체는
+    // 우리가 바꿀 수 없는 프레임워크 제약이다(직접 스트리밍 멀티파트
+    // 파서를 짜지 않는 한). 그래서 그 전에 Content-Length로 요청 전체
+    // 크기부터 거른다. MAX_UPLOAD_MB(파일 하나의 한도)와는 다른 축이다 —
+    // 파일 하나하나는 한도 아래여도 여러 개를 한 요청에 몰아넣으면(스펙의
+    // 대표 시나리오인 3.1GB 초기 마이그레이션을 한 번에 올리는 경우 포함)
+    // 합이 서버 메모리를 다 먹어치울 수 있다.
+    const totalLimitBytes = config.maxUploadTotalMb * 1024 * 1024;
+    const contentLength = Number(request.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > totalLimitBytes) {
+      const gotMb = (contentLength / 1024 / 1024).toFixed(1);
+      return fail(413, {
+        message:
+          `업로드 요청이 너무 큽니다(${gotMb}MB). ` +
+          `파일당 한도는 ${config.maxUploadMb}MB, 요청 전체 한도는 ${config.maxUploadTotalMb}MB입니다.`
+      });
+    }
+
+    let files: File[];
+    try {
+      const form = await request.formData();
+      files = form.getAll('files').filter((v): v is File => v instanceof File);
+    } catch (err) {
+      // 예: filename*=UTF-8''... 같은 깨진 인코딩처럼 undici가 멀티파트
+      // 자체를 못 읽는 경우. 여기서 잡지 않으면 액션 밖으로 새어나가
+      // 500으로 끝난다 — 원인이 사용자가 보낸 요청 형식이니 400이 맞다.
+      return fail(400, { message: `업로드 요청을 읽을 수 없습니다: ${(err as Error).message}` });
+    }
 
     let folder: string;
     try {
@@ -149,7 +176,23 @@ export const actions: Actions = {
     }
 
     const { jobs } = buildJobs(config, pending);
-    getQueue(config).enqueue(jobs);
+    const queue = getQueue(config);
+    queue.enqueue(jobs);
+
+    // folder가 saveUploads가 만든 스테이징 폴더라면(브라우저 업로드 경로),
+    // 이 배치의 잡이 전부 끝나는 대로 지운다 — isUploadStaging이 사용자가
+    // "폴더 경로 입력"으로 직접 가리킨 실제 폴더는 절대 건드리지 않게
+    // 막는다. 잡은 비동기로(큐 동시성만큼씩) 나중에 실행되므로 여기서
+    // 동기적으로 지울 수 없다 — scheduleStagingCleanup이 큐 구독으로
+    // 완료를 기다렸다가 지운다(이유는 upload.ts의 주석 참고).
+    if (isUploadStaging(folder)) {
+      scheduleStagingCleanup(
+        queue,
+        folder,
+        jobs.map((j) => j.id)
+      );
+    }
+
     return { queued: jobs.length, skipped };
   }
 };

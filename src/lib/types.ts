@@ -61,7 +61,13 @@ export interface AppConfig {
   formats: FormatSpec[];
   convertConcurrency: number;
   waveformPeaks: number;
+  /** 업로드 파일 하나의 한도(MB). */
   maxUploadMb: number;
+  /** 업로드 요청 하나(여러 파일 합) 전체의 한도(MB). MAX_UPLOAD_MB가 파일당
+   * 한도라면 이건 그 요청 전체 바디 크기의 상한이다 — request.formData()가
+   * 멀티파트 바디를 통째로 메모리에 올리기 전에 Content-Length로 미리
+   * 걸러낼 때 쓴다. */
+  maxUploadTotalMb: number;
 }
 
 export interface ScanItem {

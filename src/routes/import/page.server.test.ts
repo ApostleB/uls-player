@@ -11,7 +11,7 @@ import type { ScanItem } from '$lib/types';
 // buildJobs를 거쳐 큐에 잡을 올린다"를 의미 있게 검증하려면 진짜 조립
 // 로직이 필요하다. getQueue만 가짜로 바꿔서, 실제 큐(변환·ffmpeg·파일 IO를
 // 일으키는 프로세스 싱글턴)를 절대 건드리지 않는다.
-const fakeQueue = { enqueue: vi.fn() };
+const fakeQueue = { enqueue: vi.fn(), subscribe: vi.fn(() => () => {}) };
 
 vi.mock('$lib/server/jobs/runner', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/server/jobs/runner')>();
@@ -76,10 +76,28 @@ async function makeFolder(names: string[]): Promise<string> {
   return dir;
 }
 
+async function fileFrom(p: string, name: string): Promise<File> {
+  return new File([await fs.readFile(p)], name);
+}
+
+/** contentLength를 주면 실제 FormData 바디 크기와 무관하게 그 값으로
+ * content-length 헤더를 강제한다 — undici의 Request는 명시적으로 준
+ * 헤더를 body로부터 재계산하지 않고 그대로 존중하므로, 수백 MB짜리
+ * 더미 바이트를 실제로 만들지 않고도 집계 한도 초과를 재현할 수 있다. */
+function uploadEvent(files: File[], contentLength?: string): RequestEvent {
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  const headers = contentLength !== undefined ? { 'content-length': contentLength } : undefined;
+  return {
+    request: new Request('http://localhost/import', { method: 'POST', body: fd, headers })
+  } as unknown as RequestEvent;
+}
+
 beforeEach(() => {
   buildJobsSpy.mockClear();
   getQueueSpy.mockClear();
   fakeQueue.enqueue.mockClear();
+  fakeQueue.subscribe.mockClear();
   // vi.fn(impl)로 만든 목은 mockReset해도 그 impl(실제 freeBytes)로
   // 되돌아간다 — 이전 테스트가 등록해둔 mockResolvedValueOnce/
   // mockRejectedValueOnce가 소비되지 않은 채 남아 다음 테스트로 새는 것을
@@ -124,6 +142,73 @@ describe('scan 액션', () => {
       expect(out.folder).toBe(dir);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('upload 액션', () => {
+  it('성공하면 항목 배열과 실제로 저장한 폴더 경로를 함께 돌려준다', async () => {
+    const file = await fileFrom(SPATIAL, 'sample.qta');
+    const res = await actions.upload(uploadEvent([file]));
+    const out = res as { items: ScanItem[]; folder: string };
+    try {
+      expect(out.items).toHaveLength(1);
+      expect(out.items[0].sourceName).toBe('sample.qta');
+      expect(out.items[0].error).toBeNull();
+      // saveUploads가 os.tmpdir() 아래 uls-upload-*로 실제로 만든 폴더를
+      // 그대로 돌려주는지 확인한다 — enqueue가 재스캔할 때 쓸 값이다.
+      expect(path.dirname(out.folder)).toBe(os.tmpdir());
+      expect(path.basename(out.folder)).toMatch(/^uls-upload-/);
+    } finally {
+      await fs.rm(out.folder, { recursive: true, force: true });
+    }
+  });
+
+  // 이 테스트가 지키는 버그: upload 액션이 응답에 folder를 안 실으면
+  // (Task 19 브리프 원본 코드가 실제로 그랬다) +page.svelte의 $effect가
+  // 이전 folder 값(최초 진입이면 빈 문자열)을 그대로 들고 있어, 뒤이은
+  // enqueue가 방금 업로드로 만든 폴더가 아니라 엉뚱한 곳을 재스캔하게
+  // 된다. upload가 돌려준 folder를 곧장 enqueue에 넘겨서, 그 폴더가
+  // 실제로 유효한 재스캔 대상인지(=sourceName이 그대로 맞아떨어지는지)를
+  // 검증한다.
+  it('upload가 돌려준 folder를 그대로 enqueue에 넘기면 재스캔에서 sourceName이 맞아떨어진다', async () => {
+    const file = await fileFrom(SPATIAL, 'sample.qta');
+    const up = (await actions.upload(uploadEvent([file]))) as { items: ScanItem[]; folder: string };
+    try {
+      const res = await actions.enqueue(
+        enqueueEvent(up.folder, [
+          { sourceName: 'sample.qta', title: '제목', description: '', tags: [] }
+        ])
+      );
+      expect(res).toMatchObject({ queued: 1, skipped: 0 });
+      expect(buildJobsSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(up.folder, { recursive: true, force: true });
+    }
+  });
+
+  it('Content-Length가 요청 전체 한도를 넘으면 formData를 읽기 전에 413으로 거부한다', async () => {
+    const file = await fileFrom(SPATIAL, 'sample.qta');
+    const oversized = String(config.maxUploadTotalMb * 1024 * 1024 + 1);
+    const res = await actions.upload(uploadEvent([file], oversized));
+    expect(res).toMatchObject({ status: 413 });
+    const message = (res as { data: { message: string } }).data.message;
+    // 두 한도(파일당·요청 전체)를 메시지에 함께 밝힌다 — 사용자가 어느
+    // 쪽 설정을 조정해야 하는지 알 수 있어야 한다.
+    expect(message).toContain(String(config.maxUploadMb));
+    expect(message).toContain(String(config.maxUploadTotalMb));
+  });
+
+  it('개별 파일이 파일당 한도를 넘으면 413으로 거부한다', async () => {
+    const original = config.maxUploadMb;
+    config.maxUploadMb = 0.001; // spatial.qta(약 180KB)가 이 한도를 넘도록
+    try {
+      const file = await fileFrom(SPATIAL, 'sample.qta');
+      const res = await actions.upload(uploadEvent([file]));
+      expect(res).toMatchObject({ status: 413 });
+      expect((res as { data: { message: string } }).data.message).toMatch(/업로드 한도/);
+    } finally {
+      config.maxUploadMb = original;
     }
   });
 });

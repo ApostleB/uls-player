@@ -8,6 +8,12 @@ describe('loadConfig', () => {
     expect(cfg.convertConcurrency).toBe(4);
     expect(cfg.waveformPeaks).toBe(2000);
     expect(cfg.maxUploadMb).toBe(500);
+    expect(cfg.maxUploadTotalMb).toBe(4096);
+  });
+
+  it('MAX_UPLOAD_TOTAL_MB를 env로 덮어쓴다', () => {
+    const cfg = loadConfig({ MAX_UPLOAD_TOTAL_MB: '1024' });
+    expect(cfg.maxUploadTotalMb).toBe(1024);
   });
 
   it('OUTPUT_FORMATS에 없는 포맷은 만들지 않는다', () => {

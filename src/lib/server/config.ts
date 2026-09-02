@@ -48,7 +48,12 @@ export function loadConfig(env: Env): AppConfig {
     formats,
     convertConcurrency: num(env, 'CONVERT_CONCURRENCY', 4),
     waveformPeaks: num(env, 'WAVEFORM_PEAKS', 2000),
-    maxUploadMb: num(env, 'MAX_UPLOAD_MB', 500)
+    maxUploadMb: num(env, 'MAX_UPLOAD_MB', 500),
+    // 기본값 4096MB(4GB): 스펙의 대표 시나리오인 3.1GB 초기 마이그레이션을
+    // 한 번에 올려도 여유가 있도록, 실측된 라이브러리 전체 크기보다
+    // 넉넉히 위로 잡았다. MAX_UPLOAD_MB(파일당)와는 독립적인 축이다 —
+    // 파일 하나하나는 작아도 개수가 많으면 합이 이 한도를 넘을 수 있다.
+    maxUploadTotalMb: num(env, 'MAX_UPLOAD_TOTAL_MB', 4096)
   };
 }
 
