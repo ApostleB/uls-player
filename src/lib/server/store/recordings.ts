@@ -74,13 +74,34 @@ export async function addMany(cfg: AppConfig, recs: Recording[]): Promise<void> 
 
 type Patchable = Partial<Pick<Recording, 'title' | 'description' | 'tags' | 'files' | 'bookmarks'>>;
 
+/**
+ * patch()가 대상 id를 찾지 못했을 때 던지는 전용 타입.
+ *
+ * 예전에는 이 사유를 평범한 Error에 담아 메시지 문자열("녹음을 찾을 수
+ * 없습니다: ...")로만 구분했다 — runner.ts가 이 특정 실패(복구된 작업이라
+ * 저장소에 원본이 없는 경우)만 골라 사용자에게 행동 가능한 메시지로
+ * 바꿔주려면 그 문자열의 접두어를 검사해야 했다. 문자열 접두어 비교는
+ * 두 방향으로 다 깨진다: 이 메시지 문구가 나중에 바뀌면(오타 수정, 문구
+ * 다듬기 등) 조용히 매치가 끊기고, 반대로 다른 원인(예: 디스크 쓰기
+ * 실패)이 우연히 같은 문구로 시작하면 엉뚱하게 매치돼 원래 원인을
+ * "서버 재시작으로 복구된 작업"이라는 잘못된 설명으로 덮어써 버린다.
+ * 타입으로 구분하면 두 문제 모두 없다 — 메시지 문구는 자유롭게 바뀌어도
+ * 되고, 다른 원인은 이 클래스의 인스턴스가 아니므로 절대 매치되지 않는다.
+ */
+export class RecordingNotFoundError extends Error {
+  constructor(readonly id: string) {
+    super(`녹음을 찾을 수 없습니다: ${id}`);
+    this.name = 'RecordingNotFoundError';
+  }
+}
+
 export async function patch(cfg: AppConfig, id: string, changes: Patchable): Promise<Recording> {
   let out: Recording | null = null;
   await updateJson<RecordingsFile>(
     file(cfg),
     (cur) => {
       const i = cur.recordings.findIndex((r) => r.id === id && r.deletedAt === null);
-      if (i === -1) throw new Error(`녹음을 찾을 수 없습니다: ${id}`);
+      if (i === -1) throw new RecordingNotFoundError(id);
       out = { ...cur.recordings[i], ...changes, updatedAt: nowIso() };
       const next = cur.recordings.slice();
       next[i] = out;

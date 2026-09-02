@@ -7,7 +7,7 @@ import { convert } from '../media/convert';
 import { probe } from '../media/probe';
 import { generatePeaks } from '../media/waveform';
 import { savePeaks } from '../store/waveforms';
-import { addMany, newId, patch } from '../store/recordings';
+import { addMany, newId, patch, RecordingNotFoundError } from '../store/recordings';
 import { JobQueue, JobFailure, type Worker } from './queue';
 import { pendingRecordings } from './registry';
 import { persistQueue, loadUnfinished, jobsFilePath } from './persist';
@@ -190,8 +190,9 @@ export function makeRunner(cfg: AppConfig): Worker {
           // 수 없다. patch()가 정확히 이 사유로 던졌을 때만(다른 원인,
           // 예를 들어 디스크 쓰기 실패까지 이 메시지로 덮어써 원인을
           // 숨기면 안 된다) 대응 방법(다시 가져오기)이 담긴 메시지로
-          // 바꿔서 던진다.
-          if (err instanceof Error && err.message.startsWith('녹음을 찾을 수 없습니다')) {
+          // 바꿔서 던진다. 문자열 접두어가 아니라 타입으로 판정한다 —
+          // recordings.ts의 RecordingNotFoundError 주석 참고.
+          if (err instanceof RecordingNotFoundError) {
             throw new Error(
               '변환은 끝났지만 원본 녹음 정보를 찾을 수 없습니다(서버 재시작으로 ' +
                 '복구된 작업일 수 있습니다). 폴더를 다시 가져오세요.',

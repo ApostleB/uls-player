@@ -200,6 +200,41 @@ function job(id: string, sourcePath: string): JobItem {
 }
 
 describe('scheduleStagingCleanup', () => {
+  // Also Fix 6: CloudRecordings.db는 어떤 job도 가리키지 않는다(scan.ts가
+  // 오디오 확장자만 잡으로 만든다) — 그래서 오디오 파일이 다 지워진 뒤에도
+  // 이 사이드카만 남으면 readdir이 절대 빈 배열을 못 돌려주고, 폴더가
+  // 24시간 스윕 전까지 영원히 안 지워진다. 개선 전 코드에서는 이 테스트가
+  // waitUntilGone의 2초 타임아웃으로 실패한다(뮤테이션으로 실측 확인).
+  it('오디오가 다 지워지고 CloudRecordings.db 사이드카만 남으면 그것도 함께 지우고 폴더도 지운다', async () => {
+    const out = await save(cfg, [
+      await fileFrom(SPATIAL, 'a.qta'),
+      new File([Buffer.from('가짜 sqlite 바이트')], 'CloudRecordings.db')
+    ]);
+    const q = new JobQueue(1, async () => ({ mp3: 'done' as JobStatus }));
+    scheduleStagingCleanup(q, out, ['j1']);
+    q.enqueue([job('j1', path.join(out, 'a.qta'))]);
+    await q.idle();
+    await waitUntilGone(out);
+    await expect(fs.access(out)).rejects.toThrow();
+  });
+
+  it('DB 사이드카뿐 아니라 아직 선택 안 한 오디오 파일도 남아 있으면 폴더는 그대로 둔다', async () => {
+    const out = await save(cfg, [
+      await fileFrom(SPATIAL, 'a.qta'),
+      await fileFrom(SPATIAL, 'b.qta'),
+      new File([Buffer.from('가짜 sqlite 바이트')], 'CloudRecordings.db')
+    ]);
+    const q = new JobQueue(1, async () => ({ mp3: 'done' as JobStatus }));
+    scheduleStagingCleanup(q, out, ['j1']);
+    q.enqueue([job('j1', path.join(out, 'a.qta'))]);
+    await q.idle();
+    await waitUntilGone(path.join(out, 'a.qta'));
+    // b.qta(아직 선택 안 한 파일)와 CloudRecordings.db가 함께 남아 있으니
+    // "남은 게 DB뿐"이 아니다 — 폴더도 DB도 지우면 안 된다.
+    const remaining = (await fs.readdir(out)).sort();
+    expect(remaining).toEqual(['CloudRecordings.db', 'b.qta']);
+  });
+
   it('배치의 잡이 전부 done이 되면 스테이징 폴더를 지운다', async () => {
     const out = await save(cfg, [await fileFrom(SPATIAL, 'a.qta')]);
     const q = new JobQueue(1, async () => ({ mp3: 'done' as JobStatus }));

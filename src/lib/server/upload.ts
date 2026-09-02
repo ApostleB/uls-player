@@ -183,10 +183,26 @@ function runExclusive(folder: string, fn: () => Promise<void>): void {
  * done이 된 잡 하나가 가리키던 파일만 지운다. 지운 뒤 folder를 다시
  * 읽어서 남은 파일이 없으면 folder 자체도 지운다 — 다른 파일이 남아
  * 있으면(사용자가 아직 선택 안 한 행들) 절대 건드리지 않는다.
+ *
+ * CloudRecordings.db(와 -wal/-shm)는 어떤 job도 sourcePath로 가리키지
+ * 않는다 — saveUploads가 함께 받아주긴 하지만 제목 복원에만 쓰이고 그
+ * 자체가 변환 대상은 아니기 때문이다(scan.ts는 오디오 확장자만 잡으로
+ * 만든다). 그래서 폴더의 오디오 파일이 전부 지워진 뒤에도 이 DB
+ * 사이드카만 남아 위 readdir이 절대 빈 배열을 돌려주지 못하고, 폴더
+ * 자체가 STALE_STAGING_MS(24시간) 스윕 전까지 영원히 안 지워진다. 남은
+ * 게 DB 사이드카뿐이면(=처리해야 할 오디오가 더는 없다는 뜻) 그것도
+ * 함께 지운다 — 남은 것 중 하나라도 DB_NAMES에 없으면(아직 선택 안 한
+ * 오디오 파일) 절대 건드리지 않는다.
  */
 async function cleanupJobFile(folder: string, sourcePath: string): Promise<void> {
   await fs.rm(sourcePath, { force: true });
-  const remaining = await fs.readdir(folder).catch(() => [] as string[]);
+  let remaining = await fs.readdir(folder).catch(() => [] as string[]);
+  if (remaining.length > 0 && remaining.every((name) => DB_NAMES.has(name))) {
+    for (const name of remaining) {
+      await fs.rm(path.join(folder, name), { force: true });
+    }
+    remaining = [];
+  }
   if (remaining.length === 0) {
     await fs.rm(folder, { recursive: true, force: true });
   }
