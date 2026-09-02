@@ -121,6 +121,39 @@ export function withoutBookmark<T extends { id: string }>(bookmarks: T[], id: st
   return bookmarks.filter((b) => b.id !== id);
 }
 
+/**
+ * 메모 편집이 실패했을 때 되돌리는 compare-and-swap. id의 note가
+ * attemptedNote와 여전히 같을 때만(이 편집이 낙관적으로 남겨둔 값이
+ * 아직 그대로일 때만) oldNote로 되돌린다. 다르면 그 사이 같은 항목에
+ * 대한 *다른* 편집이 먼저 성공해 이미 더 최신 값(서버가 동의한 값)
+ * 으로 바뀌었다는 뜻이므로 손대지 않는다 — 무조건 되돌리면 이 되돌리기
+ * 로직 자체가 최신 상태를 낡은 값으로 덮어써, localBookmarks를 들여온
+ * 이유였던 것과 같은 종류의 "화면이 서버와 어긋나는" 문제를 반대
+ * 방향으로 재현한다.
+ */
+export function revertNoteIfUnchanged<T extends { id: string; note: string }>(
+  bookmarks: T[],
+  id: string,
+  attemptedNote: string,
+  oldNote: string
+): T[] {
+  const current = bookmarks.find((b) => b.id === id);
+  return current && current.note === attemptedNote
+    ? withBookmarkNote(bookmarks, id, oldNote)
+    : bookmarks;
+}
+
+/**
+ * 삭제가 실패했을 때 되돌리는 compare-and-swap. removed.id가 이미
+ * 배열에 있으면(다른 경로로 이미 되살아나 있으면) 그대로 두고, 없으면
+ * (여전히 지워진 채라면) 다시 추가한다. 무조건 다시 추가하면 중복이
+ * 생기거나(Svelte의 keyed each는 중복 id를 런타임 에러로 거부한다),
+ * 그 "다른 경로"가 만든 더 최신 상태를 흐트러뜨릴 수 있다.
+ */
+export function restoreIfAbsent<T extends { id: string }>(bookmarks: T[], removed: T): T[] {
+  return bookmarks.some((b) => b.id === removed.id) ? bookmarks : [...bookmarks, removed];
+}
+
 export interface AudioLike {
   currentTime: number;
   play(): void | Promise<void>;

@@ -10,7 +10,9 @@
     bookmarkDraft,
     sortBookmarks,
     withBookmarkNote,
-    withoutBookmark
+    withoutBookmark,
+    revertNoteIfUnchanged,
+    restoreIfAbsent
   } from '$lib/player';
   import type { LoopState } from '$lib/player';
 
@@ -340,28 +342,26 @@
                 value={b.note}
                 placeholder="메모"
                 onblur={async (e) => {
-                  // 되돌릴 값은 "이 항목의 이전 note"고, 되돌리는 시점의
-                  // 베이스는 그때의 localBookmarks(지금이 아니라 실패
-                  // 응답이 온 시점) — b.note를 캡처해두는 대신 id로
-                  // 다시 찾아 읽는다. b는 각 블록의 렌더 시점 스냅샷이라
-                  // 신뢰할 수 있지만, "지금 이 필드가 뭐였는지"를 각
-                  // 리비전마다 명시적으로 다시 읽어 두면 되돌릴 때도
-                  // 같은 방식으로 최신 배열 위에 얹을 수 있어 더 안전하다.
+                  // 되돌릴 값("이 항목의 이전 note")과, 이 편집이
+                  // 실제로 쓴 값(attemptedNote)을 함께 캡처해둔다. b는
+                  // 각 블록의 렌더 시점 스냅샷이라 note를 그대로 믿을 수
+                  // 있지만, "지금 이 필드가 뭐였는지"를 명시적으로 다시
+                  // 읽어 두면 되돌릴 때도 같은 방식으로 최신 배열 위에
+                  // 얹을 수 있어 더 안전하다.
                   const id = b.id;
                   const before = localBookmarks.find((x) => x.id === id);
                   const oldNote = before ? before.note : '';
-                  const next = withBookmarkNote(localBookmarks, id, e.currentTarget.value);
+                  const attemptedNote = e.currentTarget.value;
+                  const next = withBookmarkNote(localBookmarks, id, attemptedNote);
                   localBookmarks = next;
                   const ok = await onbookmarkchange(next);
-                  // 실패하면 이 편집만 되돌린다 — 응답을 기다리는 사이
-                  // 다른 항목(혹은 같은 항목의 다른 편집)이 성공했을 수
-                  // 있으므로, 실패 시점의 프롭이나 낡은 스냅샷이 아니라
-                  // "지금의" localBookmarks 위에 이 항목의 note만 원래
-                  // 값으로 되돌린다. 그래야 이 되돌림이 다른 편집의
-                  // 결과를 덮어쓰지 않는다(프롭을 그대로 베이스로 삼을
-                  // 때와 같은 종류의 유실을 되돌리기 로직에서 또
-                  // 만들지 않기 위함).
-                  if (!ok) localBookmarks = withBookmarkNote(localBookmarks, id, oldNote);
+                  // 무조건 되돌리면 안 된다 — 응답을 기다리는 사이
+                  // 같은 항목에 대한 *다른* 편집이 먼저 성공해 이미
+                  // 더 최신 값(서버가 동의한 값)으로 바뀌어 있을 수
+                  // 있다. revertNoteIfUnchanged가 compare-and-swap으로
+                  // "지금도 내가 쓴 값(attemptedNote) 그대로일 때만"
+                  // 되돌린다 — 뮤테이션 검증은 player.test.ts 참고.
+                  if (!ok) localBookmarks = revertNoteIfUnchanged(localBookmarks, id, attemptedNote, oldNote);
                 }}
               />
               <button type="button" aria-label="북마크 삭제"
@@ -371,11 +371,13 @@
                   const next = withoutBookmark(localBookmarks, id);
                   localBookmarks = next;
                   const ok = await onbookmarkchange(next);
-                  // 실패하면 지금의 localBookmarks(그 사이 다른 편집이
-                  // 성공했을 수 있다) 위에 지운 항목만 다시 얹는다 —
-                  // 위치는 상관없다, 목록·마커 모두 atSec 기준으로
-                  // 다시 정렬해 보여준다.
-                  if (!ok) localBookmarks = [...localBookmarks, removed];
+                  // restoreIfAbsent가 compare-and-swap으로 "이 id가
+                  // 아직도 없을 때만" removed를 다시 얹는다 — 그 사이
+                  // 다른 경로로 이미 되살아나 있으면 손대지 않는다
+                  // (무조건 다시 추가하면 중복이 생기고, Svelte의
+                  // keyed each는 중복 id를 런타임 에러로 거부한다).
+                  // 뮤테이션 검증은 player.test.ts 참고.
+                  if (!ok) localBookmarks = restoreIfAbsent(localBookmarks, removed);
                 }}>
                 ×
               </button>

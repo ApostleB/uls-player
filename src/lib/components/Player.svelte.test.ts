@@ -428,6 +428,49 @@ describe('Player.svelte — 편집·삭제가 실패하면 낙관적 갱신을 �
     expect(noteInputs()[0].value).toBe('남는다');
   });
 
+  it('삭제가 실패하기 전에 그 항목이 이미(다른 경로로) 되살아나 있으면, 실패 응답이 와도 중복으로 다시 추가하지 않는다(후속 리뷰: 삭제 경로에도 같은 compare-and-swap)', async () => {
+    const d = deferred<boolean>();
+    const onbookmarkchange = vi.fn((_: Bookmark[]) => d.promise);
+    const bookmarks = [bm('a', 5, '항목')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    await page.getByRole('button', { name: '북마크 삭제' }).click();
+    await expect.element(page.getByPlaceholder('메모')).not.toBeInTheDocument();
+
+    // 삭제 PATCH가 아직 응답을 기다리는 사이, 이 녹음의 bookmarks
+    // 프롭이 (다른 경로로 — 예: send()가 recordings 전체를 새로
+    // 받아온 뒤 selected/recording이 새 참조가 될 때) 그 항목이 여전히
+    // 있는 상태로 갱신됐다고 가정한다. localBookmarks는 id로
+    // 게이트하지 않고 recording.bookmarks 참조가 바뀔 때마다
+    // 다시 맞추므로(50~69번째 줄 주석 참고), 이 rerender만으로
+    // 그 항목이 되살아난다.
+    const recStillHasIt = rec({ id: 'aaaa', bookmarks: [bm('a', 5, '항목')] });
+    await screen.rerender({ recording: recStillHasIt, formats: ['mp3', 'wav'], onbookmarkchange });
+    await expect.element(page.getByPlaceholder('메모')).toBeInTheDocument();
+
+    // 이제야 삭제가 실패 응답을 받는다 — 무조건 다시 추가하는
+    // 구현이었다면 이미 있는 항목 옆에 똑같은 항목을 하나 더 추가해
+    // 중복을 만든다. 다만 이 테스트 자체는 그 뮤테이션을 증명하는 데
+    // 못 쓴다 — 직접 확인해보니, 무조건 다시 추가하는 구현으로
+    // 되돌리면 Svelte의 keyed each가 중복 id를 런타임 에러
+    // (each_key_duplicate)로 거부해 DOM에 중복이 아예 렌더링되지
+    // 않고, 그래서 이 length assertion이 "우연히" 계속 통과해버린다
+    // (에러로 막힌 것과 로직이 막은 것을 구분 못 함 — 뮤테이션으로
+    // 실제 확인함). 그래서 이 compare-and-swap의 뮤테이션 검증은
+    // restoreIfAbsent를 직접 겨냥한 player.test.ts에서 하고, 여기서는
+    // "정상 구현이 실제로 이 흐름을 깨지 않고 통과한다"는 것만 하는
+    // 스모크 테스트로 남긴다.
+    d.resolve(false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(noteInputs()).toHaveLength(1);
+  });
+
   it('한 편집이 실패해 되돌아가도, 그 사이 성공한 다른 편집의 결과는 지우지 않는다', async () => {
     const dA = deferred<boolean>();
     const dB = deferred<boolean>();
@@ -465,6 +508,58 @@ describe('Player.svelte — 편집·삭제가 실패하면 낙관적 갱신을 �
     // localBookmarks 위에서 이 항목 하나만 되돌리는지가 이 assertion의
     // 핵심이다.
     expect(noteInputs()[1].value).toBe('성공할 편집');
+  });
+
+  it('같은 항목에 대한 두 편집 중 먼저 성공한 게 이겼는데, 나중에 실패 응답이 온 편집이 그 확정된 값을 덮어쓰면 안 된다(후속 리뷰 재발견)', async () => {
+    // 위 테스트와 같은 모양이지만 서로 다른 두 항목(a, b)이 아니라
+    // "같은 항목 하나"에 대한 두 번의 편집이다 — compare-and-swap이
+    // 되돌릴 값을 무조건 자기 자신의 oldNote로 덮어쓰는 게 아니라,
+    // "지금도 내가 쓴 값 그대로일 때만" 되돌리는지는 같은 id를 두 번
+    // 건드려봐야 드러난다(다른 id끼리는 애초에 서로의 값을 참조하지
+    // 않으니 이 버그가 나타날 수 없다).
+    const dH1 = deferred<boolean>();
+    const dH2 = deferred<boolean>();
+    let call = 0;
+    const onbookmarkchange = vi.fn(() => (call++ === 0 ? dH1.promise : dH2.promise));
+    const bookmarks = [bm('a', 5, 'N0')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    const input = noteInputs()[0];
+
+    // H1: N0 -> N1. blur를 일으켜 캡처(oldNote="N0")·낙관적 반영·
+    // PATCH 전송까지 동기적으로 끝내고, await에서 멈춘다.
+    input.value = 'N1';
+    input.dispatchEvent(new Event('blur'));
+    expect(input.value).toBe('N1');
+
+    // H2: 같은 입력에 이어서 N1 -> N2. H1의 응답이 아직 안 왔으므로
+    // 이 시점에 읽는 "이전 값"은 H1이 낙관적으로 남겨둔 "N1"이다.
+    input.value = 'N2';
+    input.dispatchEvent(new Event('blur'));
+    expect(input.value).toBe('N2');
+
+    // H2가 먼저 성공 응답을 받는다 — 서버가 N2에 동의했다.
+    dH2.resolve(true);
+    await vi.waitFor(() => expect(noteInputs()[0].value).toBe('N2'));
+
+    // H1이 뒤늦게 실패 응답을 받는다. H1이 시도했던 값은 "N1"인데
+    // 지금 이 항목은 이미 "N2"다 — compare-and-swap이 이 불일치를
+    // 보고 되돌리기를 건너뛰어야 한다. 무조건 되돌리는 구현이었다면
+    // 여기서 "N0"(H1의 oldNote)로 되돌아가 서버 상태(N2)와 어긋난다.
+    dH1.resolve(false);
+
+    // 실패 이후에도 값이 그대로 "N2"로 남아 있는지 확인한다 — "아무
+    // 일도 안 일어남"을 증명해야 하므로 waitFor가 아니라, 잘못된
+    // 구현이라면 되돌리기가 반영됐을 시간을 실제로 준 뒤(다른
+    // "호출 안 됨" 검증들과 같은 패턴) 최종 상태를 확인한다.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(noteInputs()[0].value).toBe('N2');
+    expect(onbookmarkchange).toHaveBeenCalledTimes(2);
   });
 
   it('되돌린 뒤에도 다시 편집해서 성공하면 정상 반영된다(사본이 어긋난 채로 멈추지 않는다)', async () => {

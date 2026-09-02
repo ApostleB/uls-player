@@ -10,6 +10,8 @@ import {
   sortBookmarks,
   withBookmarkNote,
   withoutBookmark,
+  revertNoteIfUnchanged,
+  restoreIfAbsent,
   type LoopState
 } from './player';
 
@@ -258,5 +260,64 @@ describe('withoutBookmark — id가 일치하는 항목을 뺀 새 배열', () =
   it('일치하는 id가 없으면 전부 그대로 남는다', () => {
     const input = [bm('a'), bm('b')];
     expect(withoutBookmark(input, 'no-such-id').map((b) => b.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('revertNoteIfUnchanged — 메모 편집 실패 시 compare-and-swap 되돌리기', () => {
+  function bm(id: string, note: string) {
+    return { id, atSec: 0, endSec: null as number | null, note };
+  }
+
+  it('현재 note가 attemptedNote 그대로면(다른 편집이 끼어들지 않았으면) oldNote로 되돌린다', () => {
+    const input = [bm('a', 'N1')]; // 낙관적으로 이미 N1이 반영된 상태
+    const next = revertNoteIfUnchanged(input, 'a', 'N1', 'N0');
+    expect(next).toEqual([bm('a', 'N0')]);
+  });
+
+  it('현재 note가 attemptedNote와 다르면(그 사이 다른 편집이 성공했으면) 손대지 않는다', () => {
+    // "이 실패한 편집이 attemptedNote='N1'을 시도했지만, 지금은 이미
+    // 'N2'(다른 편집이 확정한 값)다" — 이 상황에서 oldNote='N0'으로
+    // 되돌리면 서버가 동의한 'N2'를 잃는다. 이게 이번 리뷰가 발견한
+    // 버그이고, 이 assertion이 그 버그를 재현하지 않는지 증명한다.
+    const input = [bm('a', 'N2')];
+    const next = revertNoteIfUnchanged(input, 'a', 'N1', 'N0');
+    expect(next).toEqual([bm('a', 'N2')]);
+  });
+
+  it('id가 배열에 없으면(그 사이 삭제됐으면) 손대지 않는다', () => {
+    const input = [bm('b', '그대로')];
+    const next = revertNoteIfUnchanged(input, 'a', 'N1', 'N0');
+    expect(next).toEqual(input);
+  });
+
+  it('되돌리지 않는 경우 원본과 같은 배열 참조를 그대로 돌려준다(불필요한 리렌더 방지)', () => {
+    const input = [bm('a', 'N2')];
+    expect(revertNoteIfUnchanged(input, 'a', 'N1', 'N0')).toBe(input);
+  });
+});
+
+describe('restoreIfAbsent — 삭제 실패 시 compare-and-swap 되돌리기', () => {
+  function bm(id: string) {
+    return { id, atSec: 0, endSec: null as number | null, note: '' };
+  }
+
+  it('id가 배열에 없으면(여전히 지워진 채면) 다시 추가한다', () => {
+    const input = [bm('b')];
+    const next = restoreIfAbsent(input, bm('a'));
+    expect(next.map((b) => b.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('id가 이미 배열에 있으면(다른 경로로 이미 되살아났으면) 중복으로 추가하지 않는다', () => {
+    // 무조건 다시 추가하는 구현이었다면 여기서 'a'가 두 번 들어가
+    // 길이가 2가 된다 — Svelte의 keyed each라면 이 상태에서 런타임
+    // 에러(중복 key)가 났을 상황이다.
+    const input = [bm('a')];
+    const next = restoreIfAbsent(input, bm('a'));
+    expect(next).toHaveLength(1);
+  });
+
+  it('다시 추가하지 않는 경우 원본과 같은 배열 참조를 그대로 돌려준다', () => {
+    const input = [bm('a')];
+    expect(restoreIfAbsent(input, bm('a'))).toBe(input);
   });
 });
