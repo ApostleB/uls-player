@@ -19,6 +19,19 @@
   let jobs = $state<JobItem[]>([]);
   let watching = $state(false);
 
+  // 업로드 드롭 영역. dragging은 순전히 시각 효과(테두리 강조)용이고,
+  // 실제 제출은 fileInput.files를 채운 뒤 requestSubmit으로 한다 —
+  // input[type=file] 자체가 드롭 대상이어도 되지만, 클릭 영역과 드롭
+  // 영역을 하나로 넓히려고 바깥 label/div에서 드롭을 받는다.
+  let fileInput = $state<HTMLInputElement | undefined>();
+  let dragging = $state(false);
+
+  function submitFiles(files: FileList) {
+    if (!fileInput) return;
+    fileInput.files = files;
+    fileInput.form?.requestSubmit();
+  }
+
   // 스캔 결과가 오면 편집 행을 만든다. 이미 등록된 항목은 기본 해제한다.
   // folder도 함께 기억해둔다 — enqueue가 서버에서 재스캔할 때 지금 이
   // rows를 만들어낸 바로 그 폴더를 다시 읽어야 sourceName이 맞아떨어진다.
@@ -137,6 +150,41 @@
       required
     />
     <button type="submit" class="btn preset-filled">스캔</button>
+  </form>
+
+  <form
+    method="POST"
+    action="?/upload"
+    enctype="multipart/form-data"
+    use:enhance
+    class="card preset-tonal p-4 border-2 border-dashed transition-colors"
+    class:border-primary-500={dragging}
+    ondragover={(e) => {
+      e.preventDefault();
+      dragging = true;
+    }}
+    ondragleave={() => (dragging = false)}
+    ondrop={(e) => {
+      e.preventDefault();
+      dragging = false;
+      if (e.dataTransfer?.files.length) submitFiles(e.dataTransfer.files);
+    }}
+  >
+    <label class="flex flex-col gap-2">
+      <span class="text-sm">
+        또는 파일을 여기로 끌어다 놓거나 클릭해서 올립니다
+        (CloudRecordings.db를 함께 올리면 제목이 복원됩니다)
+      </span>
+      <input
+        bind:this={fileInput}
+        type="file"
+        name="files"
+        class="input"
+        multiple
+        accept="audio/*,.qta,.m4a,.caf,.db"
+        onchange={(e) => e.currentTarget.form?.requestSubmit()}
+      />
+    </label>
   </form>
 
   {#if form && 'message' in form}

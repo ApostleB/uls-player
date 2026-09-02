@@ -4,6 +4,7 @@ import type { PendingItem } from '$lib/server/jobs/runner';
 import type { ScanItem } from '$lib/types';
 import { config } from '$lib/server/config';
 import { scanFolder } from '$lib/server/scan';
+import { saveUploads, UploadTooLarge } from '$lib/server/upload';
 import { buildJobs, getQueue } from '$lib/server/jobs/runner';
 import { allTags } from '$lib/server/store/recordings';
 import { freeBytes, estimateBytes, DiskShortage } from '$lib/server/disk';
@@ -52,6 +53,32 @@ export const actions: Actions = {
     } catch (err) {
       return fail(400, { message: `폴더를 읽을 수 없습니다: ${(err as Error).message}` });
     }
+  },
+
+  // 브라우저가 올린 파일을 임시 폴더에 쓰고, 그 폴더를 scan과 똑같이
+  // scanFolder에 태운다 — 이후 편집·enqueue 흐름은 폴더 스캔 결과와
+  // 구별할 수 없다. saveUploads가 File.name(전적으로 클라이언트가
+  // 통제하는 값)을 파일시스템 경로로 바꾸는 지점이라 신뢰 경계가 여기
+  // 있다 — 실제 검증은 upload.ts 쪽에 있고, 여기서는 결과만 받는다.
+  //
+  // 응답에 folder를 반드시 같이 실어 보낸다. +page.svelte의 $effect가
+  // `form.folder`를 읽어 hidden folder 값을 갱신하는데, 이게 없으면
+  // 화면에 남아있던 이전 folder 값(또는 최초 진입이면 빈 문자열)이 그대로
+  // enqueue로 넘어가 서버가 방금 만든 임시 폴더가 아닌 엉뚱한 곳을
+  // 재스캔하게 된다 — scan 액션과 같은 모양을 맞춰야 하는 이유다.
+  upload: async ({ request }) => {
+    const form = await request.formData();
+    const files = form.getAll('files').filter((v): v is File => v instanceof File);
+
+    let folder: string;
+    try {
+      folder = await saveUploads(config, files);
+    } catch (err) {
+      const status = err instanceof UploadTooLarge ? 413 : 400;
+      return fail(status, { message: (err as Error).message });
+    }
+
+    return { items: await scanFolder(config, folder), folder };
   },
 
   enqueue: async ({ request }) => {
