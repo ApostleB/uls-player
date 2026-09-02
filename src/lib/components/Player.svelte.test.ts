@@ -471,6 +471,35 @@ describe('Player.svelte — 편집·삭제가 실패하면 낙관적 갱신을 �
     expect(noteInputs()).toHaveLength(1);
   });
 
+  it('삭제 응답을 기다리는 사이 다른 녹음으로 옮겼으면, 늦게 온 실패가 그 녹음의 목록에 남의 북마크를 얹지 않는다', async () => {
+    // restoreIfAbsent는 "이 id가 없으면 넣는다"라 되돌리기가 어느
+    // 녹음의 목록 위에서 도는지를 따지지 않으면, A에서 지운 북마크가
+    // B의 목록에 실제로 얹힌다. 거기서 B를 한 번만 편집해도 남의
+    // 북마크가 B의 녹음에 저장된다.
+    const d = deferred<boolean>();
+    const onbookmarkchange = vi.fn((_: Bookmark[]) => d.promise);
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks: [bm('a', 5, 'A의 북마크')] }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    await page.getByRole('button', { name: '북마크 삭제' }).click();
+    await expect.element(page.getByPlaceholder('메모')).not.toBeInTheDocument();
+
+    // 응답이 오기 전에 사용자가 다른 행을 눌러 B로 옮긴다.
+    const recB = rec({ id: 'bbbb', bookmarks: [] });
+    await screen.rerender({ recording: recB, formats: ['mp3', 'wav'], onbookmarkchange });
+
+    // 이제야 A의 삭제가 실패한다. 소속 녹음을 안 보는 구현이면 여기서
+    // 'A의 북마크'가 B의 목록에 나타난다.
+    d.resolve(false);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(noteInputs()).toHaveLength(0);
+  });
+
   it('한 편집이 실패해 되돌아가도, 그 사이 성공한 다른 편집의 결과는 지우지 않는다', async () => {
     const dA = deferred<boolean>();
     const dB = deferred<boolean>();

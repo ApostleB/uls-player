@@ -378,6 +378,11 @@
                   // 읽어 두면 되돌릴 때도 같은 방식으로 최신 배열 위에
                   // 얹을 수 있어 더 안전하다.
                   const id = b.id;
+                  // 되돌리기가 어느 녹음의 목록에 적용되는지가 중요하다.
+                  // 응답을 기다리는 사이 사용자가 다른 행을 누르면
+                  // localBookmarks는 그 녹음 것으로 재동기화되므로,
+                  // 그때 되돌리면 남의 목록을 건드리게 된다.
+                  const forRecording = recording?.id ?? null;
                   const before = localBookmarks.find((x) => x.id === id);
                   const oldNote = before ? before.note : '';
                   const attemptedNote = e.currentTarget.value;
@@ -390,12 +395,22 @@
                   // 있다. revertNoteIfUnchanged가 compare-and-swap으로
                   // "지금도 내가 쓴 값(attemptedNote) 그대로일 때만"
                   // 되돌린다 — 뮤테이션 검증은 player.test.ts 참고.
-                  if (!ok) localBookmarks = revertNoteIfUnchanged(localBookmarks, id, attemptedNote, oldNote);
+                  if (!ok && recording?.id === forRecording) {
+                    localBookmarks = revertNoteIfUnchanged(localBookmarks, id, attemptedNote, oldNote);
+                  }
                 }}
               />
               <button type="button" aria-label="북마크 삭제"
                 onclick={async () => {
                   const id = b.id;
+                  // 편집 쪽과 같은 이유로 소속 녹음을 함께 잡아둔다.
+                  // 삭제 쪽은 특히 위험하다 — 편집 되돌리기는 id를 못
+                  // 찾으면 조용히 no-op이 되지만, restoreIfAbsent는
+                  // "없으면 넣는" 동작이라 다른 녹음으로 옮긴 뒤 늦게
+                  // 실패하면 A의 북마크가 B의 목록에 실제로 얹힌다.
+                  // 그 상태에서 B를 한 번만 편집해도 남의 북마크가
+                  // B의 녹음에 저장된다.
+                  const forRecording = recording?.id ?? null;
                   const removed = localBookmarks.find((x) => x.id === id) ?? b;
                   const next = withoutBookmark(localBookmarks, id);
                   localBookmarks = next;
@@ -406,7 +421,9 @@
                   // (무조건 다시 추가하면 중복이 생기고, Svelte의
                   // keyed each는 중복 id를 런타임 에러로 거부한다).
                   // 뮤테이션 검증은 player.test.ts 참고.
-                  if (!ok) localBookmarks = restoreIfAbsent(localBookmarks, removed);
+                  if (!ok && recording?.id === forRecording) {
+                    localBookmarks = restoreIfAbsent(localBookmarks, removed);
+                  }
                 }}>
                 ×
               </button>
