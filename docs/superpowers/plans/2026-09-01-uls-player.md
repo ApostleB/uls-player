@@ -926,7 +926,7 @@ CRUD, 태그 일괄 추가/제거, 소프트 삭제, 태그 집계.
 
 ```ts
 import { describe, it, expect } from 'vitest';
-import type { Recording } from './types';
+import type { Filter, Recording } from './types';
 import { EMPTY_FILTER, applyFilter, filterFromParams, filterToParams } from './filter';
 
 function rec(over: Partial<Recording>): Recording {
@@ -944,8 +944,7 @@ const data = [
   rec({ id: '3', title: '빨래', tags: ['1절'], recordedAt: '2026-08-30T19:54:04+09:00' })
 ];
 
-const ids = (f: Partial<Recording extends never ? never : typeof EMPTY_FILTER>) =>
-  applyFilter(data, { ...EMPTY_FILTER, ...f }).map((r) => r.id);
+const ids = (f: Partial<Filter>) => applyFilter(data, { ...EMPTY_FILTER, ...f }).map((r) => r.id);
 
 describe('applyFilter', () => {
   it('빈 필터는 전부 통과시킨다', () => {
@@ -983,8 +982,17 @@ describe('applyFilter', () => {
 
 describe('URL 왕복', () => {
   it('파라미터를 필터로 읽는다', () => {
-    const f = filterFromParams(new URLSearchParams('q=레&tags=데모,1절&mode=or&from=2026-07-01'));
+    const f = filterFromParams(new URLSearchParams('q=레&tags=데모&tags=1절&mode=or&from=2026-07-01'));
     expect(f).toEqual({ q: '레', tags: ['데모', '1절'], tagMode: 'or', from: '2026-07-01', to: '' });
+  });
+
+  it('쉼표는 구분자가 아니라 태그 내용이다', () => {
+    expect(filterFromParams(new URLSearchParams('tags=lo-fi,demo')).tags).toEqual(['lo-fi,demo']);
+  });
+
+  it('쉼표가 든 태그도 왕복에서 온전하다', () => {
+    const f = { ...EMPTY_FILTER, tags: ['lo-fi,demo'] };
+    expect(filterFromParams(filterToParams(f)).tags).toEqual(['lo-fi,demo']);
   });
 
   it('mode가 없으면 and가 기본이다', () => {
@@ -1017,7 +1025,14 @@ Expected: FAIL — `Failed to resolve import "./filter"`
 ```ts
 import type { Filter, Recording, TagMode } from './types';
 
+/**
+ * 빈 필터의 기준값. 호출부가 `{ ...EMPTY_FILTER, ...f }`로 필터를 만드는데,
+ * `tags`를 덮어쓰지 않으면 같은 배열 참조를 물려받는다. 얼려두면 실수로
+ * 밀어넣었을 때 조용히 공유 상태가 오염되는 대신 즉시 터진다.
+ */
 export const EMPTY_FILTER: Filter = { q: '', tags: [], tagMode: 'and', from: '', to: '' };
+Object.freeze(EMPTY_FILTER.tags);
+Object.freeze(EMPTY_FILTER);
 
 /** recordedAt의 날짜 부분만 뽑는다. 오프셋이 붙어 있으므로 앞 10글자가 로컬 날짜다. */
 function localDate(recordedAt: string): string {
@@ -1044,11 +1059,16 @@ export function applyFilter(recs: Recording[], f: Filter): Recording[] {
   });
 }
 
+/**
+ * 태그는 쉼표로 잇지 않고 파라미터를 반복해서 담는다(`tags=a&tags=b`).
+ * 태그는 사용자가 자유롭게 입력하는 값이라 쉼표가 들어갈 수 있는데,
+ * 쉼표를 구분자로 쓰면 그런 태그가 조용히 둘로 쪼개진다.
+ */
 export function filterFromParams(params: URLSearchParams): Filter {
   const mode = params.get('mode');
   return {
     q: params.get('q') ?? '',
-    tags: (params.get('tags') ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+    tags: params.getAll('tags').map((s) => s.trim()).filter(Boolean),
     tagMode: (mode === 'or' ? 'or' : 'and') as TagMode,
     from: params.get('from') ?? '',
     to: params.get('to') ?? ''
@@ -1058,7 +1078,7 @@ export function filterFromParams(params: URLSearchParams): Filter {
 export function filterToParams(f: Filter): URLSearchParams {
   const p = new URLSearchParams();
   if (f.q) p.set('q', f.q);
-  if (f.tags.length) p.set('tags', f.tags.join(','));
+  for (const tag of f.tags) p.append('tags', tag);
   if (f.tagMode === 'or') p.set('mode', 'or');
   if (f.from) p.set('from', f.from);
   if (f.to) p.set('to', f.to);
@@ -1872,7 +1892,7 @@ export async function loadPeaks(cfg: AppConfig, id: string): Promise<number[] | 
 npx vitest run src/lib/server/media/waveform.test.ts src/lib/server/store/waveforms.test.ts
 ```
 
-Expected: PASS — 7 tests
+Expected: PASS — 9 tests
 
 - [ ] **Step 6: 커밋**
 
@@ -1893,10 +1913,12 @@ git commit -m "feat: 파형 피크 생성과 저장
 - Create: `src/lib/server/scan.test.ts`
 
 **Interfaces:**
-- Consumes: `probe` (Task 6), `findDbPath`·`readTitleMap` (Task 5), `existingSourceNames` (Task 3), `AppConfig`·`ScanItem` (Task 1)
+- Consumes: `probe` (Task 6), `findDbPath`·`readTitleMap` (Task 5), `existingSourceNames`·`compareByRecordedAtDesc` (Task 3), `AppConfig`·`ScanItem` (Task 1)
 - Produces:
   - `AUDIO_EXTENSIONS: Set<string>`
   - `scanFolder(cfg: AppConfig, folder: string): Promise<ScanItem[]>`
+
+`compareByRecordedAtDesc`는 Task 3에서 정의한 것을 그대로 쓴다. 정렬 규칙(실제 시각 비교, 날짜 없는 항목은 뒤로)이 저장소와 스캔 두 곳에 갈라져 있으면 어긋나기 쉽다.
 
 제목 우선순위는 **DB 제목 → 파일 메타 title → 확장자 뗀 파일명** 순이다.
 
@@ -1905,14 +1927,23 @@ git commit -m "feat: 파형 피크 생성과 저장
 `src/lib/server/scan.test.ts`:
 
 ```ts
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { AppConfig, Recording } from '$lib/types';
 import { loadConfig } from './config';
 import { addMany, newId } from './store/recordings';
-import { scanFolder } from './scan';
+import { scanFolder, AUDIO_EXTENSIONS } from './scan';
+import * as probeModule from './media/probe';
+
+// probe를 스파이 가능하게 감싸되, 기본 동작은 실제 구현 그대로 통과시킨다.
+// 완료 순서를 강제로 뒤섞어야 하는 테스트에서만 mockImplementation으로
+// 지연을 얹고, 끝나면 다시 실제 구현으로 되돌린다.
+vi.mock('./media/probe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./media/probe')>();
+  return { ...actual, probe: vi.fn(actual.probe) };
+});
 
 const FIX_DB = path.resolve('tests/fixtures/CloudRecordings.db');
 const SPATIAL = path.resolve('tests/fixtures/audio/spatial.qta');
@@ -1920,6 +1951,14 @@ const PLAIN = path.resolve('tests/fixtures/audio/plain.m4a');
 
 const QTA_NAME = '20260711 181530-1923A106.qta';
 const M4A_NAME = '20260725 210049-B752B57A.m4a';
+
+/**
+ * 픽스처 DB에 있는 행 중 사용자 제목("비와 당신")과 파일 메타의 위치 이름이
+ * 서로 다른 것. 대응 오디오 파일은 저장소에 없지만, 스캔은 파일명으로 DB를
+ * 찾으므로 plain.m4a를 이 이름으로 복사하면 분기 상황을 만들 수 있다.
+ * plain.m4a 자신의 메타 title은 "화양동 16 2"라 DB 제목과 확실히 갈린다.
+ */
+const DIVERGENT_NAME = '20260725 005422-39A2B8E8.m4a';
 
 let dir: string;
 let src: string;
@@ -1946,7 +1985,22 @@ describe('scanFolder', () => {
     expect(items.map((i) => i.sourceName).sort()).toEqual([M4A_NAME, QTA_NAME].sort());
   });
 
-  it('DB가 있으면 사용자 제목을 쓴다', async () => {
+  it('DB 제목이 파일 메타 제목을 이긴다', async () => {
+    // 이 모듈이 존재하는 이유가 이 한 줄이다. 둘이 같은 파일로 검증하면
+    // 우선순위를 뒤집어도 테스트가 통과해 아무것도 증명하지 못한다.
+    await fs.copyFile(PLAIN, path.join(src, DIVERGENT_NAME));
+    await fs.copyFile(FIX_DB, path.join(src, 'CloudRecordings.db'));
+
+    const items = await scanFolder(cfg, src);
+    const item = items.find((i) => i.sourceName === DIVERGENT_NAME)!;
+
+    expect(item.title).toBe('비와 당신');        // DB의 사용자 지정 제목
+    expect(item.appleAutoTitle).toBe('화양동 16 2'); // 파일 메타의 위치 이름
+  });
+
+  it('DB 제목과 파일 메타 제목이 같으면 그대로 쓴다', async () => {
+    // 이 파일은 DB 행이 있고 값이 우연히 일치한다. 우선순위를 증명하지는
+    // 못하므로(위 분기 테스트가 그 역할) 일치 케이스가 깨지지 않는지만 본다.
     await fs.copyFile(FIX_DB, path.join(src, 'CloudRecordings.db'));
     const items = await scanFolder(cfg, src);
     const qta = items.find((i) => i.sourceName === QTA_NAME)!;
@@ -1995,6 +2049,92 @@ describe('scanFolder', () => {
   it('없는 폴더면 던진다', async () => {
     await expect(scanFolder(cfg, path.join(dir, 'nope'))).rejects.toThrow();
   });
+
+  it('readdir 이후 사라진 파일은 error를 달고 나머지는 정상 처리된다', async () => {
+    const VANISHED = 'vanished.m4a';
+    await fs.copyFile(PLAIN, path.join(src, VANISHED));
+
+    // stat이 이 파일에서만 ENOENT로 실패하게 만든다 — readdir과 stat
+    // 사이에 iCloud/Finder 동기화로 파일이 사라진 상황을 재현한다.
+    // 나머지 파일은 실제 fs.stat을 그대로 통과시킨다.
+    const realStat = fs.stat.bind(fs);
+    const spy = vi.spyOn(fs, 'stat').mockImplementation(async (p, ...rest) => {
+      if (path.basename(String(p)) === VANISHED) {
+        const err = new Error(
+          `ENOENT: no such file or directory, stat '${p}'`
+        ) as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return realStat(p as string, ...(rest as []));
+    });
+
+    try {
+      const items = await scanFolder(cfg, src);
+      const vanished = items.find((i) => i.sourceName === VANISHED)!;
+      expect(vanished.error).toBeTruthy();
+      expect(items.find((i) => i.sourceName === QTA_NAME)!.error).toBeNull();
+      expect(items.find((i) => i.sourceName === M4A_NAME)!.error).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('probe 완료 순서가 뒤섞여도 결과는 정렬 전 입력 순서를 지킨다', async () => {
+    // extra: recordedAt이 서로 다른 두 원본을 번갈아 복사한다. 완료 순서가
+    // 뒤섞여도 이름-데이터 대응이 깨지지 않는지(교차 오염 여부) 본다.
+    const extra = ['ex1.qta', 'ex2.m4a', 'ex3.qta', 'ex4.m4a'];
+    for (const [i, n] of extra.entries()) {
+      await fs.copyFile(i % 2 === 0 ? SPATIAL : PLAIN, path.join(src, n));
+    }
+
+    // tied: 전부 같은 원본(PLAIN)이라 recordedAt이 완전히 같다. ScanItem에는
+    // id가 없어 compareByRecordedAtDesc가 동률에서 항상 0을 반환하므로,
+    // 안정 정렬 하에서는 "정렬에 넘기기 전 배열 순서(= readdir이 내놓은 순서)"가
+    // 그대로 타이브레이크로 남는다. 최종 정렬은 recordedAt만으로 전체 순서를
+    // 다시 매기므로, 서로 다른 시각을 가진 항목의 최종 위치만 봐서는 동시성
+    // 풀이 입력 순서를 지켰는지 알 수 없다 — 동률 항목의 상대 순서만이 그
+    // 신호를 남긴다.
+    const tiedNames = ['t1.m4a', 't2.m4a', 't3.m4a', 't4.m4a', 't5.m4a', 't6.m4a'];
+    for (const n of tiedNames) {
+      await fs.copyFile(PLAIN, path.join(src, n));
+    }
+
+    // scanFolder가 내부적으로 보게 될 readdir 순서를 그대로 재현해 캡처한다.
+    const entries = await fs.readdir(src, { withFileTypes: true });
+    const inputOrder = entries
+      .filter((e) => e.isFile() && AUDIO_EXTENSIONS.has(path.extname(e.name).toLowerCase()))
+      .map((e) => e.name);
+    const tiedInputOrder = inputOrder.filter((n) => tiedNames.includes(n));
+
+    // 입력 순서와 정반대로 끝나도록 지연을 준다 — "완료 순서 == 입력 순서"인
+    // 우연이 결과를 가려주지 못하게 한다.
+    const actual = await vi.importActual<typeof import('./media/probe')>('./media/probe');
+    vi.mocked(probeModule.probe).mockImplementation(async (filePath: string) => {
+      const result = await actual.probe(filePath);
+      const idx = inputOrder.indexOf(path.basename(filePath));
+      const delay = idx === -1 ? 0 : (inputOrder.length - idx) * 8;
+      await new Promise((r) => setTimeout(r, delay));
+      return result;
+    });
+
+    try {
+      const items = await scanFolder(cfg, src);
+
+      const bySource = new Map(items.map((i) => [i.sourceName, i]));
+      expect(bySource.get(QTA_NAME)!.appleAutoTitle).toBe('새로운 녹음 2');
+      expect(bySource.get(M4A_NAME)!.appleAutoTitle).toBe('화양동 16 2');
+      expect(bySource.get('ex1.qta')!.appleAutoTitle).toBe('새로운 녹음 2');
+      expect(bySource.get('ex2.m4a')!.appleAutoTitle).toBe('화양동 16 2');
+      expect(bySource.get('ex3.qta')!.appleAutoTitle).toBe('새로운 녹음 2');
+      expect(bySource.get('ex4.m4a')!.appleAutoTitle).toBe('화양동 16 2');
+
+      const tiedOutputOrder = items.map((i) => i.sourceName).filter((n) => tiedNames.includes(n));
+      expect(tiedOutputOrder).toEqual(tiedInputOrder);
+    } finally {
+      vi.mocked(probeModule.probe).mockImplementation(actual.probe);
+    }
+  });
 });
 ```
 
@@ -2016,11 +2156,40 @@ import path from 'node:path';
 import type { AppConfig, ScanItem } from '$lib/types';
 import { probe } from './media/probe';
 import { findDbPath, readTitleMap, type AppleEntry } from './apple/cloudRecordings';
-import { existingSourceNames } from './store/recordings';
+import { existingSourceNames, compareByRecordedAtDesc } from './store/recordings';
 
 export const AUDIO_EXTENSIONS = new Set([
   '.qta', '.m4a', '.mp3', '.wav', '.aac', '.caf', '.aiff', '.aif', '.flac', '.ogg', '.opus'
 ]);
+
+/**
+ * 코어 몇 개만 바쁘게 유지하고 몰려드는 것은 피하려는 값이다. 스캔은
+ * 메타데이터만 읽으므로 변환 동시성(CONVERT_CONCURRENCY)과 맞출 필요는 없다.
+ */
+const SCAN_CONCURRENCY = 8;
+
+/**
+ * 동시 실행 개수만 제한하고 입력 순서는 그대로 지킨다. 완료 순서가
+ * 뒤섞여도 결과는 항상 원래 인덱스 자리에 들어가므로, 최종 정렬만이
+ * 출력 순서를 결정한다. mapper는 실패해도 reject하지 않는다는 전제다
+ * (inspect가 그렇다) — 여기서 개별 실패를 따로 잡지 않는 이유다.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await mapper(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
 /** UTC ISO를 로컬 오프셋 표기로 바꾼다. */
 function toLocalIso(utcIso: string): string {
@@ -2041,7 +2210,6 @@ async function inspect(
   apple: AppleEntry | undefined,
   duplicate: boolean
 ): Promise<ScanItem> {
-  const bytes = (await fs.stat(filePath)).size;
   const ext = path.extname(name).slice(1);
   const base: ScanItem = {
     sourcePath: filePath,
@@ -2051,13 +2219,19 @@ async function inspect(
     recordedAt: '',
     durationSec: 0,
     ext,
-    bytes,
+    // stat이 실패하면 크기를 알 수 없다 — 0으로 명시한다.
+    bytes: 0,
     audioStreamIndex: 0,
     duplicate,
     error: null
   };
 
+  // stat도 probe와 함께 이 블록 안에서 실패해야 한다. readdir과 stat
+  // 사이에 파일이 사라지는 일(iCloud/Finder 동기화 중이면 실제로 일어난다)이
+  // probe 실패와 마찬가지로 이 파일 하나만 error로 남기고 나머지는
+  // 계속 처리되게 하려면 여기서부터 감싸야 한다.
   try {
+    const bytes = (await fs.stat(filePath)).size;
     const p = await probe(filePath);
     // 제목 우선순위: DB 사용자 제목 → 파일 메타 title → 파일명
     const title = apple?.title || p.title || base.title;
@@ -2066,6 +2240,7 @@ async function inspect(
 
     return {
       ...base,
+      bytes,
       title,
       appleAutoTitle: p.title,
       recordedAt,
@@ -2087,11 +2262,14 @@ export async function scanFolder(cfg: AppConfig, folder: string): Promise<ScanIt
   const apple = dbPath ? await readTitleMap(dbPath) : new Map<string, AppleEntry>();
   const known = await existingSourceNames(cfg);
 
-  const items = await Promise.all(
-    names.map((n) => inspect(path.join(folder, n), n, apple.get(n), known.has(n)))
+  const items = await mapWithConcurrency(names, SCAN_CONCURRENCY, (n) =>
+    inspect(path.join(folder, n), n, apple.get(n), known.has(n))
   );
 
-  return items.sort((a, b) => (a.recordedAt < b.recordedAt ? 1 : a.recordedAt > b.recordedAt ? -1 : 0));
+  // 문자열 비교가 아니라 실제 시각으로 정렬한다. recordedAt에 오프셋이
+  // 붙어 있어 사전식으로 비교하면 타임존이 섞였을 때 순서가 뒤집힌다.
+  // 날짜를 못 읽은 항목(recordedAt === '')은 뒤로 간다.
+  return items.sort(compareByRecordedAtDesc);
 }
 ```
 
@@ -2139,7 +2317,7 @@ DB가 없으면 파일 메타로 대체하고, 손상 파일은 error만 달고 
 ```ts
 import { describe, it, expect, vi } from 'vitest';
 import type { JobItem, JobStatus } from '$lib/types';
-import { JobQueue } from './queue';
+import { JobQueue, JobFailure } from './queue';
 
 function item(id: string): JobItem {
   return {
@@ -2234,6 +2412,39 @@ describe('JobQueue', () => {
     const q = new JobQueue(2, async () => ok);
     await expect(q.idle()).resolves.toBeUndefined();
   });
+
+  it('워커가 JobFailure에 부분 진행을 실어 던지면 그 상태를 남긴다', async () => {
+    const q = new JobQueue(1, async () => {
+      throw new JobFailure('파형 생성 실패', { mp3: 'done', wav: 'done' });
+    });
+    q.enqueue([item('a')]);
+    await q.idle();
+
+    const a = q.snapshot()[0];
+    expect(a.status).toBe('failed');
+    // 실행 이전 상태(전부 pending)로 되돌아가면 안 된다
+    expect(a.formats).toEqual({ mp3: 'done', wav: 'done' });
+  });
+
+  it('부분 진행이 남으면 재시도가 이미 만든 포맷을 다시 만들지 않는다', async () => {
+    let seen: Record<string, JobStatus> | null = null;
+    let calls = 0;
+    const q = new JobQueue(1, async (i) => {
+      calls++;
+      if (calls === 1) throw new JobFailure('파형 생성 실패', { mp3: 'done', wav: 'done' });
+      seen = i.formats;
+      return ok;
+    });
+
+    q.enqueue([item('a')]);
+    await q.idle();
+    q.retryFailed();
+    await q.idle();
+
+    // 재시도 워커가 받은 formats에 done이 보존돼야 러너가 convert를 건너뛴다
+    expect(seen).toEqual({ mp3: 'done', wav: 'done' });
+    expect(q.snapshot()[0].status).toBe('done');
+  });
 });
 ```
 
@@ -2253,6 +2464,22 @@ Expected: FAIL — `Failed to resolve import "./queue"`
 import type { JobItem, JobStatus } from '$lib/types';
 
 export type Worker = (item: JobItem) => Promise<Record<string, JobStatus>>;
+
+/**
+ * 워커가 도중에 실패했지만 일부 포맷은 이미 만들어졌을 때 던지는 에러.
+ * 여기 실린 formats가 없으면 큐는 실행 이전 상태를 그대로 남기게 되고,
+ * 그러면 이미 성공한 포맷이 pending으로 되돌아가 재시도 때 다시 변환된다.
+ * 그 재시도가 실패하면 convert의 정리 로직이 멀쩡한 파일을 지운다.
+ */
+export class JobFailure extends Error {
+  constructor(
+    message: string,
+    readonly formats?: Record<string, JobStatus>
+  ) {
+    super(message);
+    this.name = 'JobFailure';
+  }
+}
 
 /**
  * 인메모리 변환 큐. 요청과 무관하게 돌아가고, 진행 상황은 구독자에게 흘린다.
@@ -2349,7 +2576,15 @@ export class JobQueue {
       });
     } catch (err) {
       const cur = this.items.get(id)!;
-      this.items.set(id, { ...cur, status: 'failed', error: (err as Error).message });
+      // 워커가 부분 진행 상태를 실어 보냈으면 그것을 남긴다. 그러지 않으면
+      // 이미 성공한 포맷이 pending으로 되돌아가 재시도 때 다시 변환된다.
+      const formats = err instanceof JobFailure && err.formats ? err.formats : cur.formats;
+      this.items.set(id, {
+        ...cur,
+        status: 'failed',
+        formats,
+        error: (err as Error).message
+      });
     } finally {
       this.running--;
       this.emit();
@@ -2365,7 +2600,7 @@ export class JobQueue {
 npx vitest run src/lib/server/jobs/queue.test.ts
 ```
 
-Expected: PASS — 7 tests
+Expected: PASS — 9 tests
 
 - [ ] **Step 5: 커밋**
 
@@ -2512,10 +2747,12 @@ import type {
   AppConfig, FileEntry, JobItem, JobStatus, Recording, ScanItem
 } from '$lib/types';
 import { convert } from '../media/convert';
+import { probe } from '../media/probe';
 import { generatePeaks } from '../media/waveform';
 import { savePeaks } from '../store/waveforms';
 import { addMany, newId } from '../store/recordings';
-import { JobQueue, type Worker } from './queue';
+import { JobQueue, JobFailure, type Worker } from './queue';
+import { pendingRecordings } from './registry';
 
 export interface PendingItem {
   scan: ScanItem;
@@ -2577,6 +2814,8 @@ export function buildJobs(
     });
   }
 
+  // 변환이 끝난 뒤 저장소에 넣을 수 있도록 레지스트리에 맡겨둔다
+  pendingRecordings.put(recordings);
   return { jobs, recordings };
 }
 
@@ -2595,7 +2834,6 @@ export function makeRunner(cfg: AppConfig): Worker {
     await fs.mkdir(path.dirname(originalPath), { recursive: true });
     await fs.copyFile(job.sourcePath, originalPath);
 
-    const { probe } = await import('../media/probe');
     const meta = await probe(originalPath);
 
     const files: Record<string, FileEntry> = {
@@ -2618,14 +2856,20 @@ export function makeRunner(cfg: AppConfig): Worker {
       }
     }
 
-    const peaks = await generatePeaks(originalPath, meta.audioStreamIndex, cfg.waveformPeaks);
-    await savePeaks(cfg, job.recordingId, peaks);
+    // 여기서부터 던지는 오류는 이미 만들어진 포맷 정보를 실어 보내야 한다.
+    // 그러지 않으면 큐가 실행 이전 상태(전부 pending)를 남기고, 재시도가
+    // 멀쩡한 파일을 다시 변환하다 실패하면 convert가 그 파일을 지운다.
+    try {
+      const peaks = await generatePeaks(originalPath, meta.audioStreamIndex, cfg.waveformPeaks);
+      await savePeaks(cfg, job.recordingId, peaks);
 
-    // 저장소 기록은 파이프라인이 여기까지 온 뒤에만 한다.
-    // 앞에서 던지면 목록에 반쪽짜리 항목이 남지 않는다.
-    const { pendingRecordings } = await import('./registry');
-    const rec = pendingRecordings.take(job.recordingId);
-    if (rec) await addMany(cfg, [{ ...rec, files }]);
+      // 저장소 기록은 파이프라인이 여기까지 온 뒤에만 한다.
+      // 앞에서 던지면 목록에 반쪽짜리 항목이 남지 않는다.
+      const rec = pendingRecordings.take(job.recordingId);
+      if (rec) await addMany(cfg, [{ ...rec, files }]);
+    } catch (err) {
+      throw new JobFailure((err as Error).message, result);
+    }
 
     return result;
   };
@@ -2672,25 +2916,7 @@ class PendingRecordings {
 export const pendingRecordings = new PendingRecordings();
 ```
 
-`runner.test.ts`가 `buildJobs`만 부르고 `pendingRecordings.put`을 부르지 않으므로, `buildJobs`가 직접 등록하도록 `runner.ts`의 `buildJobs` 마지막에 다음을 추가한다.
-
-```ts
-// buildJobs의 return 직전에 넣는다
-pendingRecordings.put(recordings);
-return { jobs, recordings };
-```
-
-그리고 `runner.ts` 상단에 임포트를 추가한다.
-
-```ts
-import { pendingRecordings } from './registry';
-```
-
-`makeRunner` 안의 동적 임포트(`await import('./registry')`)는 지우고 위 정적 임포트를 쓴다. 마찬가지로 `probe`도 정적 임포트로 바꾼다.
-
-```ts
-import { probe } from '../media/probe';
-```
+`registry.ts`는 `runner.ts`가 임포트하므로 두 파일을 함께 만든다. Step 3의 `runner.ts`에 이미 `import { pendingRecordings } from './registry';`와 `buildJobs` 안의 `pendingRecordings.put(recordings);`가 들어 있다.
 
 - [ ] **Step 5: 테스트 통과 확인**
 
@@ -2879,22 +3105,34 @@ export const GET: RequestHandler = async () => {
   const queue = getQueue(config);
   const encoder = new TextEncoder();
 
+  // 정리 함수를 클로저에 둬야 cancel에서 실제로 부를 수 있다.
+  // controller에 매달아두면 호출되지 않아 구독과 타이머가 새어나간다.
+  let cleanup = () => {};
+
   const stream = new ReadableStream({
     start(controller) {
       const send = (items: unknown) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(items)}\n\n`));
       };
       send(queue.snapshot());
+
       const off = queue.subscribe(send);
       // 프록시가 유휴 연결을 끊지 않게 주기적으로 주석 프레임을 보낸다
-      const beat = setInterval(() => controller.enqueue(encoder.encode(': beat\n\n')), 15000);
-      (controller as unknown as { _cleanup?: () => void })._cleanup = () => {
+      const beat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': beat\n\n'));
+        } catch {
+          cleanup();
+        }
+      }, 15000);
+
+      cleanup = () => {
         off();
         clearInterval(beat);
       };
     },
-    cancel(reason) {
-      void reason;
+    cancel() {
+      cleanup();
     }
   });
 
@@ -4229,6 +4467,7 @@ git commit -m "test: 가져오기부터 재생까지 E2E
 ```ts
 import { describe, it, expect } from 'vitest';
 import os from 'node:os';
+import path from 'node:path';
 import { loadConfig } from './config';
 import { freeBytes, estimateBytes } from './disk';
 
@@ -4237,8 +4476,9 @@ describe('freeBytes', () => {
     expect(await freeBytes(os.tmpdir())).toBeGreaterThan(0);
   });
 
-  it('없는 경로면 던진다', async () => {
-    await expect(freeBytes('/nope/nope/nope')).rejects.toThrow();
+  it('아직 없는 경로는 존재하는 상위로 올라가서 잰다', async () => {
+    // media/ 는 첫 변환 전까지 없다. 그래도 여유를 잴 수 있어야 한다.
+    expect(await freeBytes(path.join(os.tmpdir(), 'not-created-yet', 'deeper'))).toBeGreaterThan(0);
   });
 });
 
@@ -4349,6 +4589,7 @@ Expected: FAIL — `Failed to resolve import "./disk"` / `"./persist"`
 
 ```ts
 import { statfs } from 'node:fs/promises';
+import path from 'node:path';
 import type { AppConfig } from '$lib/types';
 
 export class DiskShortage extends Error {
@@ -4362,9 +4603,23 @@ export class DiskShortage extends Error {
   }
 }
 
+/**
+ * 여유 공간을 잰다. 경로가 아직 없으면 존재하는 가장 가까운 상위로 올라간다.
+ * media/ 는 첫 변환 전까지 없을 수 있다.
+ */
 export async function freeBytes(dirPath: string): Promise<number> {
-  const s = await statfs(dirPath);
-  return Number(s.bavail) * Number(s.bsize);
+  let p = path.resolve(dirPath);
+  for (;;) {
+    try {
+      const s = await statfs(p);
+      return Number(s.bavail) * Number(s.bsize);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      const parent = path.dirname(p);
+      if (parent === p) throw err;
+      p = parent;
+    }
+  }
 }
 
 /**
@@ -4422,7 +4677,7 @@ export async function loadUnfinished(cfg: AppConfig): Promise<JobItem[]> {
 npx vitest run src/lib/server/disk.test.ts src/lib/server/jobs/persist.test.ts
 ```
 
-Expected: PASS — 7 tests
+Expected: PASS — 9 tests
 
 - [ ] **Step 6: 큐 생성 시 복구 연결**
 
@@ -4467,16 +4722,14 @@ import { freeBytes, estimateBytes, DiskShortage } from '$lib/server/disk';
 // 반쯤 변환된 파일들이 남아 정리가 어렵다.
 const need = estimateBytes(config, pending.map((p) => p.scan.bytes));
 try {
-  const free = await freeBytes(config.mediaDir.split(path.sep).slice(0, 2).join(path.sep) || '/');
+  const free = await freeBytes(config.mediaDir);
   if (need > free) return fail(507, { message: new DiskShortage(need, free).message });
 } catch {
   // 여유를 잴 수 없으면 막지 않고 진행한다
 }
 ```
 
-`import path from 'node:path';`를 상단에 추가한다.
-
-`config.mediaDir`가 아직 없을 수 있으므로 존재하는 상위 경로로 잰다.
+`freeBytes`가 없는 경로를 만나면 존재하는 상위로 올라가므로, `media/`가 아직 만들어지지 않았어도 그대로 넘기면 된다.
 
 - [ ] **Step 8: 수동 확인**
 

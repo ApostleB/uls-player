@@ -1,10 +1,32 @@
-node_modules/
-.svelte-kit/
-build/
+node_modules
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
 .env
 .env.*
 !.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
 
 # 런타임 데이터 — 3.1GB 미디어와 JSON 저장소는 커밋하지 않는다
-data/
-media/
+/data/
+/media/
+
+# 빌드 스크래치 디렉터리
+.superpowers/
+# Playwright
+test-results

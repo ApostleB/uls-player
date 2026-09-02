@@ -1,0 +1,481 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { AppConfig, JobItem, JobStatus, ScanItem } from '$lib/types';
+import { loadConfig } from '../config';
+import { listAll } from '../store/recordings';
+import { loadPeaks } from '../store/waveforms';
+import { scanFolder } from '../scan';
+import { JobQueue, JobFailure } from './queue';
+import { buildJobs, makeRunner } from './runner';
+import * as waveformModule from '../media/waveform';
+import * as convertModule from '../media/convert';
+import * as waveformsStoreModule from '../store/waveforms';
+
+// 실제 구현을 감싸는 스파이. 기본 동작은 실제 ffmpeg 호출 그대로 통과시키고,
+// 개별 테스트에서만 mockImplementationOnce로 한 번 실패를 주입한다(자동으로
+// 다음 호출부터 실제 구현으로 복귀하므로 다른 테스트에 영향이 없다).
+// convert는 호출 횟수를 세기 위해 감싼다.
+vi.mock('../media/waveform', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../media/waveform')>();
+  return { ...actual, generatePeaks: vi.fn(actual.generatePeaks) };
+});
+vi.mock('../media/convert', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../media/convert')>();
+  return { ...actual, convert: vi.fn(actual.convert) };
+});
+vi.mock('../store/waveforms', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../store/waveforms')>();
+  return { ...actual, savePeaks: vi.fn(actual.savePeaks) };
+});
+
+const SPATIAL = path.resolve('tests/fixtures/audio/spatial.qta');
+const QTA_NAME = '20260711 181530-1923A106.qta';
+
+let dir: string;
+let src: string;
+let cfg: AppConfig;
+let scan: ScanItem[];
+
+beforeEach(async () => {
+  // 이전 테스트가 mockImplementationOnce를 등록해두고 실제로 소비하지 않은 채
+  // 실패(assert 실패 등)했다면, 그 once 구현이 다음 테스트로 새어 들어가
+  // 엉뚱한 실패를 일으킨다. mockClear는 호출 기록만 지우고 구현은 그대로
+  // 두므로(공식 타입 주석: "does not reset implementations") 여기서는 못
+  // 막는다. mockReset은 once 큐를 포함해 구현을 지우되, vi.fn(impl)로 만든
+  // 목은 그 impl로 되돌려놓는다(공식 타입 주석: "Resetting a mock from
+  // vi.fn(impl) will set implementation to impl") — 그래서 매 테스트 시작마다
+  // 기본 동작(실제 구현 통과)으로 확실히 되돌리기 위해 mockClear 대신 쓴다.
+  vi.mocked(waveformModule.generatePeaks).mockReset();
+  vi.mocked(convertModule.convert).mockReset();
+  vi.mocked(waveformsStoreModule.savePeaks).mockReset();
+
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), 'uls-runner-'));
+  src = path.join(dir, 'src');
+  await fs.mkdir(src, { recursive: true });
+  await fs.copyFile(SPATIAL, path.join(src, QTA_NAME));
+  cfg = loadConfig({
+    DATA_DIR: path.join(dir, 'data'),
+    MEDIA_DIR: path.join(dir, 'media'),
+    WAVEFORM_PEAKS: '64'
+  });
+  scan = await scanFolder(cfg, src);
+});
+
+afterEach(async () => {
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
+describe('buildJobs', () => {
+  it('입력한 제목·설명·태그를 녹음 항목에 담는다', () => {
+    const { recordings, jobs } = buildJobs(cfg, [
+      { scan: scan[0], title: '레인', description: '데모', tags: ['1절'] }
+    ]);
+    expect(recordings[0].title).toBe('레인');
+    expect(recordings[0].description).toBe('데모');
+    expect(recordings[0].tags).toEqual(['1절']);
+    expect(recordings[0].sourceName).toBe(QTA_NAME);
+    expect(jobs[0].recordingId).toBe(recordings[0].id);
+  });
+
+  it('설정된 포맷을 pending으로 초기화한다', () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    expect(jobs[0].formats).toEqual({ mp3: 'pending', wav: 'pending' });
+  });
+});
+
+describe('makeRunner', () => {
+  it('원본을 복사하고 모든 포맷을 만들고 파형을 저장한다', async () => {
+    const { recordings, jobs } = buildJobs(cfg, [
+      { scan: scan[0], title: '레인', description: '', tags: ['데모'] }
+    ]);
+    const q = new JobQueue(2, makeRunner(cfg));
+    q.enqueue(jobs);
+    await q.idle();
+
+    expect(q.snapshot()[0].status).toBe('done');
+
+    const id = recordings[0].id;
+    expect((await fs.stat(path.join(cfg.mediaDir, 'original', `${id}.qta`))).size).toBeGreaterThan(0);
+    expect((await fs.stat(path.join(cfg.mediaDir, 'mp3', `${id}.mp3`))).size).toBeGreaterThan(0);
+    expect((await fs.stat(path.join(cfg.mediaDir, 'wav', `${id}.wav`))).size).toBeGreaterThan(0);
+
+    const peaks = await loadPeaks(cfg, id);
+    expect(peaks).toHaveLength(64);
+
+    const stored = await listAll(cfg);
+    expect(stored).toHaveLength(1);
+    expect(stored[0].title).toBe('레인');
+    expect(Object.keys(stored[0].files).sort()).toEqual(['mp3', 'original', 'wav']);
+    expect(stored[0].files.mp3.bytes).toBeGreaterThan(0);
+  });
+
+  it('원본이 사라지면 실패로 기록하고 저장소를 오염시키지 않는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    await fs.rm(jobs[0].sourcePath);
+
+    const q = new JobQueue(1, makeRunner(cfg));
+    q.enqueue(jobs);
+    await q.idle();
+
+    expect(q.snapshot()[0].status).toBe('failed');
+    expect(await listAll(cfg)).toEqual([]);
+  });
+});
+
+/**
+ * 브리프의 위 4개 테스트는 남겨두되(약하지만 무해하고, happy path는 통합
+ * 테스트로서 실제 가치가 있다), 다음 세 성질은 어떤 것도 직접 지키지
+ * 않았다 — 뮤테이션으로 실측 확인함(task-11-report.md 참고):
+ *   1) 저장소 기록이 파형 생성 뒤에 온다는 것: "저장소를 오염시키지 않는다"는
+ *      원본 삭제로 실패를 유도해서, 파형 단계가 실패하는 경로 자체를 타지 않는다.
+ *   2) done 포맷을 건너뛰는 것: 브리프 4개 테스트 중 job을 두 번 돌리는 것이 없다.
+ *   3) JobFailure로 부분 진행 상태를 실어 던지는 것: 파형 단계가 실패하는
+ *      시나리오 자체가 없다.
+ * 아래 세 테스트가 그 자리를 각각 채운다.
+ */
+describe('재시도 안전성 (부분 진행 보존)', () => {
+  it('파형 생성이 실패하면 저장소에 기록하지 않는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    vi.mocked(waveformModule.generatePeaks).mockImplementationOnce(async () => {
+      throw new Error('강제 파형 실패');
+    });
+
+    await expect(worker(jobs[0])).rejects.toThrow();
+    // 변환은 이미 다 끝난 뒤 파형에서만 실패했다 — 저장소 기록이 정말
+    // "마지막"이라면 이 시점에 저장소는 비어 있어야 한다.
+    expect(await listAll(cfg)).toEqual([]);
+  });
+
+  it('이미 done인 포맷은 재변환하지 않는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    const before = vi.mocked(convertModule.convert).mock.calls.length;
+    const result = await worker(jobs[0]);
+    const afterFirstRun = vi.mocked(convertModule.convert).mock.calls.length;
+    expect(afterFirstRun - before).toBe(2); // mp3 + wav
+
+    // 재시도 시뮬레이션: formats가 이미 done인 채로 같은 job을 다시 돌린다
+    // (JobQueue.retryFailed가 실패한 포맷만 pending으로 되돌리고 나머지는
+    // done으로 남긴 채 재실행하는 것과 같은 입력 모양이다).
+    const retryJob = { ...jobs[0], formats: result };
+    await worker(retryJob);
+    const afterRetry = vi.mocked(convertModule.convert).mock.calls.length;
+
+    // done으로 이미 표시된 포맷은 다시 변환하면 안 된다 — 호출 횟수가 늘면 안 된다.
+    expect(afterRetry - afterFirstRun).toBe(0);
+  });
+
+  it('파형 생성이 실패하면 JobFailure로 완료된 포맷 상태를 함께 던진다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    vi.mocked(waveformModule.generatePeaks).mockImplementationOnce(async () => {
+      throw new Error('강제 파형 실패');
+    });
+
+    let caught: unknown;
+    try {
+      await worker(jobs[0]);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(JobFailure);
+    // 변환 자체는 mp3·wav 둘 다 성공했다 — 그 상태가 실려 있어야
+    // 재시도가 멀쩡한 파일을 다시 변환하다 지우는 일이 없다.
+    expect((caught as JobFailure).formats).toEqual({ mp3: 'done', wav: 'done' });
+  });
+});
+
+
+/**
+ * 조정자 확인: FINDING 1·2 — 브리프 그대로는 재시도 시 저장소에 같은 id의
+ * 중복·불완전 항목이 남고(각 항목 모두 files가 불완전), 포맷별 ffmpeg 오류
+ * 메시지가 통째로 버려진다. 두 결함 모두 뮤테이션으로 실측 확인했다
+ * (task-11-report.md 참고). 아래 세 테스트가 각각을 지킨다.
+ */
+describe('재시도 안전성 (저장소 무결성과 오류 메시지)', () => {
+  it('부분 실패 후 재시도하면 항목이 하나만 남고 두 포맷이 모두 채워진다', async () => {
+    const { recordings, jobs } = buildJobs(cfg, [
+      { scan: scan[0], title: 't', description: '', tags: [] }
+    ]);
+
+    // 1차 시도: mp3만 실패시킨다(wav는 실제 변환대로 성공)
+    vi.mocked(convertModule.convert).mockImplementationOnce(async () => {
+      throw new Error('강제 mp3 실패');
+    });
+
+    const worker = makeRunner(cfg);
+    let firstErr: unknown;
+    try {
+      await worker(jobs[0]);
+    } catch (err) {
+      firstErr = err;
+    }
+    expect(firstErr).toBeInstanceOf(JobFailure);
+    const partial = (firstErr as JobFailure).formats!;
+    expect(partial).toEqual({ mp3: 'failed', wav: 'done' });
+
+    // 1차 시도만으로도 저장소 기록은 이미 한 번 일어났어야 한다(개별 포맷
+    // 실패는 저장 자체를 막지 않는다) — 이 시점엔 mp3가 빠져 있을 수 있다.
+    const afterFirst = await listAll(cfg);
+    expect(afterFirst).toHaveLength(1);
+
+    // 2차 시도: JobQueue.retryFailed와 같은 모양으로 formats를 구성한다
+    // (done은 유지, 나머지는 pending으로 되돌린다)
+    const retryFormats: Record<string, JobStatus> = {};
+    for (const k of Object.keys(partial)) {
+      retryFormats[k] = partial[k] === 'done' ? 'done' : 'pending';
+    }
+    const retryJob = { ...jobs[0], formats: retryFormats };
+    await worker(retryJob);
+
+    const afterRetry = await listAll(cfg);
+    // 중복 항목이 생기면 안 된다 — 같은 id로 하나만 남아야 한다.
+    expect(afterRetry).toHaveLength(1);
+    expect(afterRetry[0].id).toBe(recordings[0].id);
+    // original·mp3·wav 세 개가 한 항목에 전부 모여 있어야 한다.
+    expect(Object.keys(afterRetry[0].files).sort()).toEqual(['mp3', 'original', 'wav']);
+    expect(afterRetry[0].files.mp3.bytes).toBeGreaterThan(0);
+    expect(afterRetry[0].files.wav.bytes).toBeGreaterThan(0);
+  });
+
+  it('done으로 표시된 포맷의 산출물이 사라지면 다시 만든다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    const result = await worker(jobs[0]);
+    expect(result).toEqual({ mp3: 'done', wav: 'done' });
+
+    const id = jobs[0].recordingId;
+    const mp3Path = path.join(cfg.mediaDir, 'mp3', `${id}.mp3`);
+    await fs.rm(mp3Path);
+
+    const before = vi.mocked(convertModule.convert).mock.calls.length;
+    const retryJob = { ...jobs[0], formats: result };
+    const retryResult = await worker(retryJob);
+    const after = vi.mocked(convertModule.convert).mock.calls.length;
+
+    // done 표시를 무조건 믿었다면 여기서 convert가 한 번도 안 불렸을 것이다.
+    expect(after - before).toBe(1);
+    expect(retryResult.mp3).toBe('done');
+    expect((await fs.stat(mp3Path)).size).toBeGreaterThan(0);
+  });
+
+  it('포맷 변환이 실패하면 ffmpeg 메시지가 JobFailure에 담긴다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    vi.mocked(convertModule.convert).mockImplementationOnce(async () => {
+      throw new Error('변환 실패 (mp3): 가짜 ffmpeg stderr 메시지');
+    });
+
+    let caught: unknown;
+    try {
+      await worker(jobs[0]);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(JobFailure);
+    const message = (caught as JobFailure).message;
+    expect(message).toContain('mp3');
+    expect(message).toContain('가짜 ffmpeg stderr 메시지');
+  });
+});
+
+
+/**
+ * 3차 리뷰(조정자)에서 확정된 Important 3건:
+ *   1) done 포맷의 stat 실패를 ENOENT 여부와 상관없이 "파일이 사라졌다"로
+ *      해석해 무조건 재변환으로 흘려보냈다 — EMFILE·EACCES·EIO처럼 파일은
+ *      멀쩡한데 stat 자체가 안 되는 상황에서, 그 재변환도 같은 원인으로
+ *      실패하면 convert의 정리 로직이 멀쩡한 파일을 지운다.
+ *   2) fs.copyFile은 대상을 O_TRUNC로 열어서, 재시도마다 이미 검증된
+ *      원본을 다시 지우고 채운다 — 복사 도중 소스가 끊기면 보관용
+ *      원본이 잘린 채로 복구 불가능하게 남는다.
+ *   3) 포맷별 변환 실패(formatErrors)가 쌓인 상태에서 파형/저장 단계까지
+ *      실패하면, 그 단계의 오류 메시지만 남고 formatErrors는 통째로
+ *      사라졌다 — 두 원인 다 사용자에게 보여야 한다.
+ * 아래 세 테스트가 각각을 지킨다.
+ */
+describe('재시도 안전성 (파일시스템 오류와 이중 실패)', () => {
+  it('done 포맷 산출물이 ENOENT가 아닌 오류로 stat 실패하면 재변환하지 않는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    const result = await worker(jobs[0]);
+    expect(result).toEqual({ mp3: 'done', wav: 'done' });
+
+    const id = jobs[0].recordingId;
+    const mp3Path = path.join(cfg.mediaDir, 'mp3', `${id}.mp3`);
+
+    // mp3 산출물의 stat만 EACCES로 실패하게 만든다. 나머지 stat 호출은
+    // 실제 구현을 그대로 통과시킨다(scan.test.ts와 같은 패턴).
+    const realStat = fs.stat.bind(fs);
+    const spy = vi.spyOn(fs, 'stat').mockImplementation(async (p, ...rest) => {
+      if (String(p) === mp3Path) {
+        const err = new Error('EACCES: permission denied, stat') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return realStat(p as string, ...(rest as []));
+    });
+
+    const beforeConvertCalls = vi.mocked(convertModule.convert).mock.calls.length;
+    try {
+      const retryJob = { ...jobs[0], formats: result };
+      await expect(worker(retryJob)).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    const afterConvertCalls = vi.mocked(convertModule.convert).mock.calls.length;
+
+    // ENOENT가 아닌 오류는 "파일이 사라졌다"로 해석해 재변환하면 안 된다.
+    // (파일이 지워지지 않는다는 것은 여기서 따로 확인하지 않는다 — 이
+    // 테스트는 fs.stat만 가짜로 실패시킬 뿐 convert는 건드리지 않으므로,
+    // 재변환이 일어나지 않으면 convert의 정리 로직이 돌 기회 자체가
+    // 없다. 즉 "지워지지 않는다"는 이 호출 횟수 단언에 이미 포함돼 있고,
+    // 파일 존재를 따로 assert하면 이 뮤테이션에서는 항상 통과해서
+    // 아무것도 검증하지 않는 assertion이 된다.)
+    expect(afterConvertCalls - beforeConvertCalls).toBe(0);
+  });
+
+  it('재시도는 이미 있는 원본을 다시 복사하지 않는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    const spy = vi.spyOn(fs, 'copyFile');
+    try {
+      const result = await worker(jobs[0]);
+      expect(spy).toHaveBeenCalledTimes(1); // 최초 실행은 당연히 복사한다
+
+      const ext = path.extname(jobs[0].sourcePath).slice(1);
+      const originalPath = path.join(cfg.mediaDir, 'original', `${jobs[0].recordingId}.${ext}`);
+      const before = await fs.stat(originalPath);
+
+      const retryJob = { ...jobs[0], formats: result };
+      await worker(retryJob);
+
+      // 재시도에서 원본을 또 복사하면 안 된다 — 호출 횟수가 늘면 안 된다.
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      const after = await fs.stat(originalPath);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+      expect(after.size).toBe(before.size);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('포맷 실패 후 파형/저장 단계도 실패하면 두 원인이 모두 JobFailure 메시지에 남는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    vi.mocked(convertModule.convert).mockImplementationOnce(async () => {
+      throw new Error('변환 실패 (mp3): 가짜 ffmpeg stderr');
+    });
+    vi.mocked(waveformsStoreModule.savePeaks).mockImplementationOnce(async () => {
+      throw new Error('강제 EACCES: 파형 저장 실패');
+    });
+
+    let caught: unknown;
+    try {
+      await worker(jobs[0]);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(JobFailure);
+    const message = (caught as JobFailure).message;
+    // 포맷 실패 원인과 파형/저장 단계 실패 원인이 둘 다 남아야 한다.
+    expect(message).toContain('mp3');
+    expect(message).toContain('가짜 ffmpeg stderr');
+    expect(message).toContain('강제 EACCES');
+  });
+
+  it('앞 포맷을 이번 실행에서 새로 변환한 뒤 뒤 포맷이 ENOENT가 아닌 stat 오류로 실패해도, 새로 만든 포맷의 done 상태를 잃지 않는다', async () => {
+    const { jobs } = buildJobs(cfg, [{ scan: scan[0], title: 't', description: '', tags: [] }]);
+    const worker = makeRunner(cfg);
+
+    // wav는 이전에 이미 done이었던 것으로 표시해두고, mp3는 pending으로
+    // 두어 이번 실행에서 새로 변환되게 한다(cfg.formats 순서상 mp3가
+    // wav보다 먼저 처리된다).
+    const jobWithWavDone = {
+      ...jobs[0],
+      formats: { mp3: 'pending', wav: 'done' } as Record<string, JobStatus>
+    };
+
+    const wavPath = path.join(cfg.mediaDir, 'wav', `${jobs[0].recordingId}.wav`);
+    const realStat = fs.stat.bind(fs);
+    const spy = vi.spyOn(fs, 'stat').mockImplementation(async (p, ...rest) => {
+      if (String(p) === wavPath) {
+        const err = new Error('EIO: i/o error, stat') as NodeJS.ErrnoException;
+        err.code = 'EIO';
+        throw err;
+      }
+      return realStat(p as string, ...(rest as []));
+    });
+
+    let caught: unknown;
+    try {
+      await worker(jobWithWavDone);
+    } catch (err) {
+      caught = err;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(JobFailure);
+    // mp3는 이번 실행에서 방금 성공적으로 새로 변환됐다 — 그냥 던지면
+    // 큐가 실행 이전 상태(mp3: pending)로 되돌리고, 다음 재시도가 방금
+    // 멀쩡하게 만든 mp3를 다시 변환하다 실패하면 convert의 정리 로직이
+    // 그 파일을 지운다. JobFailure에 formats가 실려 있어야 mp3가
+    // done으로 남는다.
+    expect((caught as JobFailure).formats).toEqual({ mp3: 'done' });
+  });
+});
+
+/**
+ * Task 18: 서버 재시작으로 복구된 작업은 pendingRecordings(인메모리 레지스트리)에
+ * 원본 녹음이 없다. 저장소에도 없다면(재시작 전에 기록되지 못한 경우) patch()가
+ * "녹음을 찾을 수 없습니다: <uuid>"를 던지는데, 그 원문 그대로 사용자에게
+ * 올라가면 uuid 하나만 보고는 무엇을 해야 할지 알 수 없다. 대응(다시
+ * 가져오기)이 담긴 메시지로 바뀌는지 직접 확인한다.
+ */
+describe('재시작 복구 — pendingRecordings에도 저장소에도 원본이 없을 때', () => {
+  it('바닥 그대로의 조회 실패가 아니라 행동할 수 있는 메시지로 실패한다', async () => {
+    const worker = makeRunner(cfg);
+    // buildJobs를 거치지 않아 pendingRecordings에 등록되지 않은, 복구된
+    // 작업을 흉내낸 JobItem. recordings.json도 비어 있으니(이 테스트의
+    // cfg는 beforeEach마다 새 tmp dataDir을 쓴다) 저장소에서도 찾을 수 없다.
+    const orphan: JobItem = {
+      id: 'orphan-job',
+      recordingId: randomUUID(),
+      sourcePath: scan[0].sourcePath,
+      title: '복구된 작업',
+      status: 'pending',
+      formats: { mp3: 'pending', wav: 'pending' },
+      error: null
+    };
+
+    let caught: unknown;
+    try {
+      await worker(orphan);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(JobFailure);
+    const message = (caught as JobFailure).message;
+    expect(message).toContain('다시 가져오');
+    // 개선 전 문구("녹음을 찾을 수 없습니다: <uuid>")가 그대로 새지 않아야 한다.
+    expect(message).not.toMatch(/^녹음을 찾을 수 없습니다:/);
+  });
+});
