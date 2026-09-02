@@ -73,6 +73,54 @@ export function loopWrapTarget(current: number, state: LoopState): number | null
   return null;
 }
 
+export interface BookmarkDraft {
+  atSec: number;
+  endSec: number | null;
+  note: string;
+}
+
+/**
+ * 북마크 버튼을 눌렀을 때 무엇을 남길지 결정한다. A-B 구간이 완성돼
+ * 있으면(loopA·loopB 모두 값이 있으면) 그 구간을 구간 북마크로 포착하고,
+ * 아니면 현재 재생 위치 하나만 지점 북마크로 남긴다(Bookmark.endSec이
+ * null). A-B 반복 자체는 이 함수를 거쳐도 저장되지 않는다 — LoopState는
+ * 그대로 휘발성 재생 상태로 남고, 이 함수는 그 순간 하나를 옮겨 담을
+ * 뿐이다.
+ */
+export function bookmarkDraft(loop: LoopState, currentTime: number): BookmarkDraft {
+  const hasRange = loop.loopA !== null && loop.loopB !== null;
+  return {
+    atSec: hasRange ? loop.loopA! : currentTime,
+    endSec: hasRange ? loop.loopB : null,
+    note: ''
+  };
+}
+
+/**
+ * 북마크 목록을 시작 시각(atSec) 오름차순으로 정렬한 새 배열을 돌려준다.
+ * 원본 배열은 건드리지 않는다 — Array.prototype.sort는 제자리에서
+ * 정렬하므로, 호출한 쪽이 들고 있는(예: recording.bookmarks) 배열을
+ * 그대로 넘기면 화면에 "보여주려던" 정렬이 실제 데이터 순서까지
+ * 조용히 바꿔버린다.
+ */
+export function sortBookmarks<T extends { atSec: number }>(bookmarks: T[]): T[] {
+  return bookmarks.slice().sort((a, b) => a.atSec - b.atSec);
+}
+
+/** id가 일치하는 항목의 note만 바꾼 새 배열을 돌려준다. 나머지 항목은 그대로 재사용한다. */
+export function withBookmarkNote<T extends { id: string; note: string }>(
+  bookmarks: T[],
+  id: string,
+  note: string
+): T[] {
+  return bookmarks.map((b) => (b.id === id ? { ...b, note } : b));
+}
+
+/** id가 일치하는 항목을 뺀 새 배열을 돌려준다. */
+export function withoutBookmark<T extends { id: string }>(bookmarks: T[], id: string): T[] {
+  return bookmarks.filter((b) => b.id !== id);
+}
+
 export interface AudioLike {
   currentTime: number;
   play(): void | Promise<void>;

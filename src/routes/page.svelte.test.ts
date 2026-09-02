@@ -496,3 +496,91 @@ describe('+page.svelte — 행 클릭으로 재생 대상 선택(Task 15 시접)
     await expect.element(getByText('1개 선택됨')).toBeInTheDocument();
   });
 });
+
+describe('+page.svelte — 플레이어의 북마크 메모 편집(Task 16)', () => {
+  function dataWithBookmark() {
+    return {
+      recordings: [
+        rec({
+          id: '1',
+          title: '레인',
+          durationSec: 120,
+          bookmarks: [{ id: 'bm-1', atSec: 5, endSec: null, note: '원래 메모' }]
+        })
+      ],
+      tags: [],
+      formats: ['mp3', 'wav']
+    };
+  }
+
+  it('메모를 고치면 PATCH { op: "patch", id, bookmarks }를 보내고, 응답으로 화면을 갱신한다', async () => {
+    const serverResponse = {
+      recordings: [
+        rec({
+          id: '1',
+          title: '레인',
+          durationSec: 120,
+          bookmarks: [{ id: 'bm-1', atSec: 5, endSec: null, note: '서버가 확정한 메모' }]
+        })
+      ],
+      tags: []
+    };
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify(serverResponse), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getByRole, getByPlaceholder, getByText } = render(Page, { data: dataWithBookmark() });
+
+    // 행을 선택해 하단 고정 플레이어를 연다(Task 15 시접).
+    await getByRole('button', { name: '레인' }).click();
+    await expect.element(getByPlaceholder('메모')).toBeInTheDocument();
+
+    await getByPlaceholder('메모').fill('내가 입력한 메모');
+    // blur 전용 API가 없으니 편집 중인 입력 밖의 다른 요소를 눌러 실제
+    // blur를 일으킨다(다른 인라인 편집 테스트들과 같은 패턴).
+    await getByText('ULS Player').click();
+
+    // 행 선택 자체가 Player의 파형(fetch('/api/waveform/1'))도 불러오므로
+    // fetch 총 호출 수는 이 흐름과 무관하게 1보다 클 수 있다 — 실제로
+    // PATCH /api/recordings를 보낸 호출만 찾아 검증한다.
+    const patchCall = fetchMock.mock.calls.find(([url]) => url === '/api/recordings');
+    if (!patchCall) throw new Error('PATCH /api/recordings 호출을 찾지 못했다');
+    expect(JSON.parse(patchCall[1]!.body as string)).toEqual({
+      op: 'patch',
+      id: '1',
+      bookmarks: [{ id: 'bm-1', atSec: 5, endSec: null, note: '내가 입력한 메모' }]
+    });
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/recordings')).toHaveLength(1);
+
+    // 화면은 서버 응답을 반영한다 — 로컬 입력값을 그대로 붙잡고 있지 않는지 구분.
+    expect((getByPlaceholder('메모').element() as HTMLInputElement).value).toBe('서버가 확정한 메모');
+  });
+
+  it('메모 편집이 실패하면(400) 화면의 메모는 그대로 남고, 서버 메시지가 에러 카드에 뜬다(Task 14와 같은 종류의 버그 회귀)', async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ message: '동시에 삭제된 행입니다' }), {
+          status: 400,
+          headers: { 'content-type': 'application/json' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getByRole, getByPlaceholder, getByText } = render(Page, { data: dataWithBookmark() });
+
+    await getByRole('button', { name: '레인' }).click();
+    await expect.element(getByPlaceholder('메모')).toBeInTheDocument();
+
+    await getByPlaceholder('메모').fill('저장 안 될 메모');
+    await getByText('ULS Player').click();
+
+    // send()가 실패를 삼키지 않고 카드로 보여준다.
+    await expect.element(getByText('동시에 삭제된 행입니다')).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/recordings')).toHaveLength(1);
+  });
+});

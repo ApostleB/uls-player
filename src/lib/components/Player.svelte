@@ -2,13 +2,23 @@
   import { untrack } from 'svelte';
   import type { Bookmark, Recording } from '$lib/types';
   import Waveform from './Waveform.svelte';
-  import { isTypingTarget, loopWrapTarget, markLoop as nextLoop, restorePlaybackPosition } from '$lib/player';
+  import {
+    isTypingTarget,
+    loopWrapTarget,
+    markLoop as nextLoop,
+    restorePlaybackPosition,
+    bookmarkDraft,
+    sortBookmarks,
+    withBookmarkNote,
+    withoutBookmark
+  } from '$lib/player';
   import type { LoopState } from '$lib/player';
 
   let {
     recording = null as Recording | null,
     formats = [] as string[],
-    onbookmark = (_: Omit<Bookmark, 'id'>) => {}
+    onbookmark = (_: Omit<Bookmark, 'id'>) => {},
+    onbookmarkchange = (_: Bookmark[]) => {}
   } = $props();
 
   let audio = $state<HTMLAudioElement | null>(null);
@@ -36,6 +46,27 @@
   let peaks = $state<number[]>([]);
   let loopA = $state<number | null>(null);
   let loopB = $state<number | null>(null);
+
+  /**
+   * 북마크 편집·삭제에서 "다음 배열"을 계산할 때 베이스로 쓰는 로컬
+   * 사본. recording.bookmarks(프롭)는 onbookmarkchange → +page.svelte의
+   * send()가 보낸 PATCH 응답이 돌아와야 갱신된다 — 그 응답을 기다리는
+   * 사이 메모 입력 두 개를 연달아 blur하면, 두 번째 blur 시점에도
+   * 프롭은 여전히 "첫 번째 편집 이전" 값 그대로다. 그 프롭을 그대로
+   * 베이스로 삼아 새 배열을 만들면(PATCH가 배열을 통째로 교체하므로)
+   * 두 번째 편집이 보낸 배열에는 첫 번째 편집이 없어, 나중에 어느 쪽
+   * 응답이 이기든 한쪽 편집이 사라진다. 그래서 편집·삭제는 항상 이
+   * 사본을 베이스로 계산하고, 계산 직후 이 사본도 곧바로(동기적으로)
+   * 갱신해 다음 편집이 응답을 기다리지 않고도 방금 만든 배열 위에서
+   * 시작하게 한다. recording.bookmarks가 실제로 바뀌면(다른 녹음
+   * 선택, 지점 북마크 추가, 우리 자신의 patch가 확인됨 등) 아래
+   * 이펙트가 이 사본을 다시 맞춰준다.
+   */
+  // svelte-ignore state_referenced_locally
+  let localBookmarks = $state<Bookmark[]>(recording?.bookmarks ?? []);
+  $effect(() => {
+    localBookmarks = recording?.bookmarks ?? [];
+  });
 
   const available = $derived(recording ? formats.filter((f) => recording.files[f]) : []);
   const duration = $derived(recording?.durationSec ?? 0);
@@ -142,10 +173,14 @@
    * timeupdate는 대략 250ms 간격으로만 도니, B가 끝자락 가까이 있으면
    * 문턱을 넘는 tick 없이 그대로 ended에 도달해 루프가 조용히 멈출 수
    * 있다 — ended를 보조 안전망으로 둬서 A-B 구간이 살아있으면 거기서도
-   * A로 되감는다. 구간이 없으면(평범하게 끝까지 재생) ended는 pause
-   * 이벤트 없이 paused만 true로 바꿔놓으므로(bind:paused는 ended를
-   * 듣지 않는다) 여기서 명시적으로 정리해 토글 버튼이 실제 상태를
-   * 따라가게 한다.
+   * A로 되감는다. 구간이 없으면(평범하게 끝까지 재생) 실제 Chromium
+   * 에서는 ended 이전에 pause 이벤트도 발생한다(HTML 스펙의 "재생이
+   * 끝에 도달" 절차: paused가 false였다면 먼저 paused를 true로 두고
+   * pause를 쏜 뒤에야 ended를 쏜다) — bind:paused가 그 pause 이벤트로
+   * paused를 이미 true로 맞춰 놓았을 것이므로 아래 대입은 대부분
+   * 중복이다. 그래도 이벤트 순서에 기대지 않고 토글 버튼이 확실히
+   * 실제 상태를 따라가도록 여기서도 명시적으로 정리해 둔다(멱등이라
+   * 두 번 대입해도 무해하다).
    */
   function onEnded() {
     if (!audio) return;
@@ -165,9 +200,16 @@
     loopB = next.loopB;
   }
 
+  /**
+   * A-B 구간이 완성돼 있으면(loopA·loopB 모두 값이 있으면) 그 구간을
+   * 구간 북마크로 포착하고, 아니면 현재 재생 위치를 지점 북마크로
+   * 남긴다. A-B 반복 자체는 여기서도 저장하지 않는다 — bookmarkDraft는
+   * 순간을 옮겨 담을 뿐, loopA·loopB는 그대로 휘발성 재생 상태로
+   * 남는다.
+   */
   function addBookmark() {
     if (!recording) return;
-    onbookmark({ atSec: audio?.currentTime ?? 0, endSec: null, note: '' });
+    onbookmark(bookmarkDraft({ loopA, loopB }, audio?.currentTime ?? 0));
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -219,7 +261,7 @@
         {/if}
       </div>
 
-      <Waveform {peaks} {progress} bookmarks={recording.bookmarks} durationSec={duration}
+      <Waveform {peaks} {progress} bookmarks={localBookmarks} durationSec={duration}
         onseek={(r: number) => seek(r * duration)} />
 
       <div class="flex flex-wrap items-center gap-2">
@@ -271,6 +313,36 @@
           {/each}
         </div>
       </div>
+
+      {#if localBookmarks.length}
+        <ul class="flex flex-wrap gap-2 pt-1">
+          {#each sortBookmarks(localBookmarks) as b (b.id)}
+            <li class="chip preset-tonal-tertiary flex items-center gap-1">
+              <button type="button" class="tabular-nums" onclick={() => seek(b.atSec)}>
+                {fmt(b.atSec)}{b.endSec !== null ? `–${fmt(b.endSec)}` : ''}
+              </button>
+              <input
+                class="input input-sm w-28"
+                value={b.note}
+                placeholder="메모"
+                onblur={(e) => {
+                  const next = withBookmarkNote(localBookmarks, b.id, e.currentTarget.value);
+                  localBookmarks = next;
+                  onbookmarkchange(next);
+                }}
+              />
+              <button type="button" aria-label="북마크 삭제"
+                onclick={() => {
+                  const next = withoutBookmark(localBookmarks, b.id);
+                  localBookmarks = next;
+                  onbookmarkchange(next);
+                }}>
+                ×
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </div>
   </div>
 {/if}

@@ -159,6 +159,16 @@
     const next = [...selected.bookmarks, { ...b, id: crypto.randomUUID() }];
     await send({ op: 'patch', id: selected.id, bookmarks: next });
   }
+
+  // 플레이어의 북마크 목록에서 메모를 고치거나 항목을 지울 때 호출한다.
+  // 이미 완성된 배열을 통째로 받아 그대로 patch에 넘긴다 — send()가
+  // 실패를 errorMessage로 잡아 카드에 띄우므로 여기서 따로 처리할 게
+  // 없다(await만으로 충분하다: 성공·실패 어느 쪽이든 send()가 상태를
+  // 마무리 짓는다).
+  async function changeBookmarks(bookmarks: Bookmark[]) {
+    if (!selected) return;
+    await send({ op: 'patch', id: selected.id, bookmarks });
+  }
 </script>
 
 <div class="mx-auto max-w-6xl space-y-4 p-6 pb-40">
@@ -314,4 +324,9 @@
   </ul>
 </div>
 
-<Player recording={selected} formats={['original', ...data.formats]} onbookmark={addBookmark} />
+<Player
+  recording={selected}
+  formats={['original', ...data.formats]}
+  onbookmark={addBookmark}
+  onbookmarkchange={changeBookmarks}
+/>

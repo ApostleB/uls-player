@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
-import type { Recording } from '$lib/types';
+import type { Bookmark, Recording } from '$lib/types';
 import Player from './Player.svelte';
 
 function rec(over: Partial<Recording> & { id: string }): Recording {
@@ -20,6 +20,10 @@ function rec(over: Partial<Recording> & { id: string }): Recording {
     deletedAt: null,
     ...over
   };
+}
+
+function bm(id: string, atSec: number, note = '', endSec: number | null = null): Bookmark {
+  return { id, atSec, endSec, note };
 }
 
 afterEach(() => {
@@ -180,5 +184,248 @@ describe('Player.svelte — A-B 구간 안전망 (Finding 3)', () => {
 
     expect(audioEl.currentTime).toBe(20); // 되감지 않음
     expect(playSpy).not.toHaveBeenCalled(); // 루프 없으니 다시 재생하지 않음
+  });
+});
+
+describe('Player.svelte — 북마크 버튼: A-B가 잡혀 있으면 구간, 아니면 지점 (Task 16)', () => {
+  it('A-B가 잡혀 있지 않으면 현재 위치의 지점 북마크를 만든다', async () => {
+    const onbookmark = vi.fn();
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa' }),
+      formats: ['mp3', 'wav'],
+      onbookmark
+    });
+    await screen;
+
+    await page.getByRole('button', { name: '북마크' }).click();
+
+    expect(onbookmark).toHaveBeenCalledTimes(1);
+    // currentTime은 로드 전이라 0 — 지점 북마크는 endSec이 null이어야 한다.
+    expect(onbookmark).toHaveBeenCalledWith({ atSec: 0, endSec: null, note: '' });
+  });
+
+  it('A-B 구간이 잡혀 있으면 currentTime이 아니라 그 구간을 구간 북마크로 만든다', async () => {
+    const onbookmark = vi.fn();
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa' }),
+      formats: ['mp3', 'wav'],
+      onbookmark
+    });
+    await screen;
+
+    // currentTime은 로드 전이라 항상 0 — markLoop의 "B가 A보다 앞이면
+    // A+1초로 보정" 경로를 타 loopA=0, loopB=1이 된다.
+    await page.getByRole('button', { name: 'A 지정' }).click();
+    await page.getByRole('button', { name: 'B 지정' }).click();
+    await page.getByRole('button', { name: '북마크' }).click();
+
+    expect(onbookmark).toHaveBeenCalledTimes(1);
+    expect(onbookmark).toHaveBeenCalledWith({ atSec: 0, endSec: 1, note: '' });
+  });
+
+  it('구간 북마크를 만들어도 A-B 반복 자체는 해제되지 않는다(구간 배지가 남는다)', async () => {
+    const onbookmark = vi.fn();
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa' }),
+      formats: ['mp3', 'wav'],
+      onbookmark
+    });
+    await screen;
+
+    await page.getByRole('button', { name: 'A 지정' }).click();
+    await page.getByRole('button', { name: 'B 지정' }).click();
+    await page.getByRole('button', { name: '북마크' }).click();
+
+    // A-B 반복은 저장되지 않는 휘발성 재생 상태다 — 북마크를 만든
+    // 것과 별개로 배지가 그대로 남아야 한다(다음 마크 로직에서 "해제"로
+    // 넘어가지 않았는지도 함께 확인).
+    await expect.element(page.getByText(/^A-B /)).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: '구간 해제' })).toBeInTheDocument();
+  });
+});
+
+describe('Player.svelte — 북마크 목록 (Task 16)', () => {
+  it('북마크가 없으면 메모 입력창을 렌더링하지 않는다', async () => {
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks: [] }),
+      formats: ['mp3', 'wav']
+    });
+    await screen;
+
+    await expect.element(page.getByPlaceholder('메모')).not.toBeInTheDocument();
+  });
+
+  it('데이터 순서와 무관하게 시작 시각(atSec) 오름차순으로 보여준다', async () => {
+    const bookmarks = [bm('c', 30, '세번째'), bm('a', 5, '첫번째'), bm('b', 15, '두번째')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav']
+    });
+    await screen;
+
+    const notes = Array.from(document.querySelectorAll('input[placeholder="메모"]')).map(
+      (el) => (el as HTMLInputElement).value
+    );
+    expect(notes).toEqual(['첫번째', '두번째', '세번째']);
+  });
+
+  it('마커/칩에 표시되는 시각 배지는 지점은 하나, 구간은 시작–끝을 보여준다', async () => {
+    const bookmarks = [bm('a', 65, '지점'), { id: 'b', atSec: 5, endSec: 12, note: '구간' }];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav']
+    });
+    await screen;
+
+    await expect.element(page.getByRole('button', { name: '1:05' })).toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: '0:05–0:12' })).toBeInTheDocument();
+  });
+});
+
+describe('Player.svelte — 북마크 메모 입력 중에는 B 단축키가 안 먹는다 (Task 16)', () => {
+  it('메모 입력창에 포커스가 있으면 B를 눌러도 새 북마크를 만들지 않는다', async () => {
+    const onbookmark = vi.fn();
+    const bookmarks = [bm('a', 5, '메모')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmark
+    });
+    await screen;
+
+    const input = document.querySelector('input[placeholder="메모"]') as HTMLInputElement;
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', bubbles: true, cancelable: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'B', bubbles: true, cancelable: true }));
+
+    expect(onbookmark).not.toHaveBeenCalled();
+  });
+});
+
+describe('Player.svelte — 북마크 메모 편집·삭제 (Task 16)', () => {
+  it('메모 입력에서 blur하면 그 항목의 note만 바뀐 전체 배열로 onbookmarkchange를 부른다', async () => {
+    const onbookmarkchange = vi.fn();
+    const bookmarks = [bm('a', 5, '원래'), bm('b', 15, '그대로')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    await page.getByPlaceholder('메모').first().fill('새 메모');
+    // 이 컴포넌트에는 blur 전용 API가 없으니, 편집 중인 입력 밖의 다른
+    // 요소를 눌러 실제 blur를 일으킨다(+page.svelte 테스트와 같은 패턴).
+    await page.getByText('레인').click();
+
+    expect(onbookmarkchange).toHaveBeenCalledTimes(1);
+    expect(onbookmarkchange).toHaveBeenCalledWith([
+      { id: 'a', atSec: 5, endSec: null, note: '새 메모' },
+      { id: 'b', atSec: 15, endSec: null, note: '그대로' }
+    ]);
+  });
+
+  it('삭제 버튼을 누르면 그 항목만 뺀 전체 배열로 onbookmarkchange를 부른다', async () => {
+    const onbookmarkchange = vi.fn();
+    const bookmarks = [bm('a', 5, '남음'), bm('b', 15, '지워짐')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    await page.getByRole('button', { name: '북마크 삭제' }).nth(1).click();
+
+    expect(onbookmarkchange).toHaveBeenCalledTimes(1);
+    expect(onbookmarkchange).toHaveBeenCalledWith([{ id: 'a', atSec: 5, endSec: null, note: '남음' }]);
+  });
+
+  it('실패한 PATCH도 화면에서 사라지지 않는다는 계약: onbookmarkchange가 부모의 send()로 곧장 이어진다', async () => {
+    // Player.svelte 자신은 네트워크를 모른다 — onbookmarkchange 호출
+    // 자체가 부모(+page.svelte)의 send()로 이어지는지, 실패 처리가
+    // 새지 않는지는 +page.svelte 쪽 테스트(에러 카드)에서 검증한다.
+    // 여기서는 Player가 "매번" 콜백을 부른다는 것만 — 즉 실패했다고
+    // 다음 편집을 막거나 조용히 삼키지 않는다는 것만 확인한다.
+    const calls: Bookmark[][] = [];
+    const onbookmarkchange = (b: Bookmark[]) => {
+      calls.push(b);
+    };
+    const bookmarks = [bm('a', 5, '원래')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    await page.getByPlaceholder('메모').fill('첫 시도');
+    await page.getByText('레인').click();
+    await page.getByPlaceholder('메모').fill('두번째 시도');
+    await page.getByText('레인').click();
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0][0].note).toBe('첫 시도');
+    expect(calls[1][0].note).toBe('두번째 시도');
+  });
+});
+
+describe('Player.svelte — 연달아 편집해도 앞선 편집을 잃지 않는다 (Task 16, 네 가지 중 #4)', () => {
+  it('recording.bookmarks 프롭이 아직 갱신되기 전에 두 번째 편집이 시작돼도, 두 번째 onbookmarkchange 호출에 두 편집이 모두 담긴다', async () => {
+    const onbookmarkchange = vi.fn();
+    const bookmarks = [bm('a', 5, '원래a'), bm('b', 15, '원래b')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    const inputs = Array.from(
+      document.querySelectorAll('input[placeholder="메모"]')
+    ) as HTMLInputElement[];
+    expect(inputs).toHaveLength(2);
+
+    // 실제 앱에서는 blur가 부모의 send()를 통해 비동기 PATCH를 보내고,
+    // recording 프롭은 그 응답이 돌아와야(await 이후) 갱신된다. Player
+    // 자신은 onbookmarkchange를 동기 콜백으로만 부르므로, 두 blur를
+    // await 없이 연달아 일으키는 것만으로 "두 번째 편집이 첫 번째
+    // 응답보다 먼저 시작"하는 상황을 그대로 재현한다 — 그 사이
+    // recording.bookmarks(프롭)가 갱신될 기회 자체가 없다.
+    inputs[0].value = '수정a';
+    inputs[0].dispatchEvent(new Event('blur'));
+    inputs[1].value = '수정b';
+    inputs[1].dispatchEvent(new Event('blur'));
+
+    expect(onbookmarkchange).toHaveBeenCalledTimes(2);
+    // 첫 번째 호출은 a만 바뀐 배열이어야 한다.
+    expect(onbookmarkchange.mock.calls[0][0]).toEqual([
+      { id: 'a', atSec: 5, endSec: null, note: '수정a' },
+      { id: 'b', atSec: 15, endSec: null, note: '원래b' }
+    ]);
+    // 두 번째 호출: recording.bookmarks(프롭)는 이 시점까지도 그대로인데,
+    // a의 수정이 여전히 살아 있어야 한다 — 프롭을 그대로 베이스로
+    // 삼았다면(로컬 사본 없이) 여기서 a가 '원래a'로 되돌아가 있을 것이다.
+    expect(onbookmarkchange.mock.calls[1][0]).toEqual([
+      { id: 'a', atSec: 5, endSec: null, note: '수정a' },
+      { id: 'b', atSec: 15, endSec: null, note: '수정b' }
+    ]);
+  });
+});
+
+describe('Player.svelte — 파형 마커가 북마크 목록과 같은 데이터를 보여준다 (Task 16)', () => {
+  it('북마크를 추가하면(props 갱신) 파형에도 같은 메모의 마커가 뜬다', async () => {
+    const bookmarks = [bm('a', 30, '마커메모')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav']
+    });
+    await screen;
+
+    // Waveform.svelte가 마커를 aria-label="북마크: {note}"인 버튼으로
+    // 렌더링한다 — 목록의 메모 입력과 같은 데이터(localBookmarks)에서
+    // 나온다는 걸, 목록에 없던 마커가 프롭 변화만으로 나타나는지로
+    // 확인한다.
+    await expect.element(page.getByRole('button', { name: /마커메모/ })).toBeInTheDocument();
   });
 });
