@@ -58,6 +58,16 @@ function rowFor(page: Page, title: string) {
     .filter({ has: page.getByRole('button', { name: title, exact: true }) });
 }
 
+// 기간 필터 경계 테스트가 쓸 "YYYY-MM-DD"만 읽는다. recordedAt은 서버가
+// ZDATE(UTC)를 실행 머신의 로컬 타임존으로 변환해 만드는데(scan.ts의
+// toLocalIso), 그 타임존을 테스트가 하드코딩해 재계산하면 실행 환경이
+// 바뀔 때마다(자정 근처 날짜가 하루씩 밀리는 등) 깨질 수 있다 — 그래서
+// 값을 계산하지 않고 화면에 이미 렌더된 걸 그대로 읽는다.
+async function recordedDate(page: Page, title: string): Promise<string> {
+  const text = await rowFor(page, title).locator('span.text-surface-500.tabular-nums').textContent();
+  return (text ?? '').trim().slice(0, 10);
+}
+
 async function audioState(page: Page) {
   return page.locator('audio').evaluate((el) => {
     const a = el as HTMLAudioElement;
@@ -75,6 +85,15 @@ function waitForPatch(page: Page) {
   return page.waitForResponse(
     (res) => res.url().endsWith('/api/recordings') && res.request().method() === 'PATCH'
   );
+}
+
+// FilterBar의 태그 칩만 짚는다. getByRole('button', {name: tag})는 목록
+// 행의 태그 표시 버튼(같은 텍스트를 그대로 노출한다)에도 걸려 strict
+// mode에서 여러 개가 잡힐 수 있다 — FilterBar 칩만 class="chip"을 버튼
+// 자신이 직접 들고 있다(행 쪽은 안쪽 span에만 chip이 있고 버튼 자체엔
+// 없다).
+function tagFilterChip(page: Page, tag: string) {
+  return page.locator('button.chip', { hasText: tag });
 }
 
 async function seekViaWaveform(page: Page, ratio: number) {
@@ -167,11 +186,8 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toHaveCount(0);
     await page.getByPlaceholder('제목 검색').fill('');
 
-    // '데모' 태그는 qta 녹음에만 붙었다. FilterBar의 태그 칩만 짚어야 한다 —
-    // getByRole('button', {name: /^데모/})는 목록 행의 태그 표시 버튼("데모"
-    // 그대로)에도 걸려 strict mode에서 두 개가 잡힌다. FilterBar 칩만
-    // class="chip"을 직접 들고 있다(행 쪽은 안쪽 span에만 chip이 있다).
-    const demoFilterChip = page.locator('button.chip', { hasText: '데모' });
+    // '데모' 태그는 qta 녹음에만 붙었다.
+    const demoFilterChip = tagFilterChip(page, '데모');
     await demoFilterChip.click();
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toHaveCount(0);
@@ -259,6 +275,77 @@ test.describe.serial('스캔부터 재생까지', () => {
     await page.getByRole('button', { name: '선택 해제' }).click();
   });
 
+  test('태그 모드(모두 포함/하나라도)가 실제로 다른 결과를 낸다', async ({ page }) => {
+    await page.goto('/');
+
+    // 이 시점에 qta는 '데모'만, m4a는 '중요'만 갖고 있다(위 "태그
+    // 인라인 편집"·"일괄 태그 추가·제거" 테스트가 이 파일 안에서
+    // serial로 실행되며 남긴 상태다 — serial이 아니었다면 이 순서를
+    // 가정할 수 없다). 두 녹음이 겹치는 태그가 하나도 없으므로, 이
+    // 둘을 동시에 선택하면
+    // "모두 포함"(AND)은 아무도 못 만족해 0건이 되고 "하나라도"(OR)는
+    // 각자 자기 태그로 만족해 2건이 된다 — 두 모드가 진짜 다른 결과를
+    // 낸다는 걸 증명하려면 이렇게 "겹치지 않는 태그 두 개를 함께 선택"
+    // 해야 한다. 두 모드가 같은 결과를 내는 조합으로는 아무것도
+    // 증명하지 못한다.
+    await tagFilterChip(page, '데모').click();
+    await tagFilterChip(page, '중요').click();
+
+    // 기본값 '모두 포함'(and): 어느 쪽도 두 태그를 동시에 갖고 있지
+    // 않으므로 0건이다.
+    await expect(page.getByText('조건에 맞는 녹음이 없습니다')).toBeVisible();
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toHaveCount(0);
+
+    // '하나라도'(or)로 바꾸면 각자 자기 태그 하나씩으로 조건을 만족해
+    // 둘 다 다시 보인다 — 같은 선택된 태그·같은 녹음인데 모드만
+    // 바뀌었을 뿐이라, 이 차이는 AND/OR 로직 자체가 만든 것이다.
+    await page.getByRole('button', { name: '하나라도' }).click();
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
+
+    // '모두 포함'으로 되돌리면 다시 0건이어야 한다(모드 토글이 양방향으로
+    // 동작하는지까지 확인).
+    await page.getByRole('button', { name: '모두 포함' }).click();
+    await expect(page.getByText('조건에 맞는 녹음이 없습니다')).toBeVisible();
+
+    await page.getByRole('button', { name: '초기화' }).click();
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
+  });
+
+  test('기간 필터의 시작일·종료일 경계가 포함된다(inclusive)', async ({ page }) => {
+    await page.goto('/');
+
+    const m4aDate = await recordedDate(page, M4A_TITLE); // 더 늦은 날짜
+    const qtaDate = await recordedDate(page, QTA_TITLE); // 더 이른 날짜
+    expect(m4aDate).not.toBe(qtaDate); // 서로 다른 날짜여야 경계 테스트가 의미 있다
+
+    const dateInputs = page.locator('input[type="date"]');
+    const fromInput = dateInputs.nth(0);
+    const toInput = dateInputs.nth(1);
+
+    // from 경계: from을 m4a "그 날짜"로 정확히 맞춘다. 배타적이었다면
+    // m4a 자신도 걸러졌을 것이다 — m4a가 여전히 보인다는 게 곧 from이
+    // 포함(inclusive)이라는 증거다. qta는 그보다 이른 날짜라 항상
+    // 제외된다(대조군 — 필터가 실제로 뭔가는 하고 있다는 증거).
+    await fromInput.fill(m4aDate);
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toHaveCount(0);
+    await fromInput.fill('');
+
+    // to 경계: to를 qta "그 날짜"로 정확히 맞춘다. 같은 논리로, qta가
+    // 여전히 보인다는 게 to도 포함이라는 증거다. m4a는 그보다 늦은
+    // 날짜라 제외된다.
+    await toInput.fill(qtaDate);
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toHaveCount(0);
+    await toInput.fill('');
+
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+  });
+
   test('행을 클릭하면 재생기가 뜨고 포맷 버튼 세 개가 보인다', async ({ page }) => {
     await selectRecording(page, QTA_TITLE);
 
@@ -292,9 +379,12 @@ test.describe.serial('스캔부터 재생까지', () => {
     expect((await audioState(page)).paused).toBe(false);
 
     // 실제로 시간이 흐르는지(진짜 소리가 나는지는 확인할 수 없지만, 재생
-    // 위치가 진행되는 건 재생 중이라는 관찰 가능한 대리 지표다).
-    await page.waitForTimeout(600);
-    expect((await audioState(page)).currentTime).toBeGreaterThan(0.05);
+    // 위치가 진행되는 건 재생 중이라는 관찰 가능한 대리 지표다). 고정
+    // sleep 대신 값 자체를 폴링한다 — 이 스위트의 다른 곳들과 같은 원칙
+    // (관찰 가능한 상태를 기다리지, 시간을 기다리지 않는다).
+    await expect
+      .poll(async () => (await audioState(page)).currentTime, { timeout: 3_000 })
+      .toBeGreaterThan(0.05);
 
     await page.keyboard.press('Space');
     await expect(page.getByRole('button', { name: '재생' })).toBeVisible();

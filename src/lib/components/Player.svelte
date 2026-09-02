@@ -294,16 +294,22 @@
         </button>
         <button type="button" class="btn btn-sm preset-tonal" onclick={addBookmark}>북마크</button>
 
-        <!-- 이 <label>은 볼륨 슬라이더를 감싸려던 것이었는데, 음소거
-             버튼까지 같이 담다 보니 두 컨트롤이 접근성 이름을 놓고 서로
-             엉킨다: 브라우저는 <label> 안의 첫 텍스트를 라벨이 감싼
-             컨트롤 쪽으로 돌려버려서, 음소거 버튼 자신의 접근성 이름은
-             비어버리고 그 텍스트("음소거"/"음소거 해제")가 대신 볼륨
-             슬라이더의 이름처럼 읽힌다(둘 다 잘못됐다) — 실제 화면
-             표시(텍스트 자체)는 멀쩡해 보여서 눈으로 봐서는 안 드러나고,
-             getByRole 같은 접근성 이름 조회로만 드러난다
-             (tests/e2e/import-flow.spec.ts 참고). 각자 aria-label로 이름을
-             명시해 <label> 상속에 기대지 않게 한다. -->
+        <!-- 이 <label>은 원래 볼륨 슬라이더 하나만 감싸려던 것인데, 음소거
+             버튼까지 같이 담고 있다. 둘 다 labelable 요소(<button>도
+             포함된다)라 <label>의 암묵적 연결 대상이 모호해지는데, 실제
+             Chromium이 계산하는 접근성 이름을 Playwright의 ariaSnapshot으로
+             직접 찍어 확인한 결과는 다음과 같았다(코드 리뷰에서 "버튼은
+             원래 괜찮고 슬라이더만 이름이 없다"는 추정이 나왔지만, 이
+             aria-label을 실제로 빼고 다시 찍어보니 반대였다 — 버튼 쪽이
+             이름 없는 `button: 음소거`로, `getByRole('button', {name:
+             '음소거', exact: true})`가 0개를 찾았다. 슬라이더는 반대로
+             자기 aria-label이 있을 때만 이름이 잡혔다). 정확한 스펙 조항
+             보다 이 실측 결과를 근거로 삼는다 — 실제 화면 텍스트는 둘 다
+             멀쩡해 보여서 눈으로는 안 드러나고, getByRole 같은 접근성
+             이름 조회로만 드러난다(재현 방법과 ariaSnapshot 원본은
+             task-17-report.md 참고). 그래서 어느 쪽이 "원래 왜" 그런지
+             따지기보다, 둘 다 각자 aria-label로 이름을 명시해 이 <label>
+             공유 구조의 암묵적 연결에 기대지 않게 한다. -->
         <label class="flex items-center gap-1 text-sm">
           <button
             type="button"
