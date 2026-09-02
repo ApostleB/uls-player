@@ -268,6 +268,34 @@ export function scheduleStagingCleanup(queue: JobQueue, folder: string, jobIds: 
 }
 
 /**
+ * 재시작으로 복구된 잡에 대해 스테이징 정리 구독을 다시 건다.
+ *
+ * scheduleStagingCleanup은 인메모리 구독이라 프로세스가 죽으면 사라진다.
+ * loadUnfinished는 잡을 다시 큐에 올려주지만 그 구독까지 되살리지는
+ * 않으므로, 이 함수가 없으면 복구된 잡이 이번 프로세스에서 무사히 done이
+ * 돼도 스테이징 파일이 그대로 남는다 — 실제 정리는 다음 재시작의
+ * sweepStaleStaging까지(최대 STALE_STAGING_MS) 밀린다.
+ *
+ * 폴더별로 묶는 이유는 scheduleStagingCleanup이 폴더 단위로 감시 집합을
+ * 합치기 때문이다. 업로드 스테이징이 아닌 폴더(사용자가 직접 입력한 실제
+ * 폴더)는 scheduleStagingCleanup이 스스로 걸러내지만, 여기서도 미리
+ * 제외해 불필요한 구독을 만들지 않는다.
+ */
+export function rescheduleStagingCleanup(queue: JobQueue, items: JobItem[]): void {
+  const byFolder = new Map<string, string[]>();
+
+  for (const item of items) {
+    const folder = path.dirname(item.sourcePath);
+    if (!isUploadStaging(folder)) continue;
+    const ids = byFolder.get(folder) ?? [];
+    ids.push(item.id);
+    byFolder.set(folder, ids);
+  }
+
+  for (const [folder, ids] of byFolder) scheduleStagingCleanup(queue, folder, ids);
+}
+
+/**
  * 이보다 오래(마지막으로 이 폴더 안 파일이 바뀐 뒤로) 방치된 스테이징
  * 폴더는, 아직 필요한 잡이 없다면 시작 시점 정리 대상이다. 가져오기 한
  * 번(업로드 → 편집 → 저장 → 변환)이 이 시간 안에 안 끝나는 건 비정상이고,

@@ -12,6 +12,10 @@ node_modules
 .DS_Store
 Thumbs.db
 
+# 편집기 로컬 설정
+.idea/
+.vscode/
+
 # Env
 .env
 .env.*
