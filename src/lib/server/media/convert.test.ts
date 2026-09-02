@@ -73,4 +73,31 @@ describe('convert', () => {
     await convert(SPATIAL, out, audioStreamIndex, spec);
     expect((await fs.stat(out)).size).toBeGreaterThan(0);
   });
+
+  // null("이 포맷은 이 옵션을 안 쓴다")과 0을 구분한다. 진리값 검사로
+  // 두면 env에 0을 넣었을 때 -ar/-ac가 조용히 빠진 채 ffmpeg 기본값으로
+  // 변환되어, 설정한 줄 알았던 값과 결과물이 어긋난다.
+  it('sampleRate가 0이면 조용히 넘어가지 않고 거부한다', async () => {
+    const spec: FormatSpec = { ...WAV, sampleRate: 0 };
+    const { audioStreamIndex } = await probe(SPATIAL);
+    await expect(convert(SPATIAL, path.join(dir, 'z.wav'), audioStreamIndex, spec)).rejects.toThrow(
+      /sampleRate는 0보다 커야/
+    );
+  });
+
+  it('channels가 0이면 조용히 넘어가지 않고 거부한다', async () => {
+    const spec: FormatSpec = { ...WAV, channels: 0 };
+    const { audioStreamIndex } = await probe(SPATIAL);
+    await expect(convert(SPATIAL, path.join(dir, 'z.wav'), audioStreamIndex, spec)).rejects.toThrow(
+      /channels는 0보다 커야/
+    );
+  });
+
+  it('bitrate가 빈 문자열이면 거부한다', async () => {
+    const spec: FormatSpec = { ...MP3, bitrate: '' };
+    const { audioStreamIndex } = await probe(SPATIAL);
+    await expect(convert(SPATIAL, path.join(dir, 'z.mp3'), audioStreamIndex, spec)).rejects.toThrow(
+      /bitrate가 비어 있습니다/
+    );
+  });
 });
