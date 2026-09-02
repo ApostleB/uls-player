@@ -18,7 +18,11 @@
     recording = null as Recording | null,
     formats = [] as string[],
     onbookmark = (_: Omit<Bookmark, 'id'>) => {},
-    onbookmarkchange = (_: Bookmark[]) => {}
+    // 성공하면 true(또는 true로 resolve하는 Promise)를 돌려줘야 한다 —
+    // 실패(false)를 받으면 아래 목록이 낙관적으로 반영해둔 편집을
+    // 되돌린다. 기본값(prop 미전달)은 "성공했다고 간주"해 아무것도
+    // 되돌리지 않는다(기존 no-op과 동일한 무해한 기본 동작).
+    onbookmarkchange = (_: Bookmark[]): boolean | Promise<boolean> => true
   } = $props();
 
   let audio = $state<HTMLAudioElement | null>(null);
@@ -61,6 +65,16 @@
    * 시작하게 한다. recording.bookmarks가 실제로 바뀌면(다른 녹음
    * 선택, 지점 북마크 추가, 우리 자신의 patch가 확인됨 등) 아래
    * 이펙트가 이 사본을 다시 맞춰준다.
+   *
+   * PATCH가 실패하면(onbookmarkchange가 false를 돌려주면) 이 낙관적
+   * 갱신을 그대로 두면 안 된다 — 에러 카드는 뜨는데 메모칸은 방금
+   * 입력한 값을 그대로 보여줘서, 마치 저장은 됐고 에러는 다른 일 때문인
+   * 것처럼 보인다(실패했는데도 화면은 성공한 것처럼 보이는 쪽이,
+   * 이 사본을 도입하기 전 "편집이 통째로 사라지는" 버그보다 더 나쁘다
+   * — 사용자가 실패를 알아챌 방법이 없다). 그래서 각 편집·삭제
+   * 핸들러는 실패 시 자신이 만든 변화만 되돌린다(전체 스냅샷을 통째로
+   * 복원하지 않는다) — 그래야 그 사이 다른 편집이 성공했어도 이
+   * 되돌림이 그 결과를 덮어쓰지 않는다.
    */
   // svelte-ignore state_referenced_locally
   let localBookmarks = $state<Bookmark[]>(recording?.bookmarks ?? []);
@@ -325,17 +339,43 @@
                 class="input input-sm w-28"
                 value={b.note}
                 placeholder="메모"
-                onblur={(e) => {
-                  const next = withBookmarkNote(localBookmarks, b.id, e.currentTarget.value);
+                onblur={async (e) => {
+                  // 되돌릴 값은 "이 항목의 이전 note"고, 되돌리는 시점의
+                  // 베이스는 그때의 localBookmarks(지금이 아니라 실패
+                  // 응답이 온 시점) — b.note를 캡처해두는 대신 id로
+                  // 다시 찾아 읽는다. b는 각 블록의 렌더 시점 스냅샷이라
+                  // 신뢰할 수 있지만, "지금 이 필드가 뭐였는지"를 각
+                  // 리비전마다 명시적으로 다시 읽어 두면 되돌릴 때도
+                  // 같은 방식으로 최신 배열 위에 얹을 수 있어 더 안전하다.
+                  const id = b.id;
+                  const before = localBookmarks.find((x) => x.id === id);
+                  const oldNote = before ? before.note : '';
+                  const next = withBookmarkNote(localBookmarks, id, e.currentTarget.value);
                   localBookmarks = next;
-                  onbookmarkchange(next);
+                  const ok = await onbookmarkchange(next);
+                  // 실패하면 이 편집만 되돌린다 — 응답을 기다리는 사이
+                  // 다른 항목(혹은 같은 항목의 다른 편집)이 성공했을 수
+                  // 있으므로, 실패 시점의 프롭이나 낡은 스냅샷이 아니라
+                  // "지금의" localBookmarks 위에 이 항목의 note만 원래
+                  // 값으로 되돌린다. 그래야 이 되돌림이 다른 편집의
+                  // 결과를 덮어쓰지 않는다(프롭을 그대로 베이스로 삼을
+                  // 때와 같은 종류의 유실을 되돌리기 로직에서 또
+                  // 만들지 않기 위함).
+                  if (!ok) localBookmarks = withBookmarkNote(localBookmarks, id, oldNote);
                 }}
               />
               <button type="button" aria-label="북마크 삭제"
-                onclick={() => {
-                  const next = withoutBookmark(localBookmarks, b.id);
+                onclick={async () => {
+                  const id = b.id;
+                  const removed = localBookmarks.find((x) => x.id === id) ?? b;
+                  const next = withoutBookmark(localBookmarks, id);
                   localBookmarks = next;
-                  onbookmarkchange(next);
+                  const ok = await onbookmarkchange(next);
+                  // 실패하면 지금의 localBookmarks(그 사이 다른 편집이
+                  // 성공했을 수 있다) 위에 지운 항목만 다시 얹는다 —
+                  // 위치는 상관없다, 목록·마커 모두 atSec 기준으로
+                  // 다시 정렬해 보여준다.
+                  if (!ok) localBookmarks = [...localBookmarks, removed];
                 }}>
                 ×
               </button>

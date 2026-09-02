@@ -561,7 +561,7 @@ describe('+page.svelte — 플레이어의 북마크 메모 편집(Task 16)', ()
     expect((getByPlaceholder('메모').element() as HTMLInputElement).value).toBe('서버가 확정한 메모');
   });
 
-  it('메모 편집이 실패하면(400) 화면의 메모는 그대로 남고, 서버 메시지가 에러 카드에 뜬다(Task 14와 같은 종류의 버그 회귀)', async () => {
+  it('메모 편집이 실패하면(400) 입력값이 원래 메모로 되돌아가고, 서버 메시지가 에러 카드에 뜬다(Task 14와 같은 종류의 버그 회귀, 그리고 낙관적 갱신이 실패를 숨기지 않는지)', async () => {
     const fetchMock = vi.fn<typeof fetch>(
       async () =>
         new Response(JSON.stringify({ message: '동시에 삭제된 행입니다' }), {
@@ -582,5 +582,15 @@ describe('+page.svelte — 플레이어의 북마크 메모 편집(Task 16)', ()
     // send()가 실패를 삼키지 않고 카드로 보여준다.
     await expect.element(getByText('동시에 삭제된 행입니다')).toBeInTheDocument();
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/recordings')).toHaveLength(1);
+
+    // 이 assertion이 핵심이다 — 에러 카드가 뜬다고 편집이 실제로
+    // 되돌아갔는지가 증명되진 않는다. 낙관적으로 반영해둔 입력값을
+    // 그대로 둔 채 에러 카드만 얹으면(실패해도 화면은 성공한 것처럼
+    // 보이는 쪽이 이전 버그보다 더 나쁘다), 이 assertion이 실패로
+    // 잡아낸다: 실패 응답이 오면 메모 입력값은 방금 입력한 값이 아니라
+    // PATCH 이전의 원래 메모로 되돌아가야 한다.
+    await vi.waitFor(() => {
+      expect((getByPlaceholder('메모').element() as HTMLInputElement).value).toBe('원래 메모');
+    });
   });
 });

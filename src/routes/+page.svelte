@@ -154,6 +154,19 @@
   // 플레이어가 현재 위치에 북마크를 추가할 때 호출한다. id는 서버가 아니라
   // 여기서 발급한다 — patch가 bookmarks 배열을 통째로 받아 검증하는
   // 구조라, id 없는 항목을 보내면 그 시점부터 이미 형식이 어긋난다.
+  //
+  // (Task 16 후속 리뷰에서 확인·의도적으로 남겨둔 잔여 경쟁 상태) 이
+  // 함수는 Player의 localBookmarks가 아니라 selected.bookmarks(서버가
+  // 마지막으로 확인해준 값)를 베이스로 배열을 만든다. 그래서 이 PATCH가
+  // 아직 끝나기 전에 플레이어에서 메모 편집·삭제가 시작되면(그쪽은
+  // localBookmarks를 베이스로 하므로 이 추가를 아직 모른다), 두 PATCH가
+  // 서로 다른 스냅샷에서 계산돼 늦게 도착하는 응답이 상대의 변경을
+  // 지울 수 있다 — 편집·삭제끼리는 localBookmarks 덕분에 이 문제가
+  // 없지만(위 Player.svelte 주석 참고), "추가"는 id를 여기서(프론트)
+  // 새로 발급해야 해서 Player가 응답이 오기 전엔 그 id를 몰라 자신의
+  // 로컬 사본에 미리 반영해둘 수 없다. id 발급 위치를 바꾸지 않는 한
+  // 구조적으로 못 고치는 한계라 이번 범위에서는 손대지 않았다
+  // (.superpowers/sdd/2026-09-01-uls-player/task-16-report.md 참고).
   async function addBookmark(b: Omit<Bookmark, 'id'>) {
     if (!selected) return;
     const next = [...selected.bookmarks, { ...b, id: crypto.randomUUID() }];
@@ -162,12 +175,15 @@
 
   // 플레이어의 북마크 목록에서 메모를 고치거나 항목을 지울 때 호출한다.
   // 이미 완성된 배열을 통째로 받아 그대로 patch에 넘긴다 — send()가
-  // 실패를 errorMessage로 잡아 카드에 띄우므로 여기서 따로 처리할 게
-  // 없다(await만으로 충분하다: 성공·실패 어느 쪽이든 send()가 상태를
-  // 마무리 짓는다).
-  async function changeBookmarks(bookmarks: Bookmark[]) {
-    if (!selected) return;
-    await send({ op: 'patch', id: selected.id, bookmarks });
+  // 실패를 errorMessage로 잡아 카드에 띄우므로 실패 표시 자체는 여기서
+  // 따로 할 게 없다. 다만 성공 여부(send()의 반환값)는 그대로
+  // Player에게 돌려준다 — Player가 낙관적으로 반영해둔 편집을 실패
+  // 시 되돌리려면 이 결과가 필요하다(그냥 await만 하고 버리면, 에러
+  // 카드는 뜨는데 메모칸은 방금 입력한 값을 그대로 보여주는 채로
+  // 남는다).
+  async function changeBookmarks(bookmarks: Bookmark[]): Promise<boolean> {
+    if (!selected) return false;
+    return send({ op: 'patch', id: selected.id, bookmarks });
   }
 </script>
 

@@ -269,7 +269,7 @@ describe('Player.svelte — 북마크 목록 (Task 16)', () => {
     expect(notes).toEqual(['첫번째', '두번째', '세번째']);
   });
 
-  it('마커/칩에 표시되는 시각 배지는 지점은 하나, 구간은 시작–끝을 보여준다', async () => {
+  it('목록 칩에 표시되는 시각 배지는 지점은 하나, 구간은 시작–끝을 보여준다', async () => {
     const bookmarks = [bm('a', 65, '지점'), { id: 'b', atSec: 5, endSec: 12, note: '구간' }];
     const screen = render(Player, {
       recording: rec({ id: 'aaaa', bookmarks }),
@@ -341,12 +341,11 @@ describe('Player.svelte — 북마크 메모 편집·삭제 (Task 16)', () => {
     expect(onbookmarkchange).toHaveBeenCalledWith([{ id: 'a', atSec: 5, endSec: null, note: '남음' }]);
   });
 
-  it('실패한 PATCH도 화면에서 사라지지 않는다는 계약: onbookmarkchange가 부모의 send()로 곧장 이어진다', async () => {
-    // Player.svelte 자신은 네트워크를 모른다 — onbookmarkchange 호출
-    // 자체가 부모(+page.svelte)의 send()로 이어지는지, 실패 처리가
-    // 새지 않는지는 +page.svelte 쪽 테스트(에러 카드)에서 검증한다.
-    // 여기서는 Player가 "매번" 콜백을 부른다는 것만 — 즉 실패했다고
-    // 다음 편집을 막거나 조용히 삼키지 않는다는 것만 확인한다.
+  it('메모를 두 번 연달아 편집하면, 첫 번째 결과를 기다리지 않고 매번 onbookmarkchange를 부른다', async () => {
+    // 이 테스트는 실패/에러 처리 자체는 검증하지 않는다(그건 아래
+    // "실패하면 낙관적 갱신을 되돌린다" describe와 +page.svelte 쪽
+    // 에러 카드 테스트가 맡는다) — 여기서는 한 번 호출했다고 다음
+    // 편집을 막거나 조용히 삼키지 않는다는 것만 확인한다.
     const calls: Bookmark[][] = [];
     const onbookmarkchange = (b: Bookmark[]) => {
       calls.push(b);
@@ -367,6 +366,134 @@ describe('Player.svelte — 북마크 메모 편집·삭제 (Task 16)', () => {
     expect(calls).toHaveLength(2);
     expect(calls[0][0].note).toBe('첫 시도');
     expect(calls[1][0].note).toBe('두번째 시도');
+  });
+});
+
+describe('Player.svelte — 편집·삭제가 실패하면 낙관적 갱신을 되돌린다 (후속 리뷰 대응)', () => {
+  // onbookmarkchange가 언제 resolve될지 테스트에서 직접 제어하기 위한
+  // 헬퍼. "응답이 오기 전엔 낙관적 값이 보이고, 실패 응답이 오면
+  // 되돌아간다"를 순서대로 확인하려면 즉시 resolve되는 mock으로는 그
+  // 중간 상태를 볼 수 없다.
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  function noteInputs(): HTMLInputElement[] {
+    return Array.from(document.querySelectorAll('input[placeholder="메모"]'));
+  }
+
+  it('메모 편집이 실패하면(onbookmarkchange가 false로 resolve) 입력값이 원래 메모로 되돌아간다', async () => {
+    const d = deferred<boolean>();
+    const onbookmarkchange = vi.fn((_: Bookmark[]) => d.promise);
+    const bookmarks = [bm('a', 5, '원래 메모')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    await page.getByPlaceholder('메모').fill('실패할 메모');
+    await page.getByText('레인').click();
+
+    // 응답을 기다리는 동안에는 낙관적으로 반영해둔 값이 그대로 보인다.
+    expect(noteInputs()[0].value).toBe('실패할 메모');
+
+    d.resolve(false);
+
+    await vi.waitFor(() => expect(noteInputs()[0].value).toBe('원래 메모'));
+  });
+
+  it('삭제가 실패하면(onbookmarkchange가 false로 resolve) 지운 항목이 다시 나타난다', async () => {
+    const d = deferred<boolean>();
+    const onbookmarkchange = vi.fn((_: Bookmark[]) => d.promise);
+    const bookmarks = [bm('a', 5, '남는다')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    await page.getByRole('button', { name: '북마크 삭제' }).click();
+    await expect.element(page.getByPlaceholder('메모')).not.toBeInTheDocument();
+
+    d.resolve(false);
+
+    await expect.element(page.getByPlaceholder('메모')).toBeInTheDocument();
+    expect(noteInputs()[0].value).toBe('남는다');
+  });
+
+  it('한 편집이 실패해 되돌아가도, 그 사이 성공한 다른 편집의 결과는 지우지 않는다', async () => {
+    const dA = deferred<boolean>();
+    const dB = deferred<boolean>();
+    let call = 0;
+    const onbookmarkchange = vi.fn(() => (call++ === 0 ? dA.promise : dB.promise));
+    const bookmarks = [bm('a', 5, '원래a'), bm('b', 15, '원래b')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    const inputs = noteInputs();
+    expect(inputs).toHaveLength(2);
+
+    // a를 편집(나중에 실패 응답을 받을 예정), 응답이 오기 전에 b도
+    // 편집(나중에 성공 응답을 받을 예정) — 두 blur를 await 없이
+    // 연달아 일으켜, 두 PATCH가 동시에 떠 있는 상황을 재현한다.
+    inputs[0].value = '실패할 편집';
+    inputs[0].dispatchEvent(new Event('blur'));
+    inputs[1].value = '성공할 편집';
+    inputs[1].dispatchEvent(new Event('blur'));
+
+    // b가 먼저 성공 응답을 받는다.
+    dB.resolve(true);
+    await vi.waitFor(() => expect(noteInputs()[1].value).toBe('성공할 편집'));
+
+    // 그 다음에야 a가 실패 응답을 받는다.
+    dA.resolve(false);
+    await vi.waitFor(() => expect(noteInputs()[0].value).toBe('원래a'));
+
+    // a의 되돌림이 이미 성공해 반영된 b의 편집까지 지우면 안 된다 —
+    // 되돌리기가 실패 시점의 낡은 스냅샷이 아니라 "지금의"
+    // localBookmarks 위에서 이 항목 하나만 되돌리는지가 이 assertion의
+    // 핵심이다.
+    expect(noteInputs()[1].value).toBe('성공할 편집');
+  });
+
+  it('되돌린 뒤에도 다시 편집해서 성공하면 정상 반영된다(사본이 어긋난 채로 멈추지 않는다)', async () => {
+    let nextResult = false;
+    const onbookmarkchange = vi.fn(async (_: Bookmark[]) => nextResult);
+    const bookmarks = [bm('a', 5, '원래')];
+    const screen = render(Player, {
+      recording: rec({ id: 'aaaa', bookmarks }),
+      formats: ['mp3', 'wav'],
+      onbookmarkchange
+    });
+    await screen;
+
+    // 첫 시도는 실패 -> 되돌아간다.
+    await page.getByPlaceholder('메모').fill('첫 시도(실패)');
+    await page.getByText('레인').click();
+    await vi.waitFor(() => expect(noteInputs()[0].value).toBe('원래'));
+
+    // 두 번째 시도는 성공 -> 이번엔 그 값 그대로 남아야 한다(되돌리기
+    // 로직이 성공한 편집까지 되돌리면 안 된다).
+    nextResult = true;
+    await page.getByPlaceholder('메모').fill('두번째 시도(성공)');
+    await page.getByText('레인').click();
+    await vi.waitFor(() => expect(noteInputs()[0].value).toBe('두번째 시도(성공)'));
+
+    expect(onbookmarkchange).toHaveBeenCalledTimes(2);
+    expect(onbookmarkchange.mock.calls[1][0]).toEqual([
+      { id: 'a', atSec: 5, endSec: null, note: '두번째 시도(성공)' }
+    ]);
   });
 });
 
@@ -415,17 +542,23 @@ describe('Player.svelte — 연달아 편집해도 앞선 편집을 잃지 않�
 
 describe('Player.svelte — 파형 마커가 북마크 목록과 같은 데이터를 보여준다 (Task 16)', () => {
   it('북마크를 추가하면(props 갱신) 파형에도 같은 메모의 마커가 뜬다', async () => {
-    const bookmarks = [bm('a', 30, '마커메모')];
+    // 처음엔 이 녹음에 북마크가 없다 — 마커도, 목록도 없어야 한다.
     const screen = render(Player, {
-      recording: rec({ id: 'aaaa', bookmarks }),
+      recording: rec({ id: 'aaaa', bookmarks: [] }),
       formats: ['mp3', 'wav']
     });
     await screen;
+    await expect.element(page.getByRole('button', { name: /마커메모/ })).not.toBeInTheDocument();
 
-    // Waveform.svelte가 마커를 aria-label="북마크: {note}"인 버튼으로
-    // 렌더링한다 — 목록의 메모 입력과 같은 데이터(localBookmarks)에서
-    // 나온다는 걸, 목록에 없던 마커가 프롭 변화만으로 나타나는지로
-    // 확인한다.
+    // send()가 PATCH 응답으로 recordings 전체를 새 참조로 덮어쓸 때와
+    // 같은 모양으로 프롭을 갱신한다(같은 id, 다른 객체 참조, bookmarks
+    // 배열도 새 참조) — Waveform.svelte가 마커를 aria-label="북마크:
+    // {note}"인 버튼으로 렌더링한다. 목록의 메모 입력과 같은 데이터
+    // (localBookmarks)에서 나온다는 걸, 목록에 없던 마커가 이 프롭
+    // 변화만으로(별도 조작 없이) 나타나는지로 확인한다.
+    const withBookmark = rec({ id: 'aaaa', bookmarks: [bm('a', 30, '마커메모')] });
+    await screen.rerender({ recording: withBookmark, formats: ['mp3', 'wav'] });
+
     await expect.element(page.getByRole('button', { name: /마커메모/ })).toBeInTheDocument();
   });
 });
