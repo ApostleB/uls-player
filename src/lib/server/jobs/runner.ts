@@ -10,6 +10,7 @@ import { savePeaks } from '../store/waveforms';
 import { addMany, newId, patch } from '../store/recordings';
 import { JobQueue, JobFailure, type Worker } from './queue';
 import { pendingRecordings } from './registry';
+import { persistQueue, loadUnfinished } from './persist';
 
 export interface PendingItem {
   scan: ScanItem;
@@ -175,7 +176,29 @@ export function makeRunner(cfg: AppConfig): Worker {
         await addMany(cfg, [{ ...rec, files }]);
         pendingRecordings.drop(job.recordingId);
       } else {
-        await patch(cfg, job.recordingId, { files });
+        try {
+          await patch(cfg, job.recordingId, { files });
+        } catch (err) {
+          // pendingRecordings에도 없고 저장소에도 없다 — 정상 재시도라면
+          // 이전 실행에서 이미 addMany로 저장소에 들어가 있어 patch가
+          // 성공한다. 그런데도 여기서 "찾을 수 없다"는 patch()의 원래
+          // 오류는 서버 재시작으로 복구된 작업(pendingRecordings가
+          // 인메모리라 프로세스가 죽으면 비고, 죽기 전 저장소 기록도
+          // 못 했던 경우)일 때만 나온다 — 사용자 입장에선 uuid 하나만
+          // 찍힌 채 "녹음을 찾을 수 없습니다"만 봐서는 뭘 해야 할지 알
+          // 수 없다. patch()가 정확히 이 사유로 던졌을 때만(다른 원인,
+          // 예를 들어 디스크 쓰기 실패까지 이 메시지로 덮어써 원인을
+          // 숨기면 안 된다) 대응 방법(다시 가져오기)이 담긴 메시지로
+          // 바꿔서 던진다.
+          if (err instanceof Error && err.message.startsWith('녹음을 찾을 수 없습니다')) {
+            throw new Error(
+              '변환은 끝났지만 원본 녹음 정보를 찾을 수 없습니다(서버 재시작으로 ' +
+                '복구된 작업일 수 있습니다). 폴더를 다시 가져오세요.',
+              { cause: err }
+            );
+          }
+          throw err;
+        }
       }
     } catch (err) {
       // 포맷별 변환 오류(formatErrors)가 있는데 여기서도 던지면, 이전에는
@@ -197,8 +220,20 @@ export function makeRunner(cfg: AppConfig): Worker {
 
 let queue: JobQueue | null = null;
 
-/** 프로세스당 하나. 라우트가 요청마다 새 큐를 만들지 않도록 한다. */
+/**
+ * 프로세스당 하나. 처음 만들 때 jobs.json의 미완료 작업을 이어받는다.
+ *
+ * 복구된 작업은 pendingRecordings에 원본 녹음 항목이 없으므로 변환만 다시 하고
+ * 저장소 기록은 건너뛴다. 프로세스가 죽기 전 이미 기록됐거나, 기록 전이라면
+ * 사용자가 다시 가져오면 된다.
+ */
 export function getQueue(cfg: AppConfig): JobQueue {
-  if (!queue) queue = new JobQueue(cfg.convertConcurrency, makeRunner(cfg));
+  if (!queue) {
+    queue = new JobQueue(cfg.convertConcurrency, makeRunner(cfg));
+    persistQueue(cfg, queue);
+    void loadUnfinished(cfg).then((items) => {
+      if (items.length) queue!.enqueue(items);
+    });
+  }
   return queue;
 }

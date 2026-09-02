@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppConfig, JobStatus, ScanItem } from '$lib/types';
+import { randomUUID } from 'node:crypto';
+import type { AppConfig, JobItem, JobStatus, ScanItem } from '$lib/types';
 import { loadConfig } from '../config';
 import { listAll } from '../store/recordings';
 import { loadPeaks } from '../store/waveforms';
@@ -438,5 +439,43 @@ describe('재시도 안전성 (파일시스템 오류와 이중 실패)', () => 
     // 그 파일을 지운다. JobFailure에 formats가 실려 있어야 mp3가
     // done으로 남는다.
     expect((caught as JobFailure).formats).toEqual({ mp3: 'done' });
+  });
+});
+
+/**
+ * Task 18: 서버 재시작으로 복구된 작업은 pendingRecordings(인메모리 레지스트리)에
+ * 원본 녹음이 없다. 저장소에도 없다면(재시작 전에 기록되지 못한 경우) patch()가
+ * "녹음을 찾을 수 없습니다: <uuid>"를 던지는데, 그 원문 그대로 사용자에게
+ * 올라가면 uuid 하나만 보고는 무엇을 해야 할지 알 수 없다. 대응(다시
+ * 가져오기)이 담긴 메시지로 바뀌는지 직접 확인한다.
+ */
+describe('재시작 복구 — pendingRecordings에도 저장소에도 원본이 없을 때', () => {
+  it('바닥 그대로의 조회 실패가 아니라 행동할 수 있는 메시지로 실패한다', async () => {
+    const worker = makeRunner(cfg);
+    // buildJobs를 거치지 않아 pendingRecordings에 등록되지 않은, 복구된
+    // 작업을 흉내낸 JobItem. recordings.json도 비어 있으니(이 테스트의
+    // cfg는 beforeEach마다 새 tmp dataDir을 쓴다) 저장소에서도 찾을 수 없다.
+    const orphan: JobItem = {
+      id: 'orphan-job',
+      recordingId: randomUUID(),
+      sourcePath: scan[0].sourcePath,
+      title: '복구된 작업',
+      status: 'pending',
+      formats: { mp3: 'pending', wav: 'pending' },
+      error: null
+    };
+
+    let caught: unknown;
+    try {
+      await worker(orphan);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(JobFailure);
+    const message = (caught as JobFailure).message;
+    expect(message).toContain('다시 가져오');
+    // 개선 전 문구("녹음을 찾을 수 없습니다: <uuid>")가 그대로 새지 않아야 한다.
+    expect(message).not.toMatch(/^녹음을 찾을 수 없습니다:/);
   });
 });

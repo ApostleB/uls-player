@@ -6,6 +6,7 @@ import { config } from '$lib/server/config';
 import { scanFolder } from '$lib/server/scan';
 import { buildJobs, getQueue } from '$lib/server/jobs/runner';
 import { allTags } from '$lib/server/store/recordings';
+import { freeBytes, estimateBytes, DiskShortage } from '$lib/server/disk';
 
 export const load: PageServerLoad = async () => ({
   tags: (await allTags(config)).map((t) => t.tag),
@@ -108,6 +109,16 @@ export const actions: Actions = {
       return fail(400, {
         message: '가져올 수 있는 항목이 없습니다 (다시 스캔한 결과와 일치하는 항목이 없습니다)'
       });
+    }
+
+    // 변환을 시작하기 전에 여유 공간을 확인한다. 중간에 꽉 차면
+    // 반쯤 변환된 파일들이 남아 정리가 어렵다.
+    const need = estimateBytes(config, pending.map((p) => p.scan.bytes));
+    try {
+      const free = await freeBytes(config.mediaDir);
+      if (need > free) return fail(507, { message: new DiskShortage(need, free).message });
+    } catch {
+      // 여유를 잴 수 없으면 막지 않고 진행한다
     }
 
     const { jobs } = buildJobs(config, pending);

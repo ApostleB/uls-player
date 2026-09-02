@@ -22,12 +22,22 @@ vi.mock('$lib/server/jobs/runner', async (importOriginal) => {
   };
 });
 
+// freeBytes만 감싼다 — 기본 동작은 실제 구현(실제 디스크를 잰다) 그대로
+// 통과시키고, 디스크 여유 확인 테스트에서만 한 번 값을 바꿔치기한다.
+// estimateBytes·DiskShortage는 실제 구현을 그대로 쓴다.
+vi.mock('$lib/server/disk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('$lib/server/disk')>();
+  return { ...actual, freeBytes: vi.fn(actual.freeBytes) };
+});
+
 import { actions } from './+page.server';
 import { config } from '$lib/server/config';
 import * as runner from '$lib/server/jobs/runner';
+import * as disk from '$lib/server/disk';
 
 const buildJobsSpy = vi.mocked(runner.buildJobs);
 const getQueueSpy = vi.mocked(runner.getQueue);
+const freeBytesSpy = vi.mocked(disk.freeBytes);
 
 // scanFolder/config는 모킹하지 않는다. 폴더 관련 테스트(빈 값·공백·존재하지
 // 않는 경로) 상당수가 scanFolder의 첫 줄(fs.readdir)에서 끝나거나 그
@@ -70,6 +80,11 @@ beforeEach(() => {
   buildJobsSpy.mockClear();
   getQueueSpy.mockClear();
   fakeQueue.enqueue.mockClear();
+  // vi.fn(impl)로 만든 목은 mockReset해도 그 impl(실제 freeBytes)로
+  // 되돌아간다 — 이전 테스트가 등록해둔 mockResolvedValueOnce/
+  // mockRejectedValueOnce가 소비되지 않은 채 남아 다음 테스트로 새는 것을
+  // 막는다(runner.test.ts와 같은 패턴).
+  freeBytesSpy.mockReset();
 });
 
 describe('scan 액션', () => {
@@ -265,6 +280,58 @@ describe('enqueue 액션 — 신뢰 경계 (서버 재스캔)', () => {
       expect(jobsArg[0].status).toBe('pending');
 
       expect(res).toEqual({ queued: 1, skipped: 0 });
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('enqueue 액션 — 디스크 여유 확인', () => {
+  it('예상 용량이 여유 공간보다 크면 507로 거부하고 buildJobs/큐를 건드리지 않는다', async () => {
+    const dir = await makeFolder(['sample.qta']);
+    try {
+      // 실제 sourceBytes가 얼마든 여유가 0이면 반드시 부족하다고 판정된다.
+      freeBytesSpy.mockResolvedValueOnce(0);
+      const items = [{ sourceName: 'sample.qta', title: 'A', description: '', tags: [] }];
+      const res = await actions.enqueue(enqueueEvent(dir, items));
+
+      expect(res).toMatchObject({ status: 507 });
+      expect((res as { data: { message: string } }).data.message).toMatch(
+        /디스크 여유가 부족합니다/
+      );
+      expect(buildJobsSpy).not.toHaveBeenCalled();
+      expect(getQueueSpy).not.toHaveBeenCalled();
+      expect(fakeQueue.enqueue).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('여유 공간이 충분하면 평소대로 진행한다', async () => {
+    const dir = await makeFolder(['sample.qta']);
+    try {
+      freeBytesSpy.mockResolvedValueOnce(Number.MAX_SAFE_INTEGER);
+      const items = [{ sourceName: 'sample.qta', title: 'A', description: '', tags: [] }];
+      const res = await actions.enqueue(enqueueEvent(dir, items));
+
+      expect(res).toEqual({ queued: 1, skipped: 0 });
+      expect(fakeQueue.enqueue).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('여유 공간을 잴 수 없으면(측정 실패) 막지 않고 그대로 진행한다', async () => {
+    const dir = await makeFolder(['sample.qta']);
+    try {
+      freeBytesSpy.mockRejectedValueOnce(new Error('statfs 실패'));
+      const items = [{ sourceName: 'sample.qta', title: 'A', description: '', tags: [] }];
+      const res = await actions.enqueue(enqueueEvent(dir, items));
+
+      // 측정이 안 됐다고 507로 막으면 안 된다 — 정상적으로 큐에 올라간다.
+      expect(res).toEqual({ queued: 1, skipped: 0 });
+      expect(getQueueSpy).toHaveBeenCalledWith(config);
+      expect(fakeQueue.enqueue).toHaveBeenCalledTimes(1);
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
