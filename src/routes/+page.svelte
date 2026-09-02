@@ -1,6 +1,6 @@
 <script lang="ts">
   import { page } from '$app/state';
-  import { replaceState } from '$app/navigation';
+  import { replaceState, afterNavigate } from '$app/navigation';
   import type { Bookmark, Filter, Recording } from '$lib/types';
   import { applyFilter, filterFromParams, filterToParams } from '$lib/filter';
   import FilterBar from '$lib/components/FilterBar.svelte';
@@ -68,8 +68,29 @@
     [...selectedIds].filter((id) => !shown.some((r) => r.id === id)).length
   );
 
+  // SvelteKit 클라이언트 라우터는 하이드레이션이 끝난 뒤에야 pushState·
+  // replaceState를 받아준다. 이 컴포넌트의 첫 $effect 실행은 하이드레이션
+  // 과정 그 자체(같은 마운트 배치) 안에서 일어나므로, 라우터가 "시작됨"
+  // 표시를 하기 *전에* 아래 replaceState가 불려 "Cannot call
+  // replaceState(...) before router is initialized" 예외를 던진다.
+  //
+  // 실제로 관찰한 결과 프로덕션 빌드(vite preview)에서는 이 예외가 이
+  // 배치의 나머지 이펙트 커밋 자체를 흔들어, 이후 검색창에 타이핑해도
+  // 목록이 전혀 좁혀지지 않는 상태로 굳어버렸다(dev 서버에서는 첫 호출만
+  // 실패하고 이후 갱신은 살아났지만, preview 빌드에서는 필터링 자체가
+  // 죽었다) — 실제 브라우저로 프로덕션 빌드를 눌러보지 않고서는(컴포넌트
+  // 테스트는 $app/navigation을 통째로 모킹해 이 경합을 피해 간다) 잡을 수
+  // 없던 버그다. afterNavigate는 최초 진입 내비게이션을 포함해 라우터가
+  // 실제로 준비된 뒤에만 불리므로, 그 신호가 오기 전까지는 URL 동기화를
+  // 미룬다.
+  let routerReady = $state(false);
+  afterNavigate(() => {
+    routerReady = true;
+  });
+
   // 필터를 URL에 반영해 새로고침과 링크 공유에서 유지되게 한다
   $effect(() => {
+    if (!routerReady) return;
     const qs = filterToParams(filter).toString();
     replaceState(qs ? `?${qs}` : '/', {});
   });

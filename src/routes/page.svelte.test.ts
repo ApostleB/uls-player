@@ -8,7 +8,16 @@ import { filterToParams } from '$lib/filter';
 // before router is initialized"를 던진다. vitest-browser-svelte의 render()는
 // 컴포넌트를 실제 라우터 부트스트랩 없이 그대로 마운트하므로, 모킹하지
 // 않으면 마운트 시점에 곧바로 도는 $effect가 렌더 자체를 깨뜨린다.
-vi.mock('$app/navigation', () => ({ replaceState: vi.fn() }));
+//
+// +page.svelte는 이제 afterNavigate가 신호를 줄 때까지 그 replaceState
+// 호출을 미룬다(진짜 라우터에서 겪은 경합 — tests/e2e/import-flow.spec.ts와
+// 커밋 메시지 참고). 여기 mock의 afterNavigate는 콜백을 즉시 동기 호출해,
+// "라우터가 이미 준비된 것"처럼 흉내내 아래 테스트들의 기존 기대(마운트
+// 시점에 곧바로 replaceState가 불린다)를 그대로 유지한다.
+vi.mock('$app/navigation', () => ({
+  replaceState: vi.fn(),
+  afterNavigate: (fn: () => void) => fn()
+}));
 
 import Page from './+page.svelte';
 import { replaceState } from '$app/navigation';

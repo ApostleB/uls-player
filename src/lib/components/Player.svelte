@@ -294,11 +294,34 @@
         </button>
         <button type="button" class="btn btn-sm preset-tonal" onclick={addBookmark}>북마크</button>
 
+        <!-- 이 <label>은 볼륨 슬라이더를 감싸려던 것이었는데, 음소거
+             버튼까지 같이 담다 보니 두 컨트롤이 접근성 이름을 놓고 서로
+             엉킨다: 브라우저는 <label> 안의 첫 텍스트를 라벨이 감싼
+             컨트롤 쪽으로 돌려버려서, 음소거 버튼 자신의 접근성 이름은
+             비어버리고 그 텍스트("음소거"/"음소거 해제")가 대신 볼륨
+             슬라이더의 이름처럼 읽힌다(둘 다 잘못됐다) — 실제 화면
+             표시(텍스트 자체)는 멀쩡해 보여서 눈으로 봐서는 안 드러나고,
+             getByRole 같은 접근성 이름 조회로만 드러난다
+             (tests/e2e/import-flow.spec.ts 참고). 각자 aria-label로 이름을
+             명시해 <label> 상속에 기대지 않게 한다. -->
         <label class="flex items-center gap-1 text-sm">
-          <button type="button" class="btn btn-sm preset-tonal" onclick={() => (muted = !muted)}>
+          <button
+            type="button"
+            class="btn btn-sm preset-tonal"
+            aria-label={muted ? '음소거 해제' : '음소거'}
+            onclick={() => (muted = !muted)}
+          >
             {muted ? '음소거 해제' : '음소거'}
           </button>
-          <input type="range" min="0" max="1" step="0.01" bind:value={volume} class="w-24" />
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            bind:value={volume}
+            class="w-24"
+            aria-label="볼륨"
+          />
         </label>
 
         <label class="flex items-center gap-1 text-sm">
