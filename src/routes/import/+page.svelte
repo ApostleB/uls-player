@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { enhance } from '$app/forms';
   import type { JobItem, ScanItem } from '$lib/types';
   import TagInput from '$lib/components/TagInput.svelte';
@@ -18,6 +19,16 @@
   let bulkTags = $state<string[]>([]);
   let jobs = $state<JobItem[]>([]);
   let watching = $state(false);
+  // Must Fix 2: 저장 요청이 서버 응답을 받을 때까지 저장 버튼을 비활성화한다.
+  // 변환은 수 분 걸릴 수 있는데, 그 사이 버튼이 계속 눌려 있으면(더블
+  // 클릭·연타) 서버가 매번 재스캔해서 duplicate:false로 보고할 여지가
+  // 생긴다 — 서버도 in-flight 여부를 확인하지만(+page.server.ts), 이건
+  // 그 앞단에서 가장 흔한 경로(같은 버튼을 두 번 누름) 자체를 막는다.
+  let submitting = $state(false);
+  // Must Fix 3: 재시도(fetch('/api/jobs/retry'))가 실패했을 때 보여줄
+  // 메시지. form.message(폼 액션 실패)와는 별도 채널이다 — 재시도는 폼
+  // 액션이 아니라 순수 fetch라 SvelteKit의 form 결과에 실리지 않는다.
+  let retryError = $state<string | null>(null);
 
   // 업로드 드롭 영역. dragging은 순전히 시각 효과(테두리 강조)용이고,
   // 실제 제출은 fileInput.files를 채운 뒤 requestSubmit으로 한다 —
@@ -94,37 +105,87 @@
     if (watching) return;
     watching = true;
 
-    // 두 번째 이후 저장에서 실제로 겪은 경쟁 조건: 이 연결을 여는 시점엔
-    // 이전 배치의 잡들이 이미 전부 done인 채로 큐에 남아 있다(큐는 잡을
-    // 절대 지우지 않는다). enqueue POST는 서버에서 폴더를 다시 스캔한
-        // 뒤에야 새 잡을 큐에 넣으므로 그보다 늦게 도착하는데, SSE는 열자마자
-    // 그 "옛 잡만 있는" 스냅샷을 첫 프레임으로 즉시 받는다. 그 첫 프레임만
-    // 보고 "전부 done"이라고 판단해 곧장 닫아버리면, 방금 요청한 새 잡이
-    // 큐에 들어오기도 전에 연결이 끊겨 진행률을 영영 못 받는다. 그래서
-    // "이번 배치의 새 잡이 실제로 큐에 나타난 뒤"부터만 완료 판정을 시작한다
-    // — 지금 알고 있는 잡 개수보다 늘어난 걸 본 뒤에야 every(done/failed)를
-    // 완료 신호로 받아들인다.
-    const baselineCount = jobs.length;
-    let sawNewJob = false;
+    // 이 연결의 첫 프레임(들)이 "지금 이 연결이 신경 쓸 일과 무관한,
+    // 이미 끝나 있던 이전 상태"일 수 있는 경우가 두 가지 있다:
+    //   1) 두 번째 이후 저장: 이 연결을 여는 시점엔 이전 배치의 잡들이
+    //      이미 전부 done인 채로 큐에 남아 있다(큐는 잡을 절대 지우지
+    //      않는다). enqueue POST는 서버에서 폴더를 다시 스캔한 뒤에야
+    //      새 잡을 큐에 넣으므로 그보다 늦게 도착하는데, SSE는 열자마자
+    //      그 "옛 잡만 있는" 스냅샷을 첫 프레임으로 즉시 받는다.
+    //   2) 재시도: retryFailed()는 새 id를 만들지 않고 기존 실패 잡의
+    //      상태만 되돌린다 — 그래서 "잡 개수가 늘었는가"로는 재시도를
+    //      감지할 수 없다.
+    // 두 경우 모두 첫 프레임만 보고 "전부 done/failed"라고 판단해 곧장
+    // 닫아버리면, 실제로 진행 중이거나 막 다시 시작된 작업의 진행률을
+    // 영영 못 받는다. 그래서 "이 연결이 실제로 진행 중인(pending·running)
+    // 잡을 한 번이라도 본 뒤"부터만 완료 판정을 시작한다 — armed가 그
+    // 신호다. 잡 상태 전이는 큐 쪽에서 항상 pending/running을 거쳐야만
+    // done/failed에 도달하므로(queue.ts의 enqueue·retryFailed·runOne),
+    // 아무리 빨리 끝나도 이 연결이 그 중간 상태를 프레임으로 놓치는 일은
+    // 없다 — SSE는 순서가 보장되는 스트림이라 done 프레임보다 먼저
+    // 도착한다.
+    let armed = false;
 
     es = new EventSource('/api/jobs/events');
     es.onmessage = (e) => {
       jobs = JSON.parse(e.data) as JobItem[];
-      if (!sawNewJob && jobs.length > baselineCount) sawNewJob = true;
+      if (!armed && jobs.some((j) => j.status === 'pending' || j.status === 'running')) {
+        armed = true;
+      }
       // 잡이 하나도 없는 첫 프레임(빈 배열)에서 매치해버리면 안 되므로
       // length 체크를 먼저 둔다 — every()는 빈 배열에 대해 항상 true다.
-      if (sawNewJob && jobs.length && jobs.every((j) => j.status === 'done' || j.status === 'failed')) {
+      if (armed && jobs.length && jobs.every((j) => j.status === 'done' || j.status === 'failed')) {
         closeStream();
       }
     };
   }
 
-  // 탭을 닫거나 다른 페이지로 이동해 컴포넌트가 파괴될 때도 연결을 정리한다.
-  // 그러지 않으면 이 화면을 여러 번 드나들 때마다 서버 쪽 구독자와 15초
+  // Must Fix 3: 마운트 시점(최초 진입이든 새로고침이든)에 스트림을 즉시
+  // 연다. 예전에는 저장(enqueue) 시에만 watchProgress()를 불렀으므로,
+  // 진행 패널은 (a) 새로고침하면 통째로 사라졌고(load가 잡을 돌려주지
+  // 않으므로 서버가 이미 알고 있는 진행 상황을 화면이 다시 볼 방법이
+  // 없었다), (b) 재시도로 스트림이 다시 열리지 않아 실패 후 재시도가
+  // 성공해도 화면이 실패 스냅샷에 멈춰 있었다. 마운트 시 여는 이 연결이
+  // 첫 프레임으로 큐의 현재 스냅샷을 그대로 받으므로(events 엔드포인트가
+  // 구독 전에 snapshot()을 먼저 보낸다), 재시작 복구로 이어서 돌고 있는
+  // 작업도 그대로 보인다.
+  //
+  // onMount를 쓰는 이유: watchProgress가 `watching`($state)을 읽으므로,
+  // 이걸 $effect 안에서 직접 부르면 그 읽기 때문에 effect가 watching에
+  // 의존하게 된다 — 스트림이 닫혀 watching이 false가 될 때마다 effect가
+  // 다시 돌면서 watchProgress()를 또 불러 즉시 재연결하는 루프가 생긴다
+  // (의도한 "완료되면 연결을 정리한다"가 무력화된다). onMount는 마운트
+  // 시 한 번만 실행되고 반응형 의존성을 추적하지 않으므로 이 문제가
+  // 없다. 정리(unmount 시 연결 닫기)도 여기서 반환하는 함수로 처리한다 —
+  // 탭을 닫거나 다른 페이지로 이동해 컴포넌트가 파괴될 때 연결을 안
+  // 닫으면, 이 화면을 여러 번 드나들 때마다 서버 쪽 구독자와 15초
   // 하트비트 타이머가 계속 쌓인다.
-  $effect(() => {
+  onMount(() => {
+    watchProgress();
     return () => es?.close();
   });
+
+  // Must Fix 3: 재시도 버튼이 부르는 함수. 예전에는 onclick={() =>
+  // fetch(...)}로 응답을 아예 확인하지 않았다 — 요청이 실패해도(네트워크
+  // 오류·서버 오류) 사용자는 아무 신호도 못 받았고, 큐가 실제로 재시작을
+  // 받아들여도 스트림이 이미 닫혀 있으면(모든 잡이 failed가 된 뒤라면
+  // watchProgress의 armed && every(...) 판정이 닫는다) 화면이 실패
+  // 스냅샷에 영원히 멈춰 있었다.
+  async function retry(): Promise<void> {
+    retryError = null;
+    // POST보다 먼저 연다 — 이미 열려 있으면(watching) no-op이라 안전하고,
+    // 닫혀 있었다면 응답이 오기 전에 미리 구독해둬서 재시작된 진행
+    // 상황을 놓치지 않는다.
+    watchProgress();
+    try {
+      const res = await fetch('/api/jobs/retry', { method: 'POST' });
+      if (!res.ok) {
+        retryError = `재시도 요청이 실패했습니다 (서버 응답 ${res.status}). 잠시 후 다시 시도하세요.`;
+      }
+    } catch (err) {
+      retryError = `재시도 요청을 보낼 수 없습니다: ${(err as Error).message}`;
+    }
+  }
 
   const doneCount = $derived(jobs.filter((j) => j.status === 'done').length);
   const failedCount = $derived(jobs.filter((j) => j.status === 'failed').length);
@@ -194,7 +255,7 @@
   {#if form && 'skipped' in form && form.skipped}
     <aside class="card preset-tonal-warning p-4">
       {form.skipped}개 항목은 다시 스캔한 결과와 맞지 않아 건너뛰었습니다
-      (파일이 삭제·이름변경되었거나 그 사이 이미 등록됨).
+      (파일이 삭제·이름변경되었거나, 이미 등록됐거나, 지금 변환 중입니다).
     </aside>
   {/if}
 
@@ -263,15 +324,26 @@
 
     <form method="POST" action="?/enqueue"
       use:enhance={() => {
+        submitting = true;
         watchProgress();
-        return async ({ update }) => update({ reset: false });
+        return async ({ update }) => {
+          try {
+            await update({ reset: false });
+          } finally {
+            submitting = false;
+          }
+        };
       }}>
       <input type="hidden" name="folder" value={folder} />
       <input type="hidden" name="items" value={itemsPayload()} />
-      <button type="submit" class="btn preset-filled-primary-500" disabled={!selected.length}>
+      <button type="submit" class="btn preset-filled-primary-500" disabled={submitting || !selected.length}>
         {selected.length}개 저장 및 변환
       </button>
     </form>
+  {/if}
+
+  {#if retryError}
+    <aside class="card preset-tonal-error p-4">{retryError}</aside>
   {/if}
 
   {#if jobs.length}
@@ -302,8 +374,7 @@
         {/each}
       </ul>
       {#if failedCount}
-        <button type="button" class="btn btn-sm preset-tonal mt-3"
-          onclick={() => fetch('/api/jobs/retry', { method: 'POST' })}>
+        <button type="button" class="btn btn-sm preset-tonal mt-3" onclick={retry}>
           실패한 {failedCount}개 재시도
         </button>
       {/if}

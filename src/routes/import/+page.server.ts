@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import type { PendingItem } from '$lib/server/jobs/runner';
@@ -165,7 +166,15 @@ export const actions: Actions = {
     }
     const bySourceName = new Map(scanned.map((s) => [s.sourceName, s]));
 
-    const pending: PendingItem[] = [];
+    // 1차 통과: 재스캔 매치 여부만 본다. existingSourceNames(scan.duplicate가
+    // 근거로 삼는 것)는 recordings.json만 읽는데, 그 파일은 파이프라인
+    // 맨 끝에서만 갱신된다(runner.ts) — 그래서 이 통과만으로는 "지금
+    // 변환 중인" 항목을 아직 걸러내지 못한다(바로 아래 2차 통과가 담당).
+    // candidates가 여기서 비면(=재스캔과 아예 매치되는 게 없으면) 큐를
+    // 건드릴 이유조차 없으므로 getQueue를 부르지 않고 곧장 실패한다 —
+    // "전부 건너뛰면 조용히 0개를 올리지 않고 깨끗하게 실패한다" 테스트가
+    // 지키는 불변식이다.
+    const candidates: { item: ClientItem; scan: ScanItem }[] = [];
     let skipped = 0;
     for (const item of items) {
       const scan = bySourceName.get(item.sourceName);
@@ -176,17 +185,53 @@ export const actions: Actions = {
         skipped++;
         continue;
       }
-      pending.push({ scan, title: item.title, description: item.description, tags: item.tags });
+      candidates.push({ item, scan });
     }
 
-    if (pending.length === 0) {
+    if (candidates.length === 0) {
       return fail(400, {
         message: '가져올 수 있는 항목이 없습니다 (다시 스캔한 결과와 일치하는 항목이 없습니다)'
       });
     }
 
+    // 2차 통과: 큐가 이미 알고 있는(=지금 진행 중이거나 이미 끝난)
+    // sourceName은 다시 올리지 않는다. Must Fix 2: 252개를 저장하고 변환이
+    // 도는 동안(수 분) 저장 버튼을 다시 누르면, 재스캔은 여전히
+    // duplicate:false를 돌려준다(recordings.json이 아직 안 바뀌었으므로) —
+    // 그대로 두면 504개(원래 252 + 이번에 또 큐에 오른 252)가 되고 원본이
+    // 통째로 다시 복사된다. 큐의 snapshot()에서 sourcePath의 basename이
+    // sourceName과 같은 잡을 찾아, failed가 아닌 상태(pending·running·done)면
+    // "이미 처리 중이거나 처리됨"으로 보고 건너뛴다. failed는 제외한다 —
+    // 실패한 잡은 사용자가 여기서 다시 올려 새로 시도할 수 있어야 한다
+    // (retryFailed()가 있긴 하지만, 다시 가져오기 화면에서 재제출하는
+    // 것까지 막을 이유는 없다).
+    const queue = getQueue(config);
+    const inFlight = new Set(
+      queue
+        .snapshot()
+        .filter((j) => j.status !== 'failed')
+        .map((j) => path.basename(j.sourcePath))
+    );
+
+    const pending: PendingItem[] = [];
+    for (const { item, scan } of candidates) {
+      if (inFlight.has(item.sourceName)) {
+        skipped++;
+        continue;
+      }
+      pending.push({ scan, title: item.title, description: item.description, tags: item.tags });
+    }
+
+    if (pending.length === 0) {
+      return fail(400, {
+        message: '가져올 수 있는 항목이 없습니다 (선택한 항목이 모두 이미 처리 중이거나 등록되어 있습니다)'
+      });
+    }
+
     // 변환을 시작하기 전에 여유 공간을 확인한다. 중간에 꽉 차면
-    // 반쯤 변환된 파일들이 남아 정리가 어렵다.
+    // 반쯤 변환된 파일들이 남아 정리가 어렵다. pending은 이미 위에서
+    // in-flight 항목을 뺀 뒤이므로, 어차피 건너뛸 항목의 용량까지
+    // 과대평가해서 불필요하게 507을 내는 일이 없다.
     const need = estimateBytes(config, pending.map((p) => p.scan.bytes));
     try {
       const free = await freeBytes(config.mediaDir);
@@ -196,7 +241,6 @@ export const actions: Actions = {
     }
 
     const { jobs } = buildJobs(config, pending);
-    const queue = getQueue(config);
     queue.enqueue(jobs);
 
     // folder가 saveUploads가 만든 스테이징 폴더라면(브라우저 업로드 경로),

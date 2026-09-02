@@ -4,14 +4,22 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { RequestEvent } from './$types';
-import type { ScanItem } from '$lib/types';
+import type { JobItem, ScanItem } from '$lib/types';
 
 // buildJobs는 실제 구현을 그대로 쓴다 — fs 쓰기가 없는 순수 조립 함수라
 // (레지스트리는 인메모리) 실제로 돌려도 안전하고, "유효한 enqueue가 실제로
 // buildJobs를 거쳐 큐에 잡을 올린다"를 의미 있게 검증하려면 진짜 조립
 // 로직이 필요하다. getQueue만 가짜로 바꿔서, 실제 큐(변환·ffmpeg·파일 IO를
 // 일으키는 프로세스 싱글턴)를 절대 건드리지 않는다.
-const fakeQueue = { enqueue: vi.fn(), subscribe: vi.fn(() => () => {}) };
+// snapshot()은 Must Fix 2(진행 중인 잡과의 중복 방지)가 in-flight
+// sourceName을 알아내려고 부른다 — 기본값은 빈 배열이라 대부분의 테스트는
+// snapshot을 신경 쓸 필요가 없고, in-flight 관련 테스트만 mockReturnValueOnce로
+// 채운다.
+const fakeQueue = {
+  enqueue: vi.fn(),
+  subscribe: vi.fn(() => () => {}),
+  snapshot: vi.fn((): JobItem[] => [])
+};
 
 vi.mock('$lib/server/jobs/runner', async (importOriginal) => {
   const actual = await importOriginal<typeof import('$lib/server/jobs/runner')>();
@@ -119,6 +127,8 @@ beforeEach(() => {
   getQueueSpy.mockClear();
   fakeQueue.enqueue.mockClear();
   fakeQueue.subscribe.mockClear();
+  fakeQueue.snapshot.mockClear();
+  fakeQueue.snapshot.mockReturnValue([]);
   // vi.fn(impl)로 만든 목은 mockReset해도 그 impl(실제 freeBytes)로
   // 되돌아간다 — 이전 테스트가 등록해둔 mockResolvedValueOnce/
   // mockRejectedValueOnce가 소비되지 않은 채 남아 다음 테스트로 새는 것을
@@ -403,7 +413,7 @@ describe('enqueue 액션 — 신뢰 경계 (서버 재스캔)', () => {
 });
 
 describe('enqueue 액션 — 디스크 여유 확인', () => {
-  it('예상 용량이 여유 공간보다 크면 507로 거부하고 buildJobs/큐를 건드리지 않는다', async () => {
+  it('예상 용량이 여유 공간보다 크면 507로 거부하고 buildJobs/큐에는 잡을 올리지 않는다', async () => {
     const dir = await makeFolder(['sample.qta']);
     try {
       // 실제 sourceBytes가 얼마든 여유가 0이면 반드시 부족하다고 판정된다.
@@ -416,7 +426,11 @@ describe('enqueue 액션 — 디스크 여유 확인', () => {
         /디스크 여유가 부족합니다/
       );
       expect(buildJobsSpy).not.toHaveBeenCalled();
-      expect(getQueueSpy).not.toHaveBeenCalled();
+      // Must Fix 2 이후로는 getQueue가 여기서도 불린다 — pending을 확정하기
+      // 전에(디스크 예상치를 정확히 재려면) 진행 중인 sourceName을 큐의
+      // snapshot()으로 먼저 걸러내야 하기 때문이다(위 in-flight 중복 방지
+      // 테스트 참고). 그래도 실제로 잡을 만들거나 큐에 올리는 일은
+      // 없어야 한다는 불변식은 그대로다.
       expect(fakeQueue.enqueue).not.toHaveBeenCalled();
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
@@ -448,6 +462,110 @@ describe('enqueue 액션 — 디스크 여유 확인', () => {
       expect(res).toEqual({ queued: 1, skipped: 0 });
       expect(getQueueSpy).toHaveBeenCalledWith(config);
       expect(fakeQueue.enqueue).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * Must Fix 2(CRITICAL): existingSourceNames는 recordings.json만 읽는데,
+ * 그 파일은 파이프라인 맨 끝에서만 갱신된다(runner.ts). 그래서 변환이
+ * 도는 동안(수 분) 저장 버튼을 두 번 누르면 재스캔은 매번 duplicate:false를
+ * 돌려주고, 개선 전 코드는 그걸 그대로 믿어 같은 항목을 또 큐에 올리고
+ * 원본을 다시 복사했다. 큐의 snapshot()에 있는(=이미 알려진) sourceName은
+ * failed가 아닌 한 다시 올리지 않아야 한다.
+ */
+describe('enqueue 액션 — 진행 중인(in-flight) 잡과의 중복 방지', () => {
+  function inFlightJob(sourcePath: string, status: 'pending' | 'running' | 'done' | 'failed') {
+    return {
+      id: randomUUID(),
+      recordingId: randomUUID(),
+      sourcePath,
+      title: '이미 큐에 있음',
+      status,
+      formats: { mp3: status, wav: status },
+      error: status === 'failed' ? '이전 실패' : null
+    };
+  }
+
+  it('이미 진행 중인(running) sourceName은 건너뛰고 skipped로 세며, 나머지는 정상적으로 큐에 올린다', async () => {
+    const dir = await makeFolder(['sample.qta', 'sample2.qta']);
+    try {
+      fakeQueue.snapshot.mockReturnValueOnce([
+        inFlightJob(path.join(dir, 'sample.qta'), 'running')
+      ]);
+      const items = [
+        { sourceName: 'sample.qta', title: 'A', description: '', tags: [] },
+        { sourceName: 'sample2.qta', title: 'B', description: '', tags: [] }
+      ];
+      const res = await actions.enqueue(enqueueEvent(dir, items));
+
+      expect(res).toEqual({ queued: 1, skipped: 1 });
+      expect(buildJobsSpy).toHaveBeenCalledTimes(1);
+      const [[, pendingArg]] = buildJobsSpy.mock.calls;
+      expect(pendingArg).toHaveLength(1);
+      expect(pendingArg[0].scan.sourceName).toBe('sample2.qta');
+      const jobsArg = fakeQueue.enqueue.mock.calls[0][0];
+      expect(jobsArg).toHaveLength(1);
+      expect(jobsArg[0].sourcePath).toBe(path.join(dir, 'sample2.qta'));
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('done 상태인 in-flight 잡의 sourceName도 건너뛴다(recordings.json 반영 전 좁은 창)', async () => {
+    const dir = await makeFolder(['sample.qta']);
+    try {
+      fakeQueue.snapshot.mockReturnValueOnce([
+        inFlightJob(path.join(dir, 'sample.qta'), 'done')
+      ]);
+      const items = [{ sourceName: 'sample.qta', title: 'A', description: '', tags: [] }];
+      const res = await actions.enqueue(enqueueEvent(dir, items));
+
+      expect(res).toMatchObject({ status: 400 });
+      expect((res as { data: { message: string } }).data.message).toMatch(
+        /가져올 수 있는 항목이 없습니다/
+      );
+      expect(buildJobsSpy).not.toHaveBeenCalled();
+      expect(fakeQueue.enqueue).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('failed 상태인 in-flight 잡의 sourceName은 막지 않는다 — 사용자가 다시 올려 새로 시도할 수 있어야 한다', async () => {
+    const dir = await makeFolder(['sample.qta']);
+    try {
+      fakeQueue.snapshot.mockReturnValueOnce([
+        inFlightJob(path.join(dir, 'sample.qta'), 'failed')
+      ]);
+      const items = [{ sourceName: 'sample.qta', title: 'A', description: '', tags: [] }];
+      const res = await actions.enqueue(enqueueEvent(dir, items));
+
+      expect(res).toEqual({ queued: 1, skipped: 0 });
+      expect(fakeQueue.enqueue).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('모든 후보가 in-flight면 buildJobs/enqueue를 건드리지 않고 깨끗하게 실패한다', async () => {
+    const dir = await makeFolder(['sample.qta', 'sample2.qta']);
+    try {
+      fakeQueue.snapshot.mockReturnValueOnce([
+        inFlightJob(path.join(dir, 'sample.qta'), 'pending'),
+        inFlightJob(path.join(dir, 'sample2.qta'), 'running')
+      ]);
+      const items = [
+        { sourceName: 'sample.qta', title: 'A', description: '', tags: [] },
+        { sourceName: 'sample2.qta', title: 'B', description: '', tags: [] }
+      ];
+      const res = await actions.enqueue(enqueueEvent(dir, items));
+
+      expect(res).toMatchObject({ status: 400 });
+      expect(buildJobsSpy).not.toHaveBeenCalled();
+      expect(fakeQueue.enqueue).not.toHaveBeenCalled();
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
