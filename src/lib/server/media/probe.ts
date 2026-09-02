@@ -59,8 +59,15 @@ export async function probe(filePath: string): Promise<ProbeResult> {
     );
   }
 
-  const duration = Number(raw.format?.duration);
-  if (!Number.isFinite(duration)) throw new Error(`길이를 읽을 수 없습니다: ${filePath}`);
+  // Number('')는 0이고 Number.isFinite(0)은 true라, 빈 duration을
+  // 그냥 통과시키면 0초짜리 녹음으로 조용히 취급된다 — 크래시는 안 나지만
+  // 재생기가 0:00을 표시하고 파형 버킷도 어긋난다. 빈 문자열/누락을
+  // 먼저 걸러낸 뒤 숫자로 바꾼다.
+  const rawDuration = raw.format?.duration;
+  const duration = rawDuration === undefined || rawDuration.trim() === '' ? NaN : Number(rawDuration);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw new Error(`길이를 읽을 수 없습니다: ${filePath} (duration=${JSON.stringify(rawDuration)})`);
+  }
 
   const tags = raw.format?.tags ?? {};
   return {
