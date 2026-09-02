@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import type { AppConfig, JobItem } from '$lib/types';
 import { AUDIO_EXTENSIONS } from './scan';
 import type { JobQueue } from './jobs/queue';
+import { loadAllJobs } from './jobs/persist';
 
 const DB_NAMES = new Set(['CloudRecordings.db', 'CloudRecordings.db-wal', 'CloudRecordings.db-shm']);
 
@@ -152,37 +153,80 @@ export function isUploadStaging(folder: string): boolean {
   return path.dirname(folder) === os.tmpdir() && path.basename(folder).startsWith(STAGING_PREFIX);
 }
 
-/** folder별로 "아직 done을 못 본 잡 id" 집합을 들고 있다가 비면 폴더를 지운다. */
+/** folder별로 "아직 done을 못 본 잡 id" 집합을 들고 있다가 비면 구독을 끊는다. */
 const watching = new Map<string, Set<string>>();
 
 /**
- * folder의 잡들이 전부 끝나면(성공한 것만) 스테이징 폴더를 지운다.
+ * folder별로 정리 작업(파일 삭제 → 폴더가 비었는지 확인)을 순서대로만
+ * 실행한다. 같은 folder에서 잡 두 개가 거의 동시에 done이 되면 각자
+ * cleanupJobFile을 동시에 시작하는데, 그 둘의 "폴더가 비었나" 확인이
+ * 서로 겹치면 실제로는(둘 다 지운 뒤에는) 비어 있는데도 둘 다 "아직 하나
+ * 남았다"고 보고 넘어가 폴더가 영영 안 지워질 수 있다. folder별로 체인을
+ * 이어 붙여 한 번에 하나씩만 돌게 하면 이 경쟁이 원천적으로 없다 — 나중
+ * 실행은 항상 앞선 파일 삭제가 완전히 끝난 뒤의 상태를 본다.
+ */
+const chains = new Map<string, Promise<void>>();
+
+function runExclusive(folder: string, fn: () => Promise<void>): void {
+  const prev = chains.get(folder) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    try {
+      await fn();
+    } catch (err) {
+      console.error(`업로드 스테이징 정리 실패: ${folder}`, err);
+    }
+  });
+  chains.set(folder, next);
+}
+
+/**
+ * done이 된 잡 하나가 가리키던 파일만 지운다. 지운 뒤 folder를 다시
+ * 읽어서 남은 파일이 없으면 folder 자체도 지운다 — 다른 파일이 남아
+ * 있으면(사용자가 아직 선택 안 한 행들) 절대 건드리지 않는다.
+ */
+async function cleanupJobFile(folder: string, sourcePath: string): Promise<void> {
+  await fs.rm(sourcePath, { force: true });
+  const remaining = await fs.readdir(folder).catch(() => [] as string[]);
+  if (remaining.length === 0) {
+    await fs.rm(folder, { recursive: true, force: true });
+  }
+}
+
+/**
+ * folder 안에서 jobIds가 가리키는 잡이 done이 되는 대로, 그 잡의 파일
+ * 하나만 지운다(폴더 전체가 아니다). 지운 결과 폴더가 비면 폴더도 지운다.
  *
- * 왜 "전부 done"까지 기다려야 안전한가 — runner.ts의 originalIntact 가드를
- * 보면, 원본 복사(fs.copyFile(job.sourcePath, originalPath))는 잡마다 딱
- * 한 번만 일어난다: 성공하면 originalPath가 생기고, 그 뒤로는 재시도해도
- * sourcePath를 다시 안 읽는다. 그러니 "이 folder를 가리키는 sourcePath를
- * 쓰는 잡이 전부 done"이면, 그 순간부터는 누구도 다시 sourcePath를 읽지
- * 않는다는 뜻이라 폴더를 지워도 안전하다.
+ * 왜 폴더 단위가 아니라 파일 단위인가 — 한 번 업로드로 여러 파일을 같은
+ * folder에 쓴 뒤, 사용자가 그중 일부만 선택해 먼저 저장하고(다른 행을
+ * 골라 다시 저장하는 것도 지원되는 흐름이다 — +page.svelte의 enhance가
+ * update({reset: false})로 rows를 남겨두는 이유가 그것이다) 나머지를
+ * 나중에 또 저장할 수 있다. 이전 버전은 "이번에 넘긴 잡이 전부 done"이면
+ * folder 전체를 fs.rm(recursive)로 지웠는데, 그러면 아직 저장 안 한
+ * 나머지 파일까지 함께 사라진다 — 두 번째 enqueue가 재스캔할 folder
+ * 자체가 없어져 "폴더를 다시 읽을 수 없습니다"로 실패하고, 업로드된
+ * 원본은 복구 불가능하게 사라진다. 파일 단위로 바꾸면 이 문제가
+ * 구조적으로 없다 — 아직 선택 안 한 파일은 애초에 지울 대상 목록에
+ * 들어가지도 않는다.
  *
- * failed는 일부러 "끝났다"로 세지 않는다 — 실패 원인이 복사 자체였을 수도
- * 있고(그러면 원본이 아직 originalPath에 없어 재시도가 sourcePath를 다시
- * 읽는다), 복사는 끝났는데 그 뒤 변환 단계에서 실패했을 수도 있다(그러면
- * 이미 원본은 안전하게 복사돼 있다). 두 경우를 JobItem.status/formats만
- * 보고 안전하게 구분할 근거가 마땅치 않아서, 실패한 잡이 하나라도 남아
- * 있으면 그냥 지우지 않는다 — 사용자가 재시도를 눌러 그 잡도 done이 될
- * 때까지 폴더가 남아 있는 것뿐이다(디스크를 좀 더 오래 차지하는 대가로
- * "재시도했더니 원본이 사라져 있었다"는 사고를 원천적으로 피한다).
+ * done이 파일을 지워도 안전한 시점인 이유는 그대로다 — runner.ts가
+ * job.sourcePath를 media/original로 복사하는 건 잡 시작 시점이고, done은
+ * 그 복사를 포함한 전체 변환이 끝난 뒤에만 온다. done을 본 순간
+ * sourcePath는 이미 안전하게 복사됐고 다시는 읽히지 않는다
+ * (originalIntact 가드, runner.ts:103-114).
  *
- * 같은 folder로 enqueue를 여러 번 부를 수 있다(스캔 한 번 → 다른 행 선택해
- * 또 저장). 그래서 folder마다 "아직 못 본 done" 집합을 전역에서 계속
- * 합쳐 나간다 — 나중 enqueue가 추가한 잡 id도 같은 집합에 들어가므로,
- * 먼저 끝난 배치가 있다고 성급하게 지우는 일이 없다.
+ * failed는 여전히 "끝났다"로 세지 않는다 — 실패 원인이 원본 복사
+ * 자체였을 수도 있고(재시도가 sourcePath를 다시 읽는다), 변환 단계였을
+ * 수도 있다(이미 원본은 안전하다). 두 경우를 안전하게 구분할 근거가
+ * 없어서, 실패한 잡의 파일은 재시도로 done이 될 때까지 그대로 둔다.
  *
- * 구독은 folder의 남은 잡이 전부 done이 되어 폴더를 지울 때만 해지한다.
- * 실패한 잡이 영원히 재시도되지 않으면 이 구독(과 folder 하나 분량의 잡
- * id 집합)이 프로세스 수명 동안 계속 남는다 — 로컬 1인용 도구에서 가져오기
- * 배치 수는 크지 않으니 감수할 만한 트레이드오프로 본다.
+ * 같은 folder로 enqueue를 여러 번 부를 수 있어 folder별 감시 집합을
+ * 전역에서 계속 합쳐 나간다. 구독은 그 folder의 남은 잡이 전부 done이
+ * 되어야 해지한다 — 실패한 잡이 영원히 재시도되지 않으면 이 구독이
+ * 프로세스 수명 동안 남는다는 트레이드오프는 이전과 같다.
+ *
+ * 프로세스가 done을 보기 전에 죽으면(재시작) 이 인메모리 구독 자체가
+ * 사라진다 — 그 경우의 만회는 sweepStaleStaging(아래)이 시작 시점에
+ * 대신한다.
  */
 export function scheduleStagingCleanup(queue: JobQueue, folder: string, jobIds: string[]): void {
   if (!isUploadStaging(folder) || jobIds.length === 0) return;
@@ -194,14 +238,94 @@ export function scheduleStagingCleanup(queue: JobQueue, folder: string, jobIds: 
   const unsubscribe = queue.subscribe((items: JobItem[]) => {
     const byId = new Map(items.map((i) => [i.id, i]));
     for (const id of Array.from(pending)) {
-      if (byId.get(id)?.status === 'done') pending.delete(id);
+      const item = byId.get(id);
+      if (item?.status !== 'done') continue;
+      pending.delete(id);
+      runExclusive(folder, () => cleanupJobFile(folder, item.sourcePath));
     }
     if (pending.size === 0) {
       unsubscribe();
       watching.delete(folder);
-      void fs.rm(folder, { recursive: true, force: true }).catch((err) => {
-        console.error(`업로드 임시 폴더 정리 실패: ${folder}`, err);
-      });
+      chains.delete(folder);
     }
   });
+}
+
+/**
+ * 이보다 오래(마지막으로 이 폴더 안 파일이 바뀐 뒤로) 방치된 스테이징
+ * 폴더는, 아직 필요한 잡이 없다면 시작 시점 정리 대상이다. 가져오기 한
+ * 번(업로드 → 편집 → 저장 → 변환)이 이 시간 안에 안 끝나는 건 비정상이고,
+ * 사용자가 편집 화면을 띄워 놓고 잠깐 자리를 비운 정도로는 절대 안
+ * 걸리도록 훨씬 널널하게 잡았다.
+ */
+const STALE_STAGING_MS = 24 * 60 * 60 * 1000; // 24시간
+
+/**
+ * os.tmpdir() 아래 남은 uls-upload-* 폴더 중, 아직 진행 중인(=done이 아닌)
+ * 잡이 가리키지 않고 STALE_STAGING_MS보다 오래된 것을 지운다.
+ *
+ * 왜 필요한가 — scheduleStagingCleanup은 인메모리 구독으로 done을
+ * 기다렸다가 지우는데, 그 잡이 끝나기 전에 서버 프로세스가 죽으면(재시작
+ * 포함) 그 구독 자체가 사라진다. getQueue()의 loadUnfinished가 jobs.json의
+ * 미완료 잡을 다시 큐에 올리긴 하지만, 그 잡을 위한 정리 구독은 다시
+ * 걸리지 않는다 — 그 잡이 이번엔 무사히 done이 돼도 이 함수가 없으면
+ * 스테이징 폴더(와 이미 다 쓴 파일들)가 영원히 안 지워진다.
+ *
+ * "아직 진행 중인 작업이 가리키는 폴더는 절대 지우면 안 된다"를 나이
+ * 기준보다 우선한다 — jobs.json에서 상태가 done이 아닌(pending·running·
+ * failed) 잡들의 sourcePath가 속한 폴더는 아무리 오래됐어도 건너뛴다.
+ * failed도 보호 대상이다(재시도가 sourcePath를 다시 읽을 수 있다).
+ *
+ * 남는 간극 하나: 아직 enqueue조차 안 한(=jobs.json에 아무 기록도 없는)
+ * 업로드 직후 폴더는 이 보호 집합에 안 잡힌다. 사용자가 업로드만 해두고
+ * STALE_STAGING_MS보다 오래(24시간 이상) 저장을 미루면 그 사이 서버가
+ * 재시작될 경우 이 스윕이 지울 수 있다 — 로컬 1인용 도구에서 그 정도로
+ * 오래 편집 화면을 열어둔 채 방치하는 경우는 드물다고 보고 받아들인
+ * 잔여 위험이다. 완전히 메우려면 "편집 중" 폴더까지 무언가에 등록해야
+ * 하는데, 그러면 store 밖의 이 파일이 또 다른 영속 상태를 들고 있어야
+ * 해서 이번 수정 범위를 넘는다고 판단했다.
+ */
+export async function sweepStaleStaging(cfg: AppConfig): Promise<void> {
+  let all: JobItem[];
+  try {
+    all = await loadAllJobs(cfg);
+  } catch (err) {
+    console.error('잡 목록을 읽을 수 없어 시작 시점 업로드 스테이징 정리를 건너뜁니다', err);
+    return;
+  }
+
+  const protectedFolders = new Set(
+    all
+      .filter((j) => j.status !== 'done')
+      .map((j) => path.dirname(j.sourcePath))
+      .filter((d) => isUploadStaging(d))
+  );
+
+  let entries: string[];
+  try {
+    entries = await fs.readdir(os.tmpdir());
+  } catch {
+    return; // os.tmpdir() 자체를 못 읽으면 조용히 포기한다 — 시작을 막을 이유는 아니다.
+  }
+
+  const now = Date.now();
+  for (const name of entries) {
+    if (!name.startsWith(STAGING_PREFIX)) continue;
+    const dir = path.join(os.tmpdir(), name);
+    if (protectedFolders.has(dir)) continue;
+
+    let mtimeMs: number;
+    try {
+      const st = await fs.stat(dir);
+      if (!st.isDirectory()) continue;
+      mtimeMs = st.mtimeMs;
+    } catch {
+      continue; // 그 사이 없어졌으면(다른 정리가 이미 지웠으면) 넘어간다.
+    }
+    if (now - mtimeMs < STALE_STAGING_MS) continue;
+
+    await fs.rm(dir, { recursive: true, force: true }).catch((err) => {
+      console.error(`오래된 업로드 스테이징 폴더 정리 실패: ${dir}`, err);
+    });
+  }
 }

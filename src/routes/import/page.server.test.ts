@@ -80,14 +80,35 @@ async function fileFrom(p: string, name: string): Promise<File> {
   return new File([await fs.readFile(p)], name);
 }
 
-/** contentLength를 주면 실제 FormData 바디 크기와 무관하게 그 값으로
- * content-length 헤더를 강제한다 — undici의 Request는 명시적으로 준
- * 헤더를 body로부터 재계산하지 않고 그대로 존중하므로, 수백 MB짜리
- * 더미 바이트를 실제로 만들지 않고도 집계 한도 초과를 재현할 수 있다. */
-function uploadEvent(files: File[], contentLength?: string): RequestEvent {
+/**
+ * files로 실제 FormData를 만든다. contentLength를 안 주면 실제 바이트
+ * 크기를 재서 content-length 헤더에 채운다 — 실제 브라우저의 네이티브
+ * 멀티파트 POST가 항상 보내는 것과 같다. (로컬 Request 생성자는 undici가
+ * 이걸 자동으로 채워주지 않는다 — node -e로 직접 확인했다: FormData
+ * body를 준 Request가 별도 헤더 없이 만들어지면 content-length가 아예
+ * 없다.) 그래서 기본 통과 케이스를 만드는 테스트조차 이 측정 없이는
+ * "Content-Length 없음" 411 검사에 걸린다.
+ *
+ * contentLength에 문자열을 주면 실제 크기와 무관하게 그 값을 강제한다
+ * (집계 한도 초과 재현용, undici가 명시적으로 준 헤더는 body로부터
+ * 재계산하지 않고 그대로 존중한다는 것도 확인했다). null을 주면 헤더
+ * 자체를 아예 안 보낸다(헤더 누락 케이스 재현용).
+ */
+async function uploadEvent(files: File[], contentLength?: string | null): Promise<RequestEvent> {
   const fd = new FormData();
   for (const f of files) fd.append('files', f);
-  const headers = contentLength !== undefined ? { 'content-length': contentLength } : undefined;
+
+  let length: string | undefined;
+  if (contentLength === null) {
+    length = undefined;
+  } else if (contentLength !== undefined) {
+    length = contentLength;
+  } else {
+    const probe = new Request('http://localhost/probe', { method: 'POST', body: fd });
+    length = String((await probe.arrayBuffer()).byteLength);
+  }
+
+  const headers = length !== undefined ? { 'content-length': length } : undefined;
   return {
     request: new Request('http://localhost/import', { method: 'POST', body: fd, headers })
   } as unknown as RequestEvent;
@@ -149,7 +170,7 @@ describe('scan 액션', () => {
 describe('upload 액션', () => {
   it('성공하면 항목 배열과 실제로 저장한 폴더 경로를 함께 돌려준다', async () => {
     const file = await fileFrom(SPATIAL, 'sample.qta');
-    const res = await actions.upload(uploadEvent([file]));
+    const res = await actions.upload(await uploadEvent([file]));
     const out = res as { items: ScanItem[]; folder: string };
     try {
       expect(out.items).toHaveLength(1);
@@ -173,7 +194,7 @@ describe('upload 액션', () => {
   // 검증한다.
   it('upload가 돌려준 folder를 그대로 enqueue에 넘기면 재스캔에서 sourceName이 맞아떨어진다', async () => {
     const file = await fileFrom(SPATIAL, 'sample.qta');
-    const up = (await actions.upload(uploadEvent([file]))) as { items: ScanItem[]; folder: string };
+    const up = (await actions.upload(await uploadEvent([file]))) as { items: ScanItem[]; folder: string };
     try {
       const res = await actions.enqueue(
         enqueueEvent(up.folder, [
@@ -187,10 +208,20 @@ describe('upload 액션', () => {
     }
   });
 
+  it('Content-Length 헤더가 없으면 formData를 읽기 전에 411로 거부한다', async () => {
+    // 1차 리뷰의 curl PoC가 실제로 이 헤더 없이 액션을 직접 두드릴 수
+    // 있음을 보였다 — 브라우저의 네이티브 멀티파트 POST는 이 헤더를
+    // 항상 보내므로, 정상적인 사용자에게는 비용 없는 요구다.
+    const file = await fileFrom(SPATIAL, 'sample.qta');
+    const res = await actions.upload(await uploadEvent([file], null));
+    expect(res).toMatchObject({ status: 411 });
+    expect((res as { data: { message: string } }).data.message).toMatch(/Content-Length/);
+  });
+
   it('Content-Length가 요청 전체 한도를 넘으면 formData를 읽기 전에 413으로 거부한다', async () => {
     const file = await fileFrom(SPATIAL, 'sample.qta');
     const oversized = String(config.maxUploadTotalMb * 1024 * 1024 + 1);
-    const res = await actions.upload(uploadEvent([file], oversized));
+    const res = await actions.upload(await uploadEvent([file], oversized));
     expect(res).toMatchObject({ status: 413 });
     const message = (res as { data: { message: string } }).data.message;
     // 두 한도(파일당·요청 전체)를 메시지에 함께 밝힌다 — 사용자가 어느
@@ -204,7 +235,7 @@ describe('upload 액션', () => {
     config.maxUploadMb = 0.001; // spatial.qta(약 180KB)가 이 한도를 넘도록
     try {
       const file = await fileFrom(SPATIAL, 'sample.qta');
-      const res = await actions.upload(uploadEvent([file]));
+      const res = await actions.upload(await uploadEvent([file]));
       expect(res).toMatchObject({ status: 413 });
       expect((res as { data: { message: string } }).data.message).toMatch(/업로드 한도/);
     } finally {

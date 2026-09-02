@@ -100,3 +100,17 @@ export async function loadUnfinished(cfg: AppConfig): Promise<JobItem[]> {
     .filter((i) => i.status === 'pending' || i.status === 'running')
     .map((i) => ({ ...i, status: 'pending' as const }));
 }
+
+/**
+ * 상태와 무관하게 jobs.json에 있는 잡을 전부 돌려준다.
+ *
+ * loadUnfinished는 done·failed를 걸러내므로 그 용도로는 못 쓴다 — upload.ts의
+ * sweepStaleStaging이 "아직 필요할 수 있는"(=done이 아닌) 잡의 sourcePath를
+ * 골라 시작 시점 정리 스윕에서 보호할 폴더를 정하는 데 쓴다. failed도
+ * 포함해야 한다: 실패한 잡은 사용자가 재시도하면 sourcePath를 다시 읽을 수
+ * 있다(원본 복사 자체가 실패한 경우).
+ */
+export async function loadAllJobs(cfg: AppConfig): Promise<JobItem[]> {
+  const { items } = await readJson<JobsFile>(file(cfg), EMPTY);
+  return items;
+}

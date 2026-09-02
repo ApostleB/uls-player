@@ -11,6 +11,7 @@ import { addMany, newId, patch } from '../store/recordings';
 import { JobQueue, JobFailure, type Worker } from './queue';
 import { pendingRecordings } from './registry';
 import { persistQueue, loadUnfinished, jobsFilePath } from './persist';
+import { sweepStaleStaging } from '../upload';
 
 export interface PendingItem {
   scan: ScanItem;
@@ -251,6 +252,14 @@ export function getQueue(cfg: AppConfig): JobQueue {
         );
       }
     );
+
+    // 재시작 사이에 놓친 업로드 스테이징 정리를 시작 시점에 만회한다.
+    // scheduleStagingCleanup은 인메모리 구독이라 프로세스가 죽으면 사라지고,
+    // 위 loadUnfinished는 잡만 다시 큐에 올릴 뿐 그 잡을 위한 정리 구독은
+    // 다시 걸지 않는다 — sweepStaleStaging이 없으면 그 잡이 이번엔 무사히
+    // done이 돼도 스테이징 폴더가 영원히 안 지워진다. 실패를 던지지
+    // 않는(내부에서 콘솔로만 처리하는) 함수라 여기서도 .catch 없이 둔다.
+    void sweepStaleStaging(cfg);
   }
   return queue;
 }

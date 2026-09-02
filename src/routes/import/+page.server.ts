@@ -75,9 +75,29 @@ export const actions: Actions = {
     // 파일 하나하나는 한도 아래여도 여러 개를 한 요청에 몰아넣으면(스펙의
     // 대표 시나리오인 3.1GB 초기 마이그레이션을 한 번에 올리는 경우 포함)
     // 합이 서버 메모리를 다 먹어치울 수 있다.
+    //
+    // Content-Length가 아예 없는 요청은 이 사전 검사 자체를 우회한다 —
+    // curl로 직접 이 액션을 두드려보면(1차 리뷰에서 실제로 그렇게
+    // 검증했다) 헤더를 안 보내는 요청을 쉽게 만들 수 있다. 반면 브라우저의
+    // 네이티브 멀티파트 POST(<form enctype="multipart/form-data">나
+    // fetch(form))는 바디 크기를 미리 다 아는 상태라 항상 Content-Length를
+    // 싣는다 — 그러니 이 헤더를 요구해도 정상적인 사용자에게는 비용이
+    // 없다. 없으면 요청 크기를 미리 알 방법이 없어 위 사전 검사가
+    // 통째로 무력화되므로, 아예 받지 않는다.
     const totalLimitBytes = config.maxUploadTotalMb * 1024 * 1024;
-    const contentLength = Number(request.headers.get('content-length'));
-    if (Number.isFinite(contentLength) && contentLength > totalLimitBytes) {
+    const contentLengthHeader = request.headers.get('content-length');
+    const contentLength = contentLengthHeader === null ? NaN : Number(contentLengthHeader);
+    // 헤더가 아예 없거나(null) 값이 숫자가 아니면(예: 손으로 조작한 헤더)
+    // 어느 쪽이든 "요청 크기를 신뢰할 수 없다"는 같은 사정이라 같은
+    // 411로 묶는다 — 둘 다 아래 크기 검사를 우회할 수 있다는 점은 같다.
+    if (!Number.isFinite(contentLength)) {
+      return fail(411, {
+        message:
+          '유효한 Content-Length 헤더가 없는 업로드 요청은 받지 않습니다 ' +
+          '(요청 전체 크기를 미리 확인할 수 없으면 메모리 보호를 우회할 수 있습니다).'
+      });
+    }
+    if (contentLength > totalLimitBytes) {
       const gotMb = (contentLength / 1024 / 1024).toFixed(1);
       return fail(413, {
         message:
