@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { page } from '$app/state';
   import { afterNavigate, goto } from '$app/navigation';
   import type { Bookmark, Filter, Recording } from '$lib/types';
   import { applyFilter, filterFromParams, filterToParams } from '$lib/filter';
+  import { registerListFilter } from '$lib/listFilterBridge';
   import FilterBar from '$lib/components/FilterBar.svelte';
   import TagInput from '$lib/components/TagInput.svelte';
   import Player from '$lib/components/Player.svelte';
@@ -72,24 +73,40 @@
   // SvelteKit 클라이언트 라우터는 하이드레이션이 끝난 뒤에야 goto 같은
   // 내비게이션 함수를 안전하게 받아준다. 이 컴포넌트의 첫 $effect 실행은
   // 하이드레이션 과정 그 자체(같은 마운트 배치) 안에서 일어나므로, 라우터가
-  // "시작됨" 표시를 하기 *전에* 아래 goto가 불릴 위험이 있다(이 이펙트가
+  // "시작됨" 표시를 하기 *전에* 아래 goto가 불릴 위험이 있다 — 이 이펙트가
   // replaceState를 쓰던 시절엔 실제로 "Cannot call replaceState(...)
-  // before router is initialized" 예외를 던졌다 — goto로 바뀐 뒤에도 같은
-  // 타이밍 문제라 이 가드를 그대로 둔다).
+  // before router is initialized" 예외를 던졌다(node_modules/@sveltejs/kit의
+  // client.js에서 pushState·replaceState는 `if (!started) throw`로 이
+  // 예외를 던지지만, goto는 그런 가드가 없다 — DEV에서도 서버 호출·외부
+  // URL만 막고 라우터 초기화 여부는 안 본다). 즉 이 가드가 막던 그 구체적인
+  // 예외는 goto로 바뀐 뒤로는 안 던져진다는 뜻이라 이론적으로는 이 가드
+  // 없이도 괜찮을 수 있지만, 실제로 없애 봐도 안전한지(하이드레이션
+  // 도중 goto를 부르는 다른 부작용이 없는지)는 별도로 검증하지 않았다 —
+  // 그래서 가드 자체(routerReady)는 그대로 두고, 주석의 "여전히 예외를
+  // 던진다"는 낡은 서술만 정정한다(최종 브랜치 리뷰 발견 2).
   //
-  // 실제로 관찰한 결과 프로덕션 빌드(vite preview)에서는 이 예외가 이
-  // 배치의 나머지 이펙트 커밋 자체를 흔들어, 이후 검색창에 타이핑해도
-  // 목록이 전혀 좁혀지지 않는 상태로 굳어버렸다(dev 서버에서는 첫 호출만
-  // 실패하고 이후 갱신은 살아났지만, preview 빌드에서는 필터링 자체가
-  // 죽었다) — 실제 브라우저로 프로덕션 빌드를 눌러보지 않고서는(컴포넌트
-  // 테스트는 $app/navigation을 통째로 모킹해 이 경합을 피해 간다) 잡을 수
-  // 없던 버그다. afterNavigate는 최초 진입 내비게이션을 포함해 라우터가
-  // 실제로 준비된 뒤에만 불리므로, 그 신호가 오기 전까지는 URL 동기화를
-  // 미룬다.
+  // 실제로 관찰한 결과 프로덕션 빌드(vite preview)에서는 (replaceState를
+  // 쓰던 시절) 이 예외가 이 배치의 나머지 이펙트 커밋 자체를 흔들어,
+  // 이후 검색창에 타이핑해도 목록이 전혀 좁혀지지 않는 상태로 굳어버렸다
+  // (dev 서버에서는 첫 호출만 실패하고 이후 갱신은 살아났지만, preview
+  // 빌드에서는 필터링 자체가 죽었다) — 실제 브라우저로 프로덕션 빌드를
+  // 눌러보지 않고서는(컴포넌트 테스트는 $app/navigation을 통째로 모킹해
+  // 이 경합을 피해 간다) 잡을 수 없던 버그였다. afterNavigate는 최초
+  // 진입 내비게이션을 포함해 라우터가 실제로 준비된 뒤에만 불리므로,
+  // 그 신호가 오기 전까지는 URL 동기화를 미룬다.
   let routerReady = $state(false);
   afterNavigate(() => {
     routerReady = true;
   });
+
+  // 메뉴바(+layout.svelte, 항상 떠 있다)의 검색이 이 화면의 filter.q를
+  // 직접 바꿀 수 있도록 등록한다 — 자세한 이유는 $lib/listFilterBridge.ts
+  // 참고(최종 브랜치 리뷰 발견 1: 메뉴바 검색과 아래 필터 → URL 이펙트가
+  // 각자 goto를 부르면 서로 다른 순간의 스냅샷을 기준으로 겹쳐 써서 한쪽
+  // 변경이 사라지는 경합이 있었다). 이 화면이 언마운트되면(다른 페이지로
+  // 이동) 해제해, 더 이상 존재하지 않는 filter를 메뉴바가 계속 바꾸려는
+  // 일이 없게 한다.
+  onMount(() => registerListFilter((q) => (filter.q = q)));
 
   // URL → 필터. 메뉴바 검색처럼 이 화면 밖에서 URL이 바뀌는 경우를 따라간다.
   //
@@ -155,6 +172,14 @@
   // 없었다) — 그중 "태그를 눌러 바꾼 값이 그 자리에서 되돌아가지 않는다"
   // 테스트가 정확히 이 단일 클릭 시나리오를 재현한다. 프로덕션 빌드(vite
   // preview)로도 재현했다. 그래서 이번 라운드에서도 그대로 둔다.)
+  //
+  // 이 이펙트는 이제 이 화면에서 URL로 goto를 부르는 유일한 지점이다 —
+  // 메뉴바 검색은 더 이상 자기 goto를 따로 부르지 않고, 위 onMount에서
+  // 등록한 대로 filter.q만 바꾼다(최종 브랜치 리뷰 발견 1). 태그·기간·
+  // 검색어가 전부 이 하나의 filter 객체를 거쳐서만 URL에 반영되므로,
+  // "지금 쿼리가 뭐냐"를 이 이펙트 밖에서 스냅샷으로 다시 읽어 병합할
+  // 필요가 없다 — 그런 스냅샷이 없으니 두 writer가 서로 다른 순간의
+  // 값을 기준으로 겹쳐 써서 한쪽 변경을 지우는 경합도 성립하지 않는다.
   $effect(() => {
     if (!routerReady) return;
     const qs = filterToParams(filter).toString();

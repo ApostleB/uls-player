@@ -222,9 +222,15 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toHaveCount(0);
     await page.getByPlaceholder('제목 검색').fill('');
-    // 메뉴바 검색은 디바운스 뒤 실제 내비게이션(goto)으로 URL을 바꾼다 —
-    // 그 내비게이션이 끝나길 기다린 뒤에 태그를 눌러야, 아직 끝나지
-    // 않은 이전 검색 내비게이션과 태그 클릭이 순서 없이 뒤섞이지 않는다.
+    // 이전엔 여기서 검색 내비게이션이 끝나길 명시적으로 기다려야 했다 —
+    // 메뉴바 검색과 태그 클릭이 각자 goto를 불렀고, 둘이 겹치면 한쪽
+    // 변경이 지워지는 경합이 있었기 때문이다(최종 브랜치 리뷰 발견 1,
+    // 아래 "태그 클릭과 메뉴바 검색이 겹쳐도..." 테스트 참고). 지금은
+    // 메뉴바 검색이 목록의 filter.q만 바꾸고 실제 goto는 필터→URL
+    // 이펙트 하나가 전담하므로(src/lib/listFilterBridge.ts) 그 경합
+    // 자체가 성립하지 않는다 — 이 기다림은 더 이상 정확성을 위해
+    // 필요하지 않고, 그저 다음 단계로 넘어가기 전에 검색이 실제로
+    // 끝났다는 걸 보여주는 용도로만 남긴다.
     await expect(page).toHaveURL(/\/recordings$/);
 
     // '데모' 태그는 qta 녹음에만 붙었다.
@@ -323,6 +329,64 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(search).toHaveValue('');
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+  });
+
+  // 최종 브랜치 리뷰 발견 1: 태그 클릭(필터→URL 이펙트의 goto)과 메뉴바
+  // 검색(예전엔 자기 goto)은 둘 다 비동기다 — 그 사이 순간에는
+  // location.search·page.url이 아직 낡은 값을 돌려준다. 위의 두 테스트는
+  // (Fix round 1·2) 매번 한쪽 내비게이션이 완전히 끝난 뒤에 다음 조작을
+  // 하므로 이 경합 자체를 만들지 않는다 — 이 테스트는 태그 클릭이 만든
+  // 변경이 반영되길 기다리지 않고 곧바로(같은 동기 실행 안에서) 검색을
+  // 커밋해 일부러 겹치게 만든다.
+  //
+  // click()·press()를 Playwright API로 따로 호출하면 각 호출이 CDP
+  // 왕복(수 ms)을 거치는데, 이 라우트의 goto는 네트워크 요청 없이(load가
+  // event를 안 읽어 재실행되지 않는다 — 위 필터→URL 이펙트 주석 참고)
+  // 마이크로태스크만으로 끝나 그 짧은 시간 안에 이미 반영돼 버릴 수 있다
+  // — 그러면 겹침 자체가 타이밍 운에 좌우돼 테스트가 들쑥날쑥해진다.
+  // 고정 sleep으로 폭을 벌리는 대신, 두 조작을 한 page.evaluate 안에서
+  // await 없이 연달아 디스패치한다 — 자바스크립트는 단일 스레드라 이
+  // 동기 실행이 끝나기 전에는 어떤 마이크로태스크(goto의 이어지는 처리
+  // 포함)도 끼어들 수 없으므로, 겹침이 우연이 아니라 항상 보장된다.
+  test('태그 클릭과 메뉴바 검색이 겹쳐도 서로의 변경을 지우지 않는다', async ({ page }) => {
+    await page.goto('/recordings');
+
+    await page.evaluate((tag) => {
+      const chip = [...document.querySelectorAll<HTMLButtonElement>('button.chip')].find((el) =>
+        el.textContent?.includes(tag)
+      );
+      if (!chip) throw new Error(`태그 칩을 못 찾음: ${tag}`);
+      // 로컬 filter.tags 변경 → 필터→URL 이펙트가 goto를 시작한다(아직 안
+      // 끝남 — await하지 않는다).
+      chip.click();
+
+      // 같은 동기 실행 안에서 곧바로 검색을 커밋한다. MenuBar는
+      // bind:value라 네이티브 value setter로 값을 넣고 input 이벤트를
+      // 직접 쏴야 Svelte의 바인딩이 반응한다(실제 타이핑을 흉내낸다).
+      const search = document.querySelector<HTMLInputElement>('input[placeholder="제목 검색"]');
+      if (!search) throw new Error('검색창을 못 찾음');
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value'
+      )?.set;
+      nativeSetter?.call(search, '겹침');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    }, '데모');
+
+    // 두 변경 다 결국 URL에 반영돼야 한다 — 경합이 재발하면 둘 중 하나가
+    // 없다.
+    await expect(page).toHaveURL(/[?&]tags=/);
+    await expect(page).toHaveURL(/[?&]q=/);
+
+    // FilterBar의 "데모" 칩도 계속 선택된 채로 남아 있어야 한다 —
+    // URL→필터 이펙트가 화면 표시까지 되돌리지 않았다는 증거다(경합이
+    // 재발하면 태그가 URL에서만이 아니라 이 칩에서도 풀린다).
+    await expect(tagFilterChip(page, '데모')).toHaveClass(/preset-filled-primary-500/);
+
+    // 다음 테스트가 깨끗한 상태에서 시작하도록 되돌린다.
+    await page.getByRole('button', { name: '초기화' }).click();
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
   });
 
   test('설명 인라인 편집이 blur로 저장되고 새로고침 후에도 남는다', async ({ page }) => {
