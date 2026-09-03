@@ -62,26 +62,52 @@ describe('getQueue — jobs.json 복구 실패 내성', () => {
     try {
       const q = getQueue(cfg);
 
-      // loadUnfinished의 실패 처리는 getQueue 안에서 .then()으로 비동기
-      // 예약된다 — 실제로 jobs.json을 읽고 파싱을 시도한 뒤 실패하는
-      // 체인이라 완료 시점이 고정돼 있지 않다. 예전엔 고정 50ms만
-      // 기다렸는데, 이 파일이 지금 경로로 옮겨오며 전체 스위트 안에서
-      // vitest가 워커에 테스트를 나누는 방식이 바뀌자 그 50ms 안에 핸들러가
-      // 못 끝나 간헐적으로 실패하는 게 관찰됐다(단독 실행이나 이 변경
-      // 이전의 main 브랜치에서는 재현되지 않았다 — 이 스위트 전체를 함께
-      // 돌릴 때만 부하가 달라져 드러난다). Player.svelte.test.ts 등 이
-      // 프로젝트의 다른 곳들이 이미 고정 sleep을 관찰 가능한 조건에 대한
-      // 폴링으로 바꾼 것과 같은 이유로, 여기서도 시간이 아니라 "콘솔에
-      // 실제로 남았는가"를 기다린다.
-      await vi.waitFor(() => expect(consoleSpy).toHaveBeenCalled(), { timeout: 5000 });
+      // getQueue()는 손상된 jobs.json을 각자 읽는 독립된 비동기 체인을
+      // 두 개 예약한다 — loadUnfinished(cfg).then(...)의 onRejected(복구
+      // 실패, "jobs.json을 읽을 수 없어 이전 작업을 복구하지 못했습니다")와
+      // sweepStaleStaging(cfg)의 catch(스테이징 정리 건너뜀, "잡 목록을
+      // 읽을 수 없어 시작 시점 업로드 스테이징 정리를 건너뜁니다"). 둘 다
+      // console.error를 부르지만 완료 순서는 보장되지 않는다 — 어느 쪽이
+      // 먼저 파일을 읽고 파싱에 실패하는지는 매 실행의 스케줄링에 달려
+      // 있다. 예전엔 consoleSpy.mock.calls[0][0]("첫 번째 호출")로
+      // 판정했는데, 이게 바로 이 순서 비결정성에 걸려 있었다 — sweep의
+      // 실패가 먼저 index 0을 차지하면 그 메시지엔 "jobs.json"이라는
+      // 문자열이 없어(대신 "잡 목록"이라고 쓴다) 단언이 깨졌다. 그래서
+      // "몇 번째 호출인가"가 아니라 "jobs.json을 언급하는 호출이
+      // 존재하는가"를 기다린다 — 이 프로젝트의 다른 곳들이 고정 sleep을
+      // 관찰 가능한 조건에 대한 폴링으로 바꾼 것과 같은 이유다.
+      await vi.waitFor(() => {
+        const found = consoleSpy.mock.calls.some((c) => String(c[0]).includes('jobs.json'));
+        expect(found).toBe(true);
+      }, { timeout: 5000 });
 
       // 복구 실패를 조용히 완전히 무시하진 않는다 — 어느 파일이 문제인지
-      // 콘솔에 남아야 한다.
-      expect(String(consoleSpy.mock.calls[0][0])).toContain('jobs.json');
+      // 콘솔에 남아야 한다. index가 아니라 실제로 그 내용을 담은 호출을
+      // 찾아서 검증한다 — 몇 번째로 도착했는지는 이 단언과 무관하다.
+      const recoveryCall = consoleSpy.mock.calls.find((c) => String(c[0]).includes('jobs.json'));
+      expect(recoveryCall).toBeDefined();
+      expect(String(recoveryCall![0])).toContain('jobs.json');
+
+      // sweepStaleStaging도 같은 손상된 jobs.json을 읽다 독립적으로
+      // 실패한다 — loadUnfinished의 복구 실패를 가려서는 안 되는, 그
+      // 자체로 의미 있는 동작이다(시작 시점 업로드 스테이징 정리를
+      // 건너뛴다는 사실이 조용히 사라지면 안 된다). 두 체인 모두 "내
+      // 할 일을 못 했다"고 각자 보고해야 정상이므로 이것도 따로
+      // 기다려서 확인한다.
+      await vi.waitFor(() => {
+        const found = consoleSpy.mock.calls.some((c) =>
+          String(c[0]).includes('잡 목록을 읽을 수 없어 시작 시점 업로드 스테이징 정리를 건너뜁니다')
+        );
+        expect(found).toBe(true);
+      }, { timeout: 5000 });
+      const sweepCall = consoleSpy.mock.calls.find((c) =>
+        String(c[0]).includes('잡 목록을 읽을 수 없어 시작 시점 업로드 스테이징 정리를 건너뜁니다')
+      );
+      expect(sweepCall).toBeDefined();
 
       // 콘솔 로그가 catch/then 체인 안에서 실제로 남았다는 건 그 거부가
       // 처리됐다는 뜻이다 — 이 시점까지 처리되지 않은 거부가 없었는지는
-      // 이제(타이머가 아니라 저 조건이 실제로 성립한 뒤에) 확인해야
+      // 이제(타이머가 아니라 저 조건들이 실제로 성립한 뒤에) 확인해야
       // 의미가 있다.
       expect(unhandled).toEqual([]);
 
