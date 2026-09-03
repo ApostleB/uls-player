@@ -205,6 +205,16 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
   });
 
+  test('메인에서 메뉴바로 검색하면 목록으로 이동하며 걸러진다', async ({ page }) => {
+    await page.goto('/');
+    const search = page.getByPlaceholder('제목 검색');
+    await search.fill('새로운');
+    await search.press('Enter');
+
+    await expect(page).toHaveURL(/\/recordings\?.*q=/);
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+  });
+
   test('검색·태그 필터로 좁혀지고, 없는 조건이면 안내 문구가 뜬다', async ({ page }) => {
     await page.goto('/recordings');
 
@@ -212,6 +222,10 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toHaveCount(0);
     await page.getByPlaceholder('제목 검색').fill('');
+    // 메뉴바 검색은 디바운스 뒤 실제 내비게이션(goto)으로 URL을 바꾼다 —
+    // 그 내비게이션이 끝나길 기다린 뒤에 태그를 눌러야, 아직 끝나지
+    // 않은 이전 검색 내비게이션과 태그 클릭이 순서 없이 뒤섞이지 않는다.
+    await expect(page).toHaveURL(/\/recordings$/);
 
     // '데모' 태그는 qta 녹음에만 붙었다.
     const demoFilterChip = tagFilterChip(page, '데모');

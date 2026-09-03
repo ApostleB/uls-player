@@ -17,7 +17,6 @@
 
 <div class="card preset-tonal space-y-3 p-4">
   <div class="flex flex-wrap items-center gap-3">
-    <input class="input max-w-64" bind:value={filter.q} placeholder="제목 검색" />
     <label class="flex items-center gap-2 text-sm">
       <span>기간</span>
       <input type="date" class="input" bind:value={filter.from} />

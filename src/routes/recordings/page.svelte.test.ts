@@ -149,9 +149,15 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
   });
 
   it('검색어를 입력하고 태그를 고르면 그 상태 그대로 쿼리스트링에 반영한다', async () => {
-    const { getByPlaceholder, getByRole } = render(Page, { data: baseData() });
+    // q 입력은 메뉴바로 옮겨갔다 — 이 화면은 렌더하지 않으므로, 메뉴바
+    // 검색과 같은 결과(URL의 q 변경)를 setSearchParams로 흉내낸다. 태그는
+    // 여전히 이 화면(FilterBar) 안의 로컬 조작이라 그대로 클릭한다 — 두
+    // 경로로 들어온 값이 하나의 쿼리스트링으로 합쳐지는지가 이 테스트의
+    // 핵심이다.
+    const { getByRole } = render(Page, { data: baseData() });
 
-    await getByPlaceholder('제목 검색').fill('레인');
+    setSearchParams('?q=레인');
+    await tick();
     await getByRole('button', { name: /^데모\d/ }).click();
 
     const expected = filterToParams({
@@ -167,18 +173,24 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
     });
   });
 
-  it('검색창에 입력한 값이 그 자리에서 되돌아가지 않는다(실제 SvelteKit에서 재현한 회귀)', async () => {
+  it('태그를 눌러 바꾼 값이 그 자리에서 되돌아가지 않는다(실제 SvelteKit에서 재현한 회귀)', async () => {
+    // 원래 이 테스트는 검색창 타이핑을 재현했다 — 하지만 q 입력은 메뉴바로
+    // 옮겨가 이 화면에는 더 이상 없다. 버그의 본질은 "URL을 거치지 않은
+    // 로컬 필터 변경이 곧바로 되돌아가는가"이지 q냐 tags냐가 아니다(아래
+    // untrack 주석 참고) — 그래서 이 화면에 남은 유일한 로컬 변경 경로인
+    // 태그 칩 클릭으로 같은 경로를 재현한다.
+    //
     // @sveltejs/kit@2.70.3의 replaceState는 page.url을 갱신하지 않는다(위
     // mockUrl 선언부 주석 참고) — 그래서 URL → 필터 이펙트가 filter 필드를
-    // untrack 없이 읽으면, 로컬 타이핑만으로도 그 이펙트가 다시 돌아
+    // untrack 없이 읽으면, 로컬 태그 클릭만으로도 그 이펙트가 다시 돌아
     // page.url(마운트 때 그대로, 빈 값)과 지금 filter를 비교해 "다르다"고
-    // 잘못 판단하고 방금 입력한 값을 그 자리에서 지워 버린다. 실제
+    // 잘못 판단하고 방금 고른 태그를 그 자리에서 지워 버린다. 실제
     // 프로덕션 빌드(vite preview)를 브라우저로 직접 눌러 재현한 버그이고,
     // 이 테스트는 그 실패 경로를 그대로 재현한다 — mockUrl이 replaceState와
     // 연결돼 있지 않기 때문에 가능하다.
-    const { getByPlaceholder } = render(Page, { data: baseData() });
+    const { getByRole } = render(Page, { data: baseData() });
 
-    await getByPlaceholder('제목 검색').fill('레인');
+    await getByRole('button', { name: /^데모\d/ }).click();
     // URL → 필터 이펙트가 (버그가 있다면) 다시 돌 기회를 준다.
     await tick();
 
@@ -206,6 +218,13 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
     // 필터 → URL → 필터로 도는 루프를 만들면 안 된다. 들어온 값이 지금
     // 필터와 같으면 아무것도 하지 않아야 한다.
     //
+    // q 입력은 메뉴바로 옮겨가 이 화면에는 없으므로, 로컬 변경은 태그
+    // 클릭으로 흉내낸다(위 회귀 테스트와 같은 이유). mockUrl은 아직
+    // 건드리지 않은 채로 태그만 눌러 filter.tags를 로컬로 바꾼다 — 이
+    // 시점에는 화면이 replaceState로 그 값을 "쓰기만" 하고, mockUrl은
+    // 여전히 비어 있다(진짜 SvelteKit의 replaceState가 page.url을 안
+    // 바꾸는 것과 같다).
+    //
     // 브리프 원문처럼 rerender 없이 곧바로 단언하면, 아무 것도 다시
     // 그려지지 않아 무엇을 지워도 통과하는 테스트가 된다(Svelte의 $effect
     // 재실행은 비동기라 그 사이 아무것도 관찰하지 못한다) — 그래서 여기서는
@@ -214,17 +233,27 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
     // 판별한다: 비교 없이 항상 덮어쓰면 filter가 (내용은 같아도) 새
     // 참조가 되어 필터 → URL 이펙트가 다시 돌아 replaceState를 한 번 더
     // 부른다.
-    const { getByPlaceholder } = render(Page, { data: baseData() });
+    const { getByRole } = render(Page, { data: baseData() });
 
-    await getByPlaceholder('제목 검색').fill('레인');
+    await getByRole('button', { name: /^데모\d/ }).click();
+    await tick();
     expect(titles()).toEqual(['레인']);
 
     await vi.waitFor(() => expect(replaceStateMock).toHaveBeenCalled());
     const callsAfterTyping = replaceStateMock.mock.calls.length;
 
-    // 화면이 쓴 것과 같은 값이 URL에서 다시 들어온다(진짜 내비게이션이
-    // 우연히 같은 검색어로 도착한 경우를 흉내낸다)
-    setSearchParams('?q=레인');
+    // 화면이 방금 쓴 것과 같은 값이 이제 URL에서 "처음으로" 들어온다
+    // (진짜 내비게이션이 우연히 같은 필터로 도착한 경우를 흉내낸다 —
+    // mockUrl은 지금까지 한 번도 이 값으로 바뀐 적이 없어야 실제 전이가
+    // 일어나고, 그래야 URL → 필터 이펙트가 진짜로 다시 돈다).
+    const expectedQs = filterToParams({
+      q: '',
+      tags: ['데모'],
+      tagMode: 'and',
+      from: '',
+      to: ''
+    }).toString();
+    setSearchParams(`?${expectedQs}`);
     await tick();
 
     expect(titles()).toEqual(['레인']);
@@ -234,17 +263,24 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
 
 describe('+page.svelte — 초기화 버튼', () => {
   it('필터를 채운 뒤 초기화하면 완전히 비고, 그 뒤로도 필터가 계속 동작한다', async () => {
-    const { getByPlaceholder, getByRole, getByText } = render(Page, { data: baseData() });
+    const { getByRole, getByText } = render(Page, { data: baseData() });
 
     await expect.element(getByText('2 / 2')).toBeInTheDocument();
 
-    await getByPlaceholder('제목 검색').fill('아무거나');
+    // q는 이제 메뉴바 검색이 URL을 바꿔서 들어온다 — setSearchParams로
+    // 흉내낸다.
+    setSearchParams('?q=아무거나');
+    await tick();
     await getByRole('button', { name: /^데모\d/ }).click();
     await expect.element(getByText('0 / 2')).toBeInTheDocument();
 
     await getByRole('button', { name: '초기화' }).click();
+    // 0/2였던 게 2/2로 돌아온다는 것 자체가 태그뿐 아니라 q도 함께
+    // 비워졌다는 증거다 — q가 "아무거나"로 남아 있었다면 태그를 지워도
+    // 어떤 제목도 그 문자열을 포함하지 않아 여전히 0/2였을 것이다. 이
+    // 화면에는 더 이상 q를 직접 보여주는 입력이 없어 값을 눈으로 확인할
+    // 수 없으므로, 결과 카운트로 간접 검증한다.
     await expect.element(getByText('2 / 2')).toBeInTheDocument();
-    expect((getByPlaceholder('제목 검색').element() as HTMLInputElement).value).toBe('');
 
     // 리셋이 얼려 있는 EMPTY_FILTER를 그대로 재사용했다면, 여기서
     // filter.tags = [...] 대입이 던지면서 클릭 핸들러가 중간에 멈추고
