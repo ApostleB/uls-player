@@ -84,11 +84,11 @@ afterEach(() => {
 });
 
 describe('+page.svelte — 필터를 URL에 반영', () => {
-  it('빈 필터로 마운트하면 루트 경로로 반영한다', async () => {
+  it('빈 필터로 마운트하면 목록 경로로 반영한다', async () => {
     render(Page, { data: baseData() });
 
     await vi.waitFor(() => expect(replaceStateMock).toHaveBeenCalled());
-    expect(replaceStateMock).toHaveBeenLastCalledWith('/', {});
+    expect(replaceStateMock).toHaveBeenLastCalledWith('/recordings', {});
   });
 
   it('검색어를 입력하고 태그를 고르면 그 상태 그대로 쿼리스트링에 반영한다', async () => {

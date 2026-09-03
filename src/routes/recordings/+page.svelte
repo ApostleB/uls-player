@@ -92,7 +92,8 @@
   $effect(() => {
     if (!routerReady) return;
     const qs = filterToParams(filter).toString();
-    replaceState(qs ? `?${qs}` : '/', {});
+    // 빈 필터일 때 '/'로 두면 목록이 아니라 메인으로 튕긴다.
+    replaceState(qs ? `?${qs}` : '/recordings', {});
   });
 
   // 태그를 편집하던 행이 필터에 걸리거나(검색어 변경 등) 새 load
