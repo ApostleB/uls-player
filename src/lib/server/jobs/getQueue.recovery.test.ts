@@ -63,14 +63,27 @@ describe('getQueue — jobs.json 복구 실패 내성', () => {
       const q = getQueue(cfg);
 
       // loadUnfinished의 실패 처리는 getQueue 안에서 .then()으로 비동기
-      // 예약된다 — 마이크로태스크·다음 틱이 돌 시간을 준다.
-      await new Promise((r) => setTimeout(r, 50));
-      expect(unhandled).toEqual([]);
+      // 예약된다 — 실제로 jobs.json을 읽고 파싱을 시도한 뒤 실패하는
+      // 체인이라 완료 시점이 고정돼 있지 않다. 예전엔 고정 50ms만
+      // 기다렸는데, 이 파일이 지금 경로로 옮겨오며 전체 스위트 안에서
+      // vitest가 워커에 테스트를 나누는 방식이 바뀌자 그 50ms 안에 핸들러가
+      // 못 끝나 간헐적으로 실패하는 게 관찰됐다(단독 실행이나 이 변경
+      // 이전의 main 브랜치에서는 재현되지 않았다 — 이 스위트 전체를 함께
+      // 돌릴 때만 부하가 달라져 드러난다). Player.svelte.test.ts 등 이
+      // 프로젝트의 다른 곳들이 이미 고정 sleep을 관찰 가능한 조건에 대한
+      // 폴링으로 바꾼 것과 같은 이유로, 여기서도 시간이 아니라 "콘솔에
+      // 실제로 남았는가"를 기다린다.
+      await vi.waitFor(() => expect(consoleSpy).toHaveBeenCalled(), { timeout: 5000 });
 
       // 복구 실패를 조용히 완전히 무시하진 않는다 — 어느 파일이 문제인지
       // 콘솔에 남아야 한다.
-      expect(consoleSpy).toHaveBeenCalled();
       expect(String(consoleSpy.mock.calls[0][0])).toContain('jobs.json');
+
+      // 콘솔 로그가 catch/then 체인 안에서 실제로 남았다는 건 그 거부가
+      // 처리됐다는 뜻이다 — 이 시점까지 처리되지 않은 거부가 없었는지는
+      // 이제(타이머가 아니라 저 조건이 실제로 성립한 뒤에) 확인해야
+      // 의미가 있다.
+      expect(unhandled).toEqual([]);
 
       // 복구는 실패했지만 큐 자체는 여전히 새 작업을 정상적으로 받을 수
       // 있어야 한다 — "복구를 포기했을 뿐 서버는 계속 쓸 수 있다"는 게
