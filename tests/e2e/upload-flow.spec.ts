@@ -205,7 +205,7 @@ test.describe('업로드 경로 — 부분 저장 뒤에도 남은 파일이 살
     // 2차 증거: 목록 화면(SSE를 전혀 쓰지 않는 일반 load)에 row-2가 실제
     // 녹음으로 등록돼 보인다 — 제목을 "row-2"로 직접 바꿔뒀으므로
     // (itemsPayload가 이 title을 그대로 저장한다) 그 이름으로 찾는다.
-    await page.goto('/');
+    await page.goto('/recordings');
     await expect(page.getByRole('button', { name: 'row-2', exact: true })).toBeVisible();
   });
 });

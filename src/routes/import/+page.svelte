@@ -200,7 +200,6 @@
 <div class="mx-auto max-w-6xl space-y-6 p-6">
   <header class="flex items-baseline justify-between">
     <h1 class="h2">가져오기</h1>
-    <a href="/" class="anchor">목록으로</a>
   </header>
 
   <form method="POST" action="?/scan" use:enhance class="flex gap-2">

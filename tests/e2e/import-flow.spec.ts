@@ -39,7 +39,7 @@ const M4A_TITLE_FROM_FILE_META = '화양동 16 2';
 let srcDir: string;
 
 async function selectRecording(page: Page, title: string) {
-  await page.goto('/');
+  await page.goto('/recordings');
   const waveform = page.waitForResponse(
     (res) => res.url().includes('/api/waveform/') && res.request().method() === 'GET'
   );
@@ -117,6 +117,18 @@ test.describe.serial('스캔부터 재생까지', () => {
     await fs.rm(srcDir, { recursive: true, force: true });
   });
 
+  test('메인에서 목록과 가져오기로 갈 수 있다', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.getByRole('heading', { name: 'ULS Player' })).toBeVisible();
+
+    await page.getByRole('link', { name: '녹음 목록' }).click();
+    await expect(page).toHaveURL(/\/recordings$/);
+
+    await page.goto('/');
+    await page.getByRole('link', { name: '가져오기' }).click();
+    await expect(page).toHaveURL(/\/import$/);
+  });
+
   test('가져오기 스캔: DB 사용자 제목이 파일 메타데이터보다 우선한다', async ({ page }) => {
     await page.goto('/import');
     await page.getByPlaceholder('/Volumes/Storage/voice').fill(srcDir);
@@ -166,7 +178,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('목록에 변환된 두 녹음과 세 포맷 배지가 보인다', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/recordings');
 
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
@@ -179,7 +191,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('검색·태그 필터로 좁혀지고, 없는 조건이면 안내 문구가 뜬다', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/recordings');
 
     await page.getByPlaceholder('제목 검색').fill('당신');
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
@@ -204,7 +216,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('설명 인라인 편집이 blur로 저장되고 새로고침 후에도 남는다', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/recordings');
     const row = rowFor(page, QTA_TITLE);
 
     await expect(row.getByRole('button', { name: '설명 없음' })).toBeVisible();
@@ -219,7 +231,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('태그 인라인 편집이 완료 버튼으로 저장되고 새로고침 후에도 남는다', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/recordings');
     const row = rowFor(page, M4A_TITLE);
 
     await expect(row.getByText('태그 없음')).toBeVisible();
@@ -235,7 +247,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('일괄 태그 추가·제거가 선택된 여러 행에 적용된다', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/recordings');
 
     await rowFor(page, M4A_TITLE).locator('input[type="checkbox"]').check();
     await rowFor(page, QTA_TITLE).locator('input[type="checkbox"]').check();
@@ -261,7 +273,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('필터에 안 보이는 선택 행이 있으면 힌트가 표시된다', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/recordings');
 
     await rowFor(page, M4A_TITLE).locator('input[type="checkbox"]').check();
     await page.getByPlaceholder('제목 검색').fill('새로운'); // qta 제목만 남긴다
@@ -276,7 +288,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('태그 모드(모두 포함/하나라도)가 실제로 다른 결과를 낸다', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/recordings');
 
     // 이 시점에 qta는 '데모'만, m4a는 '중요'만 갖고 있다(위 "태그
     // 인라인 편집"·"일괄 태그 추가·제거" 테스트가 이 파일 안에서
@@ -315,7 +327,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('기간 필터의 시작일·종료일 경계가 포함된다(inclusive)', async ({ page }) => {
-    await page.goto('/');
+    await page.goto('/recordings');
 
     const m4aDate = await recordedDate(page, M4A_TITLE); // 더 늦은 날짜
     const qtaDate = await recordedDate(page, QTA_TITLE); // 더 이른 날짜
