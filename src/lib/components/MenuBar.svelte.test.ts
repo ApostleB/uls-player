@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
 import MenuBar from './MenuBar.svelte';
@@ -53,5 +53,19 @@ describe('MenuBar', () => {
   it('가져오기 버튼은 메뉴바에 없다', async () => {
     render(MenuBar, { pathname: '/import' });
     expect(page.getByRole('link', { name: '가져오기' }).elements()).toHaveLength(0);
+  });
+
+  it('가져오기 화면에서도 메인·리스트 링크는 정상 목적지를 가리킨다', async () => {
+    // 활성 표시(aria-current) 부재만 확인하면, 향후 실수로 /import에서
+    // 메인·리스트 자체를 숨기거나 href를 지워도 이 스위트는 못 잡는다.
+    // /import가 메뉴바를 잃었던 게 이 태스크의 존재 이유이므로, 두 링크가
+    // 실제로 존재하고 올바른 곳을 가리키는지까지 못박는다.
+    render(MenuBar, { pathname: '/import' });
+    await expect
+      .element(page.getByRole('link', { name: '메인' }))
+      .toHaveAttribute('href', '/');
+    await expect
+      .element(page.getByRole('link', { name: '리스트' }))
+      .toHaveAttribute('href', '/recordings');
   });
 });

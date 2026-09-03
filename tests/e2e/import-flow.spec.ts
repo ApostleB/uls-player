@@ -190,6 +190,21 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.locator('li .badge', { hasText: 'qta' })).toHaveCount(1);
   });
 
+  // 이전 태스크가 /import의 "목록으로" 링크를 지운 건 메뉴바가 그 자리를
+  // 대신하기 때문이었다 — 그사이 /import는 브라우저 뒤로가기 말고는 나갈
+  // 방법이 없었다. 이 테스트가 그 간극이 실제로 메워졌는지를 확인하는
+  // 유일한 지점이다: 메뉴바 리스트 링크를 실제로 클릭해서 /recordings로
+  // 이동하고, 거기 이미 변환된 녹음이 실제로 보이는지까지 본다.
+  test('가져오기 화면에서 메뉴바의 리스트를 누르면 목록으로 이동한다', async ({ page }) => {
+    await page.goto('/import');
+
+    await page.getByRole('link', { name: '리스트' }).click();
+
+    await expect(page).toHaveURL(/\/recordings$/);
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+  });
+
   test('검색·태그 필터로 좁혀지고, 없는 조건이면 안내 문구가 뜬다', async ({ page }) => {
     await page.goto('/recordings');
 
