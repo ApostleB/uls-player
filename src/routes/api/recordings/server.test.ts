@@ -1,6 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { RequestHandler } from './$types';
 
+// config는 모듈이 처음 불릴 때 process.env로 만들어지는 싱글턴이라, 아무것도
+// 안 하면 개발자의 실제 data/를 가리킨다. 아래에서 listAll/allTags를 일부러
+// 실제 구현으로 두기 때문에, 그대로 두면 이 파일의 단언이 "앱을 한 번도 안
+// 돌린 기계"에서만 참이 된다 — 실제로 269개가 든 data/recordings.json을 읽어
+// 실패했다. vi.hoisted는 import보다 먼저 실행되므로, config가 만들어지기 전에
+// 존재하지 않는 임시 경로로 돌려놓는다(readJson이 ENOENT에서 fallback을
+// 돌려주므로 파일을 만들 필요는 없다).
+vi.hoisted(() => {
+  process.env.DATA_DIR = `/tmp/uls-api-recordings-test-${process.pid}`;
+});
+
 // patch/addTags/removeTags/softDelete를 스텁으로 바꿔서, 디스패처가 "올바른
 // 저장소 함수에 올바른 인자로" 도달하는지만 검증한다(각 함수 자체의 동작은
 // recordings.test.ts에서 이미 검증됨). listAll/allTags는 실제 구현을 그대로
