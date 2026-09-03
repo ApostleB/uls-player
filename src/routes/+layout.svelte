@@ -12,16 +12,15 @@
   );
 
   function search(q: string) {
-    // page.url이 아니라 location.search를 읽는다 — 목록의 태그·기간 필터는
-    // +page.svelte의 필터→URL 이펙트가 replaceState(얕은 라우팅)로만
-    // 주소창에 반영하는데, @sveltejs/kit@2.70.3의 replaceState/pushState는
-    // page.state만 갱신하고 page.url은 절대 건드리지 않는다(client.js의
-    // replaceState 구현 확인 — history.replaceState만 부르고 `page.url =`
-    // 대입이 없다; 그 대입은 진짜 내비게이션(goto) 경로에만 있다). 그래서
-    // 여기서 page.url.searchParams를 읽으면, 검색 직전에 로컬로 고른
-    // 태그·기간이 반영된 적 없는 옛 값을 읽어 그대로 잃어버린다. 반면
-    // history.replaceState는 브라우저 주소창(location)은 실제로 갱신하므로
-    // location.search를 읽으면 항상 최신이다.
+    // page.url이 아니라 location.search를 읽는다. 목록의 태그·기간 필터
+    // (+page.svelte의 필터 → URL 이펙트)는 이제 replaceState가 아니라
+    // goto(진짜 내비게이션)를 쓰므로 page.url도 결국 최신이 되긴 하지만,
+    // goto는 비동기라 그 순간까지는 짧은 지연이 있다(Round 2에서 이
+    // 지연 때문에 untrack이 여전히 필요하다는 걸 실측으로 확인했다 —
+    // +page.svelte의 필터 → URL 이펙트 주석 참고). location.search는
+    // history.pushState/replaceState가 갱신하는 브라우저 주소창 그
+    // 자체라 그 지연 없이 항상 즉시 최신이므로, SvelteKit의 미러링을
+    // 기다릴 필요 없는 더 견고한 쪽을 그대로 쓴다.
     //
     // location 접근은 이 함수 안에서만 한다 — 이 레이아웃 자체는 서버에서도
     // 렌더되지만(SSR에는 location이 없다), search()는 메뉴바 입력이라는

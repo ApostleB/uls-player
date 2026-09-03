@@ -245,15 +245,18 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   // Fix round 1: 목록에서 태그를 고른 뒤 메뉴바로 검색하면 그 태그가 조용히
-  // 사라지는 회귀를 재현·재발 방지한다. 원인: 태그 칩 클릭은 +page.svelte의
-  // 필터→URL 이펙트가 얕은 라우팅(replaceState)으로만 주소창에 반영하는데,
-  // @sveltejs/kit@2.70.3의 replaceState는 SvelteKit의 page.url을 갱신하지
-  // 않는다(client.js 확인) — 그래서 메뉴바 검색이 기존 쿼리를 보존하려고
-  // page.url.searchParams를 읽으면 이미 화면 밖으로 밀려난(page.url에 한
-  // 번도 반영된 적 없는) 태그를 통째로 놓친다. 이 시나리오는 컴포넌트
-  // 테스트로는 못 잡는다 — 그쪽은 $app/state를 통째로 모킹해 이 page.url
-  // 대 실제 주소창(location)의 괴리 자체가 존재하지 않는다. 실제 브라우저·
-  // 실제 라우터가 있어야 재현되므로 여기 E2E에 둔다.
+  // 사라지는 회귀를 재현·재발 방지한다. 원인(당시): 태그 칩 클릭은
+  // +page.svelte의 필터→URL 이펙트가 그때는 얕은 라우팅(replaceState)으로만
+  // 주소창에 반영했는데, @sveltejs/kit@2.70.3의 replaceState는 SvelteKit의
+  // page.url을 갱신하지 않는다(client.js 확인) — 그래서 메뉴바 검색이 기존
+  // 쿼리를 보존하려고 page.url.searchParams를 읽으면 이미 화면 밖으로
+  // 밀려난(page.url에 한 번도 반영된 적 없는) 태그를 통째로 놓쳤다. Round 2
+  // 에서 그 이펙트 자체를 goto(진짜 내비게이션)로 바꿔 page.url이 항상
+  // 최신이 되도록 뿌리에서 고쳤다(아래 "초기화" 테스트 앞 주석 참고) —
+  // 지금은 이 값 자체가 어긋날 일이 없다. 그래도 이 시나리오는 컴포넌트
+  // 테스트로는 못 잡는다 — 그쪽은 $app/state를 통째로 모킹해 실제 라우터의
+  // 비동기 타이밍(goto가 아직 안 끝난 틈) 자체가 존재하지 않는다. 실제
+  // 브라우저·실제 라우터가 있어야 재현되므로 여기 E2E에 둔다.
   test('목록에서 태그를 고른 뒤 메뉴바로 검색해도 태그 필터가 유지된다', async ({ page }) => {
     await page.goto('/recordings');
 
@@ -264,7 +267,7 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toHaveCount(0);
 
-    // 태그뿐 아니라 기간 필터도 같은 replaceState 경로를 타므로 같이
+    // 태그뿐 아니라 기간 필터도 같은 필터→URL 이펙트를 타므로 같이
     // 골라둔다 — 브리프 §6이 "태그·기간 파라미터를 보존"이라고 두 가지를
     // 함께 말하고 있어, 태그만으로는 기간까지 안전한지 증명하지 못한다.
     const qtaDate = await recordedDate(page, QTA_TITLE);
