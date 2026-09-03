@@ -5,19 +5,21 @@ import { render } from 'vitest-browser-svelte';
 import type { Recording } from '$lib/types';
 import { filterToParams } from '$lib/filter';
 
-// $app/navigation의 replaceState는 실제 SvelteKit 클라이언트 라우터가 시작된
-// 뒤에만 부를 수 있다 — 시작 전에 부르면 "Cannot call replaceState(...)
-// before router is initialized"를 던진다. vitest-browser-svelte의 render()는
-// 컴포넌트를 실제 라우터 부트스트랩 없이 그대로 마운트하므로, 모킹하지
-// 않으면 마운트 시점에 곧바로 도는 $effect가 렌더 자체를 깨뜨린다.
+// $app/navigation의 goto·afterNavigate는 실제 SvelteKit 클라이언트 라우터가
+// 시작된 뒤에만 온전히 동작한다. vitest-browser-svelte의 render()는 컴포넌트를
+// 실제 라우터 부트스트랩 없이 그대로 마운트하므로, 모킹하지 않으면 마운트
+// 시점에 곧바로 도는 $effect가 렌더 자체를 깨뜨린다.
 //
-// +page.svelte는 이제 afterNavigate가 신호를 줄 때까지 그 replaceState
-// 호출을 미룬다(진짜 라우터에서 겪은 경합 — tests/e2e/import-flow.spec.ts와
-// 커밋 메시지 참고). 여기 mock의 afterNavigate는 콜백을 즉시 동기 호출해,
-// "라우터가 이미 준비된 것"처럼 흉내내 아래 테스트들의 기존 기대(마운트
-// 시점에 곧바로 replaceState가 불린다)를 그대로 유지한다.
+// +page.svelte는 이제 afterNavigate가 신호를 줄 때까지 필터 → URL 이펙트를
+// 미룬다(진짜 라우터에서 겪은 경합 — tests/e2e/import-flow.spec.ts와 커밋
+// 메시지 참고). 여기 mock의 afterNavigate는 콜백을 즉시 동기 호출해, "라우터가
+// 이미 준비된 것"처럼 흉내내 아래 테스트들의 기존 기대(마운트 시점에 곧바로
+// goto가 불린다)를 그대로 유지한다.
+//
+// goto 모킹은 아래에서(모든 import가 끝난 뒤) mockUrl을 실제로 갱신하도록
+// 다시 정의한다 — 이유는 mockUrl 선언부 주석 참고.
 vi.mock('$app/navigation', () => ({
-  replaceState: vi.fn(),
+  goto: vi.fn(),
   afterNavigate: (fn: () => void) => fn()
 }));
 
@@ -35,10 +37,8 @@ vi.mock('$app/state', () => ({
 }));
 
 import Page from './+page.svelte';
-import { replaceState } from '$app/navigation';
+import { goto } from '$app/navigation';
 import { page } from '$app/state';
-
-const replaceStateMock = vi.mocked(replaceState);
 
 const mockUrl = new SvelteURL('http://localhost/recordings');
 // page.url의 실제 타입은 pathname을 라우트 패턴 리터럴로 좁혀 두므로,
@@ -46,16 +46,19 @@ const mockUrl = new SvelteURL('http://localhost/recordings');
 // 전용 대체물이라는 걸 명시적으로 잘라 말한다.
 page.url = mockUrl as unknown as typeof page.url;
 
-// replaceState는 여기서 절대로 mockUrl을 건드리지 않는다 — 일부러다.
-// @sveltejs/kit@2.70.3의 실제 client.js를 읽어 확인한 결과, replaceState/
-// pushState(얕은 라우팅용)는 page.state만 갱신하고 page.url은 전혀 쓰지
-// 않는다(page.url은 실제 내비게이션 두 곳에서만 대입된다). 즉 이 화면의
-// 기존 필터 → URL 이펙트가 부르는 replaceState는 브라우저 주소창은
-// 바꾸지만 page.url에는 절대 반영되지 않는다 — "우리가 쓴 URL이 그대로
-// 되돌아오는" 진짜 에코 경로는 애초에 없다. 그래서 여기서 replaceState를
-// mockUrl에 연결하면 실제보다 더 성실한(그래서 실제 버그를 못 잡는) 가짜가
-// 된다. mockUrl은 오직 setSearchParams()(진짜 내비게이션을 흉내)로만
-// 바뀐다.
+// goto는 여기서 mockUrl을 실제로 갱신한다 — replaceState와 반대다. Round 1의
+// mock 설계(replaceState는 mockUrl을 절대 안 건드림)는 "얕은 라우팅은
+// page.url을 안 바꾼다"는 실제 SvelteKit 동작을 그대로 반영한 것이었다.
+// Round 2에서 화면의 필터 → URL 이펙트 자체를 replaceState에서 goto(진짜
+// 내비게이션)로 바꿨으므로, 이제는 그 반대 사실 — @sveltejs/kit@2.70.3의
+// 실제 client.js를 읽어 확인한 대로 goto는 진짜 내비게이션이라 page.url을
+// 실제로 갱신한다 — 을 그대로 반영해야 이 모킹이 여전히 "실제보다 더 성실한
+// 가짜"가 되지 않는다. target은 '/recordings'나 '?q=...'처럼 상대 경로로
+// 오므로 현재 mockUrl을 기준으로 해석한다.
+const gotoMock = vi.mocked(goto).mockImplementation(async (target) => {
+  mockUrl.href = new URL(String(target), mockUrl.href).href;
+});
+
 function setSearchParams(qs: string) {
   mockUrl.search = qs;
 }
@@ -129,7 +132,7 @@ function titles(): string[] {
 }
 
 beforeEach(() => {
-  replaceStateMock.mockClear();
+  gotoMock.mockClear();
   // 테스트마다 목록 화면을 새로 마운트하지만 mockUrl은 모듈 전역이라
   // 이전 테스트가 남긴 검색어가 다음 테스트의 초기 필터로 새어 들어갈
   // 수 있다 — 매번 깨끗한 URL로 되돌린다.
@@ -144,8 +147,12 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
   it('빈 필터로 마운트하면 목록 경로로 반영한다', async () => {
     render(Page, { data: baseData() });
 
-    await vi.waitFor(() => expect(replaceStateMock).toHaveBeenCalled());
-    expect(replaceStateMock).toHaveBeenLastCalledWith('/recordings', {});
+    await vi.waitFor(() => expect(gotoMock).toHaveBeenCalled());
+    expect(gotoMock).toHaveBeenLastCalledWith('/recordings', {
+      replaceState: true,
+      keepFocus: true,
+      noScroll: true
+    });
   });
 
   it('검색어를 입력하고 태그를 고르면 그 상태 그대로 쿼리스트링에 반영한다', async () => {
@@ -169,7 +176,11 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
     }).toString();
 
     await vi.waitFor(() => {
-      expect(replaceStateMock).toHaveBeenLastCalledWith(`?${expected}`, {});
+      expect(gotoMock).toHaveBeenLastCalledWith(`?${expected}`, {
+        replaceState: true,
+        keepFocus: true,
+        noScroll: true
+      });
     });
   });
 
@@ -180,14 +191,17 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
     // untrack 주석 참고) — 그래서 이 화면에 남은 유일한 로컬 변경 경로인
     // 태그 칩 클릭으로 같은 경로를 재현한다.
     //
-    // @sveltejs/kit@2.70.3의 replaceState는 page.url을 갱신하지 않는다(위
-    // mockUrl 선언부 주석 참고) — 그래서 URL → 필터 이펙트가 filter 필드를
-    // untrack 없이 읽으면, 로컬 태그 클릭만으로도 그 이펙트가 다시 돌아
-    // page.url(마운트 때 그대로, 빈 값)과 지금 filter를 비교해 "다르다"고
-    // 잘못 판단하고 방금 고른 태그를 그 자리에서 지워 버린다. 실제
-    // 프로덕션 빌드(vite preview)를 브라우저로 직접 눌러 재현한 버그이고,
-    // 이 테스트는 그 실패 경로를 그대로 재현한다 — mockUrl이 replaceState와
-    // 연결돼 있지 않기 때문에 가능하다.
+    // untrack 없이 URL → 필터 이펙트가 filter 필드를 읽으면, 로컬 태그
+    // 클릭 그 자체가(필터 → URL 이펙트의 goto가 아직 mockUrl에 반영되기도
+    // 전에) 이 이펙트를 곧바로 다시 돌게 만든다 — 그 시점의 page.url은
+    // 아직 마운트 때 그대로(빈 값)라, 지금 filter와 비교해 "다르다"고
+    // 잘못 판단하고 방금 고른 태그를 그 자리에서 지워 버린다. Round 2에서
+    // 필터 → URL 이펙트를 replaceState에서 goto로 바꾼 뒤에도(아래
+    // gotoMock이 이제 mockUrl을 실제로 갱신하는데도) 이 경합은 그대로
+    // 남아 있다 — goto도 비동기라 그 갱신이 아직 안 끝난 틈이 있기
+    // 때문이다(+page.svelte의 필터 → URL 이펙트 주석에 실제 브라우저로
+    // 재현한 절차를 적어뒀다). 이 테스트는 그 경합의 앞부분 — mockUrl이
+    // 아직 갱신되기 전, 로컬 변경 직후의 순간 — 을 재현한다.
     const { getByRole } = render(Page, { data: baseData() });
 
     await getByRole('button', { name: /^데모\d/ }).click();
@@ -218,46 +232,33 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
     // 필터 → URL → 필터로 도는 루프를 만들면 안 된다. 들어온 값이 지금
     // 필터와 같으면 아무것도 하지 않아야 한다.
     //
-    // q 입력은 메뉴바로 옮겨가 이 화면에는 없으므로, 로컬 변경은 태그
-    // 클릭으로 흉내낸다(위 회귀 테스트와 같은 이유). mockUrl은 아직
-    // 건드리지 않은 채로 태그만 눌러 filter.tags를 로컬로 바꾼다 — 이
-    // 시점에는 화면이 replaceState로 그 값을 "쓰기만" 하고, mockUrl은
-    // 여전히 비어 있다(진짜 SvelteKit의 replaceState가 page.url을 안
-    // 바꾸는 것과 같다).
-    //
-    // 브리프 원문처럼 rerender 없이 곧바로 단언하면, 아무 것도 다시
-    // 그려지지 않아 무엇을 지워도 통과하는 테스트가 된다(Svelte의 $effect
-    // 재실행은 비동기라 그 사이 아무것도 관찰하지 못한다) — 그래서 여기서는
-    // tick()으로 이펙트가 실제로 흘러갈 시간을 준 뒤, "같으면 아무 일도
-    // 안 한다"는 이펙트의 실제 부수효과인 replaceState 재호출 여부로
-    // 판별한다: 비교 없이 항상 덮어쓰면 filter가 (내용은 같아도) 새
-    // 참조가 되어 필터 → URL 이펙트가 다시 돌아 replaceState를 한 번 더
-    // 부른다.
+    // Round 2부터 필터 → URL 이펙트가 goto(진짜 내비게이션)를 쓰고,
+    // gotoMock도 그 값을 실제로 mockUrl에 반영한다(위 gotoMock 선언부
+    // 참고) — 그래서 태그를 한 번 누르기만 해도 "화면이 쓴 URL이 그대로
+    // 되돌아오는" 상황이 자연스럽게 재현된다. Round 1처럼 같은 값을
+    // setSearchParams로 다시 흘려보낼 필요가 없다 — 이미 gotoMock이
+    // 그 왕복을 실제로 만들어낸다. 이 테스트가 확인하는 것: 그 왕복이
+    // 일어난 뒤에도 goto가 "한 번 더" 불리지 않아야 한다(불리면 비교
+    // 없이 무조건 덮어써 루프가 도는 회귀다).
     const { getByRole } = render(Page, { data: baseData() });
 
     await getByRole('button', { name: /^데모\d/ }).click();
     await tick();
     expect(titles()).toEqual(['레인']);
 
-    await vi.waitFor(() => expect(replaceStateMock).toHaveBeenCalled());
-    const callsAfterTyping = replaceStateMock.mock.calls.length;
+    await vi.waitFor(() => expect(gotoMock).toHaveBeenCalled());
+    // gotoMock이 mockUrl을 갱신한 뒤 그 갱신이 URL → 필터 이펙트를 거쳐
+    // 완전히 가라앉을 시간을 한 틱 더 준다 — 그래야 아래에서 잡는 호출
+    // 수가 "왕복이 끝난 뒤"의 안정된 값이다.
+    await tick();
+    const callsAfterClick = gotoMock.mock.calls.length;
 
-    // 화면이 방금 쓴 것과 같은 값이 이제 URL에서 "처음으로" 들어온다
-    // (진짜 내비게이션이 우연히 같은 필터로 도착한 경우를 흉내낸다 —
-    // mockUrl은 지금까지 한 번도 이 값으로 바뀐 적이 없어야 실제 전이가
-    // 일어나고, 그래야 URL → 필터 이펙트가 진짜로 다시 돈다).
-    const expectedQs = filterToParams({
-      q: '',
-      tags: ['데모'],
-      tagMode: 'and',
-      from: '',
-      to: ''
-    }).toString();
-    setSearchParams(`?${expectedQs}`);
+    // 루프가 있었다면 여기서 돌 시간을 더 준다.
+    await tick();
     await tick();
 
     expect(titles()).toEqual(['레인']);
-    expect(replaceStateMock.mock.calls.length).toBe(callsAfterTyping);
+    expect(gotoMock.mock.calls.length).toBe(callsAfterClick);
   });
 });
 

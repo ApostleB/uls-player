@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { page } from '$app/state';
-  import { replaceState, afterNavigate } from '$app/navigation';
+  import { afterNavigate, goto } from '$app/navigation';
   import type { Bookmark, Filter, Recording } from '$lib/types';
   import { applyFilter, filterFromParams, filterToParams } from '$lib/filter';
   import FilterBar from '$lib/components/FilterBar.svelte';
@@ -117,12 +117,43 @@
     filter = incoming;
   });
 
-  // 필터를 URL에 반영해 새로고침과 링크 공유에서 유지되게 한다
+  // 필터를 URL에 반영해 새로고침과 링크 공유에서 유지되게 한다.
+  //
+  // 얕은 라우팅(replaceState)이 아니라 진짜 내비게이션(goto)을 쓴다 — Fix
+  // round 1~2에서 드러난 문제들(메뉴바 검색이 태그·기간을 잃어버리는 버그,
+  // 초기화 후에도 메뉴바 검색창에 옛 검색어가 남는 버그)이 전부 같은
+  // 원인에서 나왔다: @sveltejs/kit@2.70.3의 replaceState/pushState는
+  // page.url을 절대 갱신하지 않는다(client.js 확인) — 얕은 라우팅으로
+  // 쓴 필터는 브라우저 주소창에는 보이지만 SvelteKit이 아는 page.url에는
+  // 영영 반영되지 않아, page.url을 읽는 다른 코드(메뉴바의 q prop 등)가
+  // 전부 낡은 값을 본다. goto로 바꾸면 모든 필터 변경이 진짜 내비게이션이
+  // 되어 page.url이 항상 최신이 되므로, 이 클래스의 버그 전체가 뿌리에서
+  // 사라진다.
+  //
+  // 비용 확인(추측 아님, 실측): 이 라우트의 +page.server.ts load는
+  // event.url을 전혀 읽지 않는다(매개변수조차 받지 않는 `async () => ({...})`
+  // 형태) — SvelteKit은 load가 실제로 사용한 URL 부분만 추적해 내비게이션이
+  // 그 부분을 바꿨을 때만 다시 부른다(node_modules/@sveltejs/kit/src/runtime/
+  // client/client.js의 has_changed/uses.search_params 로직, 서버 쪽은
+  // load_data.js의 동일한 uses 추적). load()에 호출 카운터를 임시로 넣고
+  // dev 서버로 이 이펙트를 goto로 바꿔 기간·태그를 다섯 번 연속으로 바꿔봤더니
+  // load()는 최초 마운트 한 번만 불렸다(카운트가 계속 1에 머묾) — 네트워크
+  // 요청 목록에도 데이터 요청이 전혀 안 잡혔다. 즉 필터를 바꿀 때마다
+  // 전체 목록을 서버에서 다시 불러오는 일은 없다.
+  //
+  // (아래 URL → 필터 이펙트의 untrack은 여전히 필요하다 — 실제로 지워보고
+  // 확인했다. goto도 결국 비동기라, 로컬 변경 직후 goto()가 아직 안 끝난
+  // 그 짧은 틈에 또 로컬 변경이 들어오면(빠른 연속 입력 등) untrack 없는
+  // 이 이펙트가 filter 변경만으로 다시 돌아, 아직 옛 값인 page.url과
+  // 비교해 방금 입력한 값을 지워버린다 — replaceState 때와 같은 증상을
+  // 프로덕션 빌드(vite preview)로 재현했다: 날짜 입력을 연속으로 세 번
+  // 빠르게 바꾸자 결과가 빈 값으로 되돌아갔다. 그래서 이번 라운드에서도
+  // 그대로 둔다.)
   $effect(() => {
     if (!routerReady) return;
     const qs = filterToParams(filter).toString();
     // 빈 필터일 때 '/'로 두면 목록이 아니라 메인으로 튕긴다.
-    replaceState(qs ? `?${qs}` : '/recordings', {});
+    void goto(qs ? `?${qs}` : '/recordings', { replaceState: true, keepFocus: true, noScroll: true });
   });
 
   // 태그를 편집하던 행이 필터에 걸리거나(검색어 변경 등) 새 load

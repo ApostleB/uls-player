@@ -295,6 +295,33 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
   });
 
+  // Fix round 2: 목록에서 "초기화"를 누르면 필터는 모두 비워지는데
+  // 메뉴바 검색창에는 방금 지운 검색어가 그대로 남아 있던 회귀를
+  // 재현·재발 방지한다. 원인은 round 1과 뿌리가 같다 — q가 새로 채워질
+  // 때(메뉴바 검색)는 항상 goto(진짜 내비게이션)를 거쳐 page.url이
+  // 안전하게 갱신되지만, 초기화 버튼은 filter 전체를 로컬로 재할당하고
+  // 그 결과를 (round 1까지는) replaceState로만 주소창에 반영했다 —
+  // replaceState는 page.url을 절대 안 바꾸므로, 메뉴바의 q prop
+  // (page.url.searchParams.get('q'))이 옛 검색어를 계속 돌려줬다. 이번
+  // 라운드에서 그 replaceState 자체를 goto로 바꿔 뿌리에서 고쳤다.
+  test('목록에서 초기화하면 메뉴바 검색창도 함께 비워진다', async ({ page }) => {
+    await page.goto('/recordings');
+
+    const search = page.getByPlaceholder('제목 검색');
+    await search.fill(QTA_TITLE);
+    await search.press('Enter');
+    await expect(page).toHaveURL(/[?&]q=/);
+    await expect(search).toHaveValue(QTA_TITLE);
+
+    await page.getByRole('button', { name: '초기화' }).click();
+
+    // 회귀가 재발하면 목록은 269건 전부로 돌아가도 이 입력값만 옛
+    // 검색어에 머문다.
+    await expect(search).toHaveValue('');
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+  });
+
   test('설명 인라인 편집이 blur로 저장되고 새로고침 후에도 남는다', async ({ page }) => {
     await page.goto('/recordings');
     const row = rowFor(page, QTA_TITLE);
