@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { tick } from 'svelte';
+import { SvelteURL } from 'svelte/reactivity';
 import { render } from 'vitest-browser-svelte';
 import type { Recording } from '$lib/types';
 import { filterToParams } from '$lib/filter';
@@ -19,10 +21,44 @@ vi.mock('$app/navigation', () => ({
   afterNavigate: (fn: () => void) => fn()
 }));
 
+// 화면은 page.url.searchParams를 $effect 안에서 읽는다 — 외부에서 URL이
+// 바뀌면(메뉴바 검색 등) 그 이펙트가 다시 돌아야 하므로, 단순한 고정
+// 객체가 아니라 svelte/reactivity의 SvelteURL로 진짜 $app/state의 반응성을
+// 재현한다. setSearchParams()가 이 URL을 바꿔 "화면 밖에서 URL이 바뀌는"
+// 상황을 흉내낸다.
+//
+// vi.mock 팩토리는 호이스팅되어 다른 모듈 import(SvelteURL 포함)보다
+// 먼저 실행되므로, 여기서는 import가 필요 없는 내장 URL로 우선 채워두고
+// 아래에서(모든 import가 끝난 뒤) 진짜 반응형 인스턴스로 바꿔 끼운다.
+vi.mock('$app/state', () => ({
+  page: { url: new URL('http://localhost/recordings') }
+}));
+
 import Page from './+page.svelte';
 import { replaceState } from '$app/navigation';
+import { page } from '$app/state';
 
 const replaceStateMock = vi.mocked(replaceState);
+
+const mockUrl = new SvelteURL('http://localhost/recordings');
+// page.url의 실제 타입은 pathname을 라우트 패턴 리터럴로 좁혀 두므로,
+// 일반 string pathname을 갖는 SvelteURL은 구조적으로 안 맞는다 — 테스트
+// 전용 대체물이라는 걸 명시적으로 잘라 말한다.
+page.url = mockUrl as unknown as typeof page.url;
+
+// replaceState는 여기서 절대로 mockUrl을 건드리지 않는다 — 일부러다.
+// @sveltejs/kit@2.70.3의 실제 client.js를 읽어 확인한 결과, replaceState/
+// pushState(얕은 라우팅용)는 page.state만 갱신하고 page.url은 전혀 쓰지
+// 않는다(page.url은 실제 내비게이션 두 곳에서만 대입된다). 즉 이 화면의
+// 기존 필터 → URL 이펙트가 부르는 replaceState는 브라우저 주소창은
+// 바꾸지만 page.url에는 절대 반영되지 않는다 — "우리가 쓴 URL이 그대로
+// 되돌아오는" 진짜 에코 경로는 애초에 없다. 그래서 여기서 replaceState를
+// mockUrl에 연결하면 실제보다 더 성실한(그래서 실제 버그를 못 잡는) 가짜가
+// 된다. mockUrl은 오직 setSearchParams()(진짜 내비게이션을 흉내)로만
+// 바뀐다.
+function setSearchParams(qs: string) {
+  mockUrl.search = qs;
+}
 
 function rec(over: Partial<Recording> & { id: string }): Recording {
   return {
@@ -75,8 +111,29 @@ function twoRowDataWithDistinctDurations() {
   };
 }
 
+// pageData()·titles()는 URL → 필터 동기화(외부에서 URL이 바뀌는 경우)를
+// 검증하는 테스트에서 쓴다 — baseData()와 형태는 같지만 목록 내용을
+// 자유롭게 넣을 수 있어야 하고, titles()로 화면에 실제 보이는 제목만
+// 순서대로 뽑아 필터링 결과를 짧게 비교한다.
+function pageData(recordings: Recording[]) {
+  return { recordings, tags: [], formats: ['mp3', 'wav'] };
+}
+
+// 각 행의 제목은 li 안의 첫 번째 button이다(체크박스는 input이라
+// 걸리지 않는다) — 설명도 button이지만 title 다음에 오므로 첫 번째만
+// 집으면 제목만 남는다.
+function titles(): string[] {
+  return Array.from(document.querySelectorAll('ul.space-y-1 > li')).map(
+    (li) => li.querySelector('button')?.textContent?.trim() ?? ''
+  );
+}
+
 beforeEach(() => {
   replaceStateMock.mockClear();
+  // 테스트마다 목록 화면을 새로 마운트하지만 mockUrl은 모듈 전역이라
+  // 이전 테스트가 남긴 검색어가 다음 테스트의 초기 필터로 새어 들어갈
+  // 수 있다 — 매번 깨끗한 URL로 되돌린다.
+  mockUrl.search = '';
 });
 
 afterEach(() => {
@@ -108,6 +165,70 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
     await vi.waitFor(() => {
       expect(replaceStateMock).toHaveBeenLastCalledWith(`?${expected}`, {});
     });
+  });
+
+  it('검색창에 입력한 값이 그 자리에서 되돌아가지 않는다(실제 SvelteKit에서 재현한 회귀)', async () => {
+    // @sveltejs/kit@2.70.3의 replaceState는 page.url을 갱신하지 않는다(위
+    // mockUrl 선언부 주석 참고) — 그래서 URL → 필터 이펙트가 filter 필드를
+    // untrack 없이 읽으면, 로컬 타이핑만으로도 그 이펙트가 다시 돌아
+    // page.url(마운트 때 그대로, 빈 값)과 지금 filter를 비교해 "다르다"고
+    // 잘못 판단하고 방금 입력한 값을 그 자리에서 지워 버린다. 실제
+    // 프로덕션 빌드(vite preview)를 브라우저로 직접 눌러 재현한 버그이고,
+    // 이 테스트는 그 실패 경로를 그대로 재현한다 — mockUrl이 replaceState와
+    // 연결돼 있지 않기 때문에 가능하다.
+    const { getByPlaceholder } = render(Page, { data: baseData() });
+
+    await getByPlaceholder('제목 검색').fill('레인');
+    // URL → 필터 이펙트가 (버그가 있다면) 다시 돌 기회를 준다.
+    await tick();
+
+    expect(titles()).toEqual(['레인']);
+  });
+
+  it('외부에서 URL의 q가 바뀌면 목록이 따라간다', async () => {
+    // 메뉴바 검색이 이 경로로 동작한다 — 목록이 URL을 한 번만 읽고 말면
+    // 메뉴바에서 검색해도 목록이 그대로 남는다.
+    const { rerender } = render(Page, {
+      data: pageData([rec({ id: '1', title: '레인' }), rec({ id: '2', title: '정류장' })])
+    });
+
+    expect(titles()).toEqual(['레인', '정류장']);
+
+    setSearchParams('?q=레인');
+    await rerender({
+      data: pageData([rec({ id: '1', title: '레인' }), rec({ id: '2', title: '정류장' })])
+    });
+
+    expect(titles()).toEqual(['레인']);
+  });
+
+  it('자기가 쓴 URL 변경에는 다시 반응하지 않는다', async () => {
+    // 필터 → URL → 필터로 도는 루프를 만들면 안 된다. 들어온 값이 지금
+    // 필터와 같으면 아무것도 하지 않아야 한다.
+    //
+    // 브리프 원문처럼 rerender 없이 곧바로 단언하면, 아무 것도 다시
+    // 그려지지 않아 무엇을 지워도 통과하는 테스트가 된다(Svelte의 $effect
+    // 재실행은 비동기라 그 사이 아무것도 관찰하지 못한다) — 그래서 여기서는
+    // tick()으로 이펙트가 실제로 흘러갈 시간을 준 뒤, "같으면 아무 일도
+    // 안 한다"는 이펙트의 실제 부수효과인 replaceState 재호출 여부로
+    // 판별한다: 비교 없이 항상 덮어쓰면 filter가 (내용은 같아도) 새
+    // 참조가 되어 필터 → URL 이펙트가 다시 돌아 replaceState를 한 번 더
+    // 부른다.
+    const { getByPlaceholder } = render(Page, { data: baseData() });
+
+    await getByPlaceholder('제목 검색').fill('레인');
+    expect(titles()).toEqual(['레인']);
+
+    await vi.waitFor(() => expect(replaceStateMock).toHaveBeenCalled());
+    const callsAfterTyping = replaceStateMock.mock.calls.length;
+
+    // 화면이 쓴 것과 같은 값이 URL에서 다시 들어온다(진짜 내비게이션이
+    // 우연히 같은 검색어로 도착한 경우를 흉내낸다)
+    setSearchParams('?q=레인');
+    await tick();
+
+    expect(titles()).toEqual(['레인']);
+    expect(replaceStateMock.mock.calls.length).toBe(callsAfterTyping);
   });
 });
 

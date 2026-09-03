@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { page } from '$app/state';
   import { replaceState, afterNavigate } from '$app/navigation';
   import type { Bookmark, Filter, Recording } from '$lib/types';
@@ -86,6 +87,34 @@
   let routerReady = $state(false);
   afterNavigate(() => {
     routerReady = true;
+  });
+
+  // URL → 필터. 메뉴바 검색처럼 이 화면 밖에서 URL이 바뀌는 경우를 따라간다.
+  //
+  // 아래의 필터 → URL 이펙트와 짝이라 루프가 될 수 있다. 들어온 값을
+  // 같은 방식으로 직렬화해 지금 필터와 비교하고, 다를 때만 반영해서
+  // 끊는다 — 우리가 쓴 URL이 되돌아오면 문자열이 같으므로 아무 일도
+  // 일어나지 않는다.
+  //
+  // 비교의 오른쪽 절반(현재 filter)은 반드시 untrack으로 감싸 읽어야
+  // 한다. filterToParams(filter)는 filter.q·filter.tags 등 필드를
+  // 하나하나 읽는데, 이 읽기가 (untrack(() => filter)처럼 참조 하나만
+  // 감싸는 게 아니라) 통째로 untrack 밖에서 일어나면 그 필드들이 이
+  // 이펙트의 의존성으로 잡힌다. 그러면 "URL이 바뀔 때"뿐 아니라
+  // "filter가 바뀔 때"(검색창 타이핑 등)에도 이 이펙트가 다시 돈다.
+  // 실제 브라우저(프로덕션 빌드 포함)로 확인해 보니, 이 SvelteKit
+  // 버전에서 replaceState는 page.url을 갱신하지 않는다(얕은 라우팅용으로
+  // page.state만 갱신한다) — 그래서 로컬 타이핑만으로 이 이펙트가 다시
+  // 돌면, page.url은 최초 진입 시 그대로라 지금 막 입력한 filter와
+  // "다르다"고 잘못 판단해 그 자리에서 옛 URL 값으로 덮어써 버린다(검색창에
+  // 아무 것도 입력할 수 없는 상태가 됨을 직접 재현·확인함). 비교 전체를
+  // untrack으로 감싸야 filter 필드 읽기까지 전부 추적에서 빠져, 이
+  // 이펙트가 오직 page.url이 실제로 바뀔 때만 돈다.
+  $effect(() => {
+    const incoming = filterFromParams(page.url.searchParams);
+    if (untrack(() => filterToParams(incoming).toString() === filterToParams(filter).toString()))
+      return;
+    filter = incoming;
   });
 
   // 필터를 URL에 반영해 새로고침과 링크 공유에서 유지되게 한다
