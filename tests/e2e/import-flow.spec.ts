@@ -244,6 +244,57 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
   });
 
+  // Fix round 1: 목록에서 태그를 고른 뒤 메뉴바로 검색하면 그 태그가 조용히
+  // 사라지는 회귀를 재현·재발 방지한다. 원인: 태그 칩 클릭은 +page.svelte의
+  // 필터→URL 이펙트가 얕은 라우팅(replaceState)으로만 주소창에 반영하는데,
+  // @sveltejs/kit@2.70.3의 replaceState는 SvelteKit의 page.url을 갱신하지
+  // 않는다(client.js 확인) — 그래서 메뉴바 검색이 기존 쿼리를 보존하려고
+  // page.url.searchParams를 읽으면 이미 화면 밖으로 밀려난(page.url에 한
+  // 번도 반영된 적 없는) 태그를 통째로 놓친다. 이 시나리오는 컴포넌트
+  // 테스트로는 못 잡는다 — 그쪽은 $app/state를 통째로 모킹해 이 page.url
+  // 대 실제 주소창(location)의 괴리 자체가 존재하지 않는다. 실제 브라우저·
+  // 실제 라우터가 있어야 재현되므로 여기 E2E에 둔다.
+  test('목록에서 태그를 고른 뒤 메뉴바로 검색해도 태그 필터가 유지된다', async ({ page }) => {
+    await page.goto('/recordings');
+
+    // '데모' 태그는 qta 녹음에만 붙었다(위 가져오기 테스트에서 붙인 뒤로
+    // 이 파일의 어떤 테스트도 지우지 않는다).
+    const demoFilterChip = tagFilterChip(page, '데모');
+    await demoFilterChip.click();
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toHaveCount(0);
+
+    // 태그뿐 아니라 기간 필터도 같은 replaceState 경로를 타므로 같이
+    // 골라둔다 — 브리프 §6이 "태그·기간 파라미터를 보존"이라고 두 가지를
+    // 함께 말하고 있어, 태그만으로는 기간까지 안전한지 증명하지 못한다.
+    const qtaDate = await recordedDate(page, QTA_TITLE);
+    await page.locator('input[type="date"]').first().fill(qtaDate);
+
+    // 태그·기간을 고른 채로 메뉴바에서 검색한다.
+    const search = page.getByPlaceholder('제목 검색');
+    await search.fill(QTA_TITLE);
+    await search.press('Enter');
+
+    // 회귀가 재발하면 여기서 tags·from이 URL에서 사라진다.
+    await expect(page).toHaveURL(/[?&]tags=/);
+    await expect(page).toHaveURL(/[?&]from=/);
+    await expect(page).toHaveURL(/[?&]q=/);
+
+    // 검색어와 제목이 우연히 겹쳐서(qta 제목으로 검색했으니) m4a가 안
+    // 보이는 것만으로는 태그가 실제로 살아있다는 증거가 안 된다 — 검색어를
+    // 지워 태그 필터만 남긴 뒤에도 m4a가 여전히 안 보여야 태그가 진짜로
+    // 걸려 있다는 증거가 된다.
+    await search.fill('');
+    await search.press('Enter');
+    await expect(page).toHaveURL(/[?&]tags=/);
+    await expect(page).toHaveURL(/[?&]from=/);
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toHaveCount(0);
+
+    await page.getByRole('button', { name: '초기화' }).click();
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
+  });
+
   test('설명 인라인 편집이 blur로 저장되고 새로고침 후에도 남는다', async ({ page }) => {
     await page.goto('/recordings');
     const row = rowFor(page, QTA_TITLE);
