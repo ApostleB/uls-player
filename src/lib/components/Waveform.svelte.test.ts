@@ -263,6 +263,36 @@ describe('Waveform.svelte — 끌어서 점프', () => {
     );
     expect(onseek).not.toHaveBeenCalled();
   });
+
+  // Final Review Fix 정정: pointercancel은 뒤이어 click을 절대 만들지
+  // 않는다(dragging 중이었더라도) — 그래서 cancelDrag가 세운
+  // swallowNextClick이 seekAt한테 지워질 기회를 영영 못 받는다. 이걸
+  // onPointerDown이 다음 제스처 시작 시점에 리셋해주지 않으면, 완전히
+  // 무관한 다음 클릭까지 조용히 삼켜진다 — 오른쪽 클릭 시나리오와는
+  // 다른, pointercancel 자신이 만드는 별개의 도달 가능한 경로다.
+  it('pointercancel로 취소된 뒤에도 완전히 새로운 다음 클릭은 계속 먹힌다', async () => {
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek });
+
+    const c = canvasOf();
+    c.setPointerCapture = () => {};
+    c.dispatchEvent(
+      new PointerEvent('pointerdown', { clientX: xAt(c, 0.2), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, 0.8), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+
+    // pointercancel 뒤로는 이 포인터에 대해 어떤 이벤트도(pointerup도,
+    // 그로 인한 click도) 더 오지 않는다 — 그래서 여기서는 진짜 브라우저
+    // 클릭(page.getByRole(...).click())으로 완전히 새로운, 무관한
+    // 제스처를 보낸다. 삼킴 플래그가 눌어붙어 있었다면 이 클릭이
+    // 조용히 먹혀 onseek가 한 번도 안 불렸을 것이다.
+    await page.getByRole('slider', { name: '재생 위치' }).click();
+
+    expect(onseek).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('Waveform.svelte — 키보드 탐색', () => {
