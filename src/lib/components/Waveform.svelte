@@ -69,6 +69,10 @@
   });
 
   function seekAt(e: MouseEvent) {
+    if (swallowNextClick) {
+      swallowNextClick = false;
+      return;
+    }
     if (!canvas) return;
     const r = canvas.getBoundingClientRect();
     onseek(ratioFromClick(e.clientX, r.left, r.width));
@@ -89,6 +93,58 @@
     return ratioFromClick(e.clientX, r.left, r.width);
   }
 
+  /**
+   * 3px보다 적게 움직이고 놓으면 드래그가 아니라 클릭이다. 마우스를
+   * 누를 때 손이 1~2px 흔들리는 것은 정상이라, 0px을 기준으로 하면
+   * 마커나 캔버스를 클릭하려던 사용자가 드래그 경로로 빠진다.
+   */
+  const DRAG_THRESHOLD_PX = 3;
+
+  let pressX: number | null = null;
+  let dragging = $state(false);
+  /** 드래그로 점프한 직후 브라우저가 보내는 click을 한 번 무시한다. */
+  let swallowNextClick = false;
+
+  function onPointerDown(e: PointerEvent) {
+    pressX = e.clientX;
+    hoverRatio = ratioFromPointer(e);
+    // 캔버스 밖으로 나가도 계속 따라간다 — 끝 근처를 노리다 살짝
+    // 벗어나면 드래그가 조용히 죽는 쪽이 더 나쁘다.
+    canvas?.setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(e: PointerEvent) {
+    hoverRatio = ratioFromPointer(e);
+    if (pressX !== null && Math.abs(e.clientX - pressX) >= DRAG_THRESHOLD_PX) dragging = true;
+  }
+
+  function onPointerUp(e: PointerEvent) {
+    canvas?.releasePointerCapture(e.pointerId);
+    // dragging만 보면 안 된다 — 캔버스 밖으로 빠르게 튕겨나가 pointerup
+    // 전에 pointermove가 한 번도 안 오는 경우가 있다(이 함수가 받는
+    // pointerup 자체가 그 판단의 마지막 기회다). 눌렀던 지점과 놓은
+    // 지점의 최종 거리도 함께 임계값과 비교해, 중간 move가 없어도
+    // 드래그로 잡는다.
+    const wasDragging =
+      dragging || (pressX !== null && Math.abs(e.clientX - pressX) >= DRAG_THRESHOLD_PX);
+    const ratio = ratioFromPointer(e);
+    pressX = null;
+    dragging = false;
+
+    // 움직임이 임계값 미만이면 아무것도 하지 않는다 — 뒤이어 오는
+    // click이 기존 경로(캔버스 클릭 점프, 마커 클릭 점프)로 처리한다.
+    if (!wasDragging) return;
+
+    swallowNextClick = true;
+    onseek(ratio);
+  }
+
+  function cancelDrag() {
+    pressX = null;
+    dragging = false;
+    hoverRatio = null;
+  }
+
   function seekToBookmark(b: Bookmark) {
     if (!durationSec) return;
     onseek(Math.min(1, Math.max(0, b.atSec / durationSec)));
@@ -101,8 +157,15 @@
     class="block h-16 w-full cursor-pointer"
     style="--wf-played: var(--color-primary-500); --wf-rest: var(--color-surface-400);"
     onclick={seekAt}
-    onpointermove={(e) => (hoverRatio = ratioFromPointer(e))}
-    onpointerleave={() => (hoverRatio = null)}
+    onpointerdown={onPointerDown}
+    onpointermove={onPointerMove}
+    onpointerup={onPointerUp}
+    onpointerleave={() => {
+      if (!dragging) hoverRatio = null;
+    }}
+    onkeydown={(e) => {
+      if (e.key === 'Escape') cancelDrag();
+    }}
     role="slider"
     tabindex="0"
     aria-label="재생 위치"

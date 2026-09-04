@@ -4,6 +4,18 @@ import { render } from 'vitest-browser-svelte';
 import type { Bookmark } from '$lib/types';
 import Waveform from './Waveform.svelte';
 
+/** 캔버스의 실제 폭 안에서 비율 위치의 clientX를 만든다. */
+function xAt(canvas: Element, ratio: number): number {
+  const r = canvas.getBoundingClientRect();
+  return r.left + r.width * ratio;
+}
+
+function canvasOf(): HTMLCanvasElement {
+  const c = document.querySelector('canvas');
+  if (!c) throw new Error('캔버스가 없다');
+  return c as HTMLCanvasElement;
+}
+
 describe('Waveform.svelte — 북마크 마커 클릭 시 점프', () => {
   it('마커를 클릭하면 그 지점의 진행률로 onseek를 호출하고, 아래 캔버스로 클릭이 새지 않는다', async () => {
     const bookmarks: Bookmark[] = [{ id: 'b1', atSec: 25, endSec: null, note: '표시 지점' }];
@@ -52,19 +64,10 @@ describe('Waveform.svelte — 캔버스 클릭으로 탐색', () => {
 });
 
 describe('Waveform.svelte — 호버 시 재생헤드와 시간', () => {
-  /** 캔버스의 실제 폭 안에서 비율 위치의 clientX를 만든다. */
-  function xAt(canvas: Element, ratio: number): number {
-    const r = canvas.getBoundingClientRect();
-    return r.left + r.width * ratio;
-  }
-
-  function canvasOf(): HTMLCanvasElement {
-    const c = document.querySelector('canvas');
-    if (!c) throw new Error('캔버스가 없다');
-    return c as HTMLCanvasElement;
-  }
-
   it('파형 위에 커서를 올리면 그 지점의 시각을 보여준다', async () => {
+    // ratio=0.5 하나만 확인하면 hoverRatio를 항상 0.5로 고정한 구현도
+    // 통과한다 — 실제로 커서를 따라가는지 증명하려면 서로 다른 두
+    // 지점을 각각 확인해야 한다.
     render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek: vi.fn() });
 
     const c = canvasOf();
@@ -74,6 +77,14 @@ describe('Waveform.svelte — 호버 시 재생헤드와 시간', () => {
 
     // 100초의 절반 → 0:50
     await expect.element(page.getByText('0:50')).toBeInTheDocument();
+
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, 0.2), bubbles: true, pointerId: 1 })
+    );
+
+    // 100초의 20% → 0:20이어야 하고, 이전 0:50 표시는 사라져야 한다.
+    await expect.element(page.getByText('0:20')).toBeInTheDocument();
+    expect(page.getByText('0:50').elements()).toHaveLength(0);
   });
 
   it('커서가 파형을 벗어나면 표시가 사라진다', async () => {
@@ -105,6 +116,111 @@ describe('Waveform.svelte — 호버 시 재생헤드와 시간', () => {
       new PointerEvent('pointermove', { clientX: xAt(c, 0.5), bubbles: true, pointerId: 1 })
     );
 
+    expect(onseek).not.toHaveBeenCalled();
+  });
+});
+
+describe('Waveform.svelte — 끌어서 점프', () => {
+  /** pointerdown → pointermove → pointerup을 순서대로 보낸다. */
+  function drag(c: HTMLCanvasElement, fromRatio: number, toRatio: number) {
+    c.setPointerCapture = () => {};
+    c.releasePointerCapture = () => {};
+    c.dispatchEvent(
+      new PointerEvent('pointerdown', { clientX: xAt(c, fromRatio), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, toRatio), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(
+      new PointerEvent('pointerup', { clientX: xAt(c, toRatio), bubbles: true, pointerId: 1 })
+    );
+  }
+
+  it('끌어서 놓으면 놓은 지점의 진행률로 정확히 한 번 onseek를 호출한다', async () => {
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek });
+
+    drag(canvasOf(), 0.2, 0.75);
+
+    expect(onseek).toHaveBeenCalledTimes(1);
+    expect(onseek.mock.calls[0][0]).toBeCloseTo(0.75, 2);
+  });
+
+  it('끄는 동안에는 onseek를 호출하지 않는다', async () => {
+    // 스크러빙 없음의 나머지 절반이다. 놓기 전에 소리가 따라오면 안 된다.
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek });
+
+    const c = canvasOf();
+    c.setPointerCapture = () => {};
+    c.dispatchEvent(
+      new PointerEvent('pointerdown', { clientX: xAt(c, 0.2), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, 0.5), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, 0.8), bubbles: true, pointerId: 1 })
+    );
+
+    expect(onseek).not.toHaveBeenCalled();
+  });
+
+  it('캔버스 왼쪽 밖에서 놓으면 0으로 고정해 호출한다', async () => {
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek });
+
+    const c = canvasOf();
+    const r = c.getBoundingClientRect();
+    c.setPointerCapture = () => {};
+    c.releasePointerCapture = () => {};
+    c.dispatchEvent(
+      new PointerEvent('pointerdown', { clientX: xAt(c, 0.5), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(
+      new PointerEvent('pointerup', { clientX: r.left - 500, bubbles: true, pointerId: 1 })
+    );
+
+    expect(onseek).toHaveBeenCalledTimes(1);
+    expect(onseek).toHaveBeenCalledWith(0);
+  });
+
+  it('끄는 중 Escape를 누르면 점프하지 않고 표시도 사라진다', async () => {
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek });
+
+    const c = canvasOf();
+    c.setPointerCapture = () => {};
+    c.releasePointerCapture = () => {};
+    c.dispatchEvent(
+      new PointerEvent('pointerdown', { clientX: xAt(c, 0.2), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, 0.8), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    c.dispatchEvent(
+      new PointerEvent('pointerup', { clientX: xAt(c, 0.8), bubbles: true, pointerId: 1 })
+    );
+
+    expect(onseek).not.toHaveBeenCalled();
+  });
+
+  it('거의 움직이지 않고 놓으면 드래그가 아니라 클릭으로 처리한다', async () => {
+    // 마우스를 누를 때 손이 1~2px 흔들리는 것은 정상이다. 이걸 드래그로
+    // 보면 마커를 클릭하려던 사용자가 의도치 않게 드래그 경로로 빠진다.
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek });
+
+    const c = canvasOf();
+    const x = xAt(c, 0.5);
+    c.setPointerCapture = () => {};
+    c.releasePointerCapture = () => {};
+    c.dispatchEvent(new PointerEvent('pointerdown', { clientX: x, bubbles: true, pointerId: 1 }));
+    c.dispatchEvent(new PointerEvent('pointermove', { clientX: x + 2, bubbles: true, pointerId: 1 }));
+    c.dispatchEvent(new PointerEvent('pointerup', { clientX: x + 2, bubbles: true, pointerId: 1 }));
+
+    // 드래그로는 호출하지 않는다 — 뒤이어 오는 click이 기존 경로로 처리한다.
     expect(onseek).not.toHaveBeenCalled();
   });
 });
