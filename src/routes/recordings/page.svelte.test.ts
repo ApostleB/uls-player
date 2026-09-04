@@ -804,22 +804,21 @@ describe('+page.svelte — 목록 테이블 헤더', () => {
     expect(header().textContent).toContain('저장된 확장자');
   });
 
-  it('헤더와 모든 행의 열 폭이 실제로 같다', async () => {
-    // 이게 이 기능의 본체다. "정렬됐다"를 눈이 아니라 계산된 값으로
-    // 확인한다 — getComputedStyle의 grid-template-columns는 사용된 픽셀
-    // 폭으로 해석돼 돌아오므로, 헤더와 행이 같은 문자열이면 같은 자리에
-    // 있다는 뜻이다. 배지 개수가 다른 행을 섞어 뒀으므로, 확장자 열이
-    // 내용 의존 트랙이면 행끼리 값이 갈려 여기서 걸린다.
-    render(Page, { data: rowsWithDifferentBadgeCounts() });
-
-    const expected = getComputedStyle(header()).gridTemplateColumns;
-    expect(expected).not.toBe('');
-    expect(expected).not.toBe('none');
-
-    for (const row of rows()) {
-      expect(getComputedStyle(row).gridTemplateColumns).toBe(expected);
-    }
-  });
+  // '헤더와 모든 행의 열 폭이 실제로 같다'(실제 배치 좌표로 정렬을
+  // 재는 테스트)는 이 파일이 아니라 list-header-alignment.svelte.test.ts에
+  // 있다 — 그 검증은 요소가 실제로 display:grid로 배치돼 있어야 의미가
+  // 있는데, 이 파일은 +page.svelte만 단독으로 mount해서(+layout.svelte가
+  // import하는 app.css/Tailwind를 거치지 않는다) grid·flex 유틸리티
+  // 클래스가 전혀 적용되지 않는다 — 그 상태에서 그 테스트를 그대로 두면
+  // grid가 아닌 기본 흐름 레이아웃을 재면서도 우연히 통과할 수 있다.
+  // 이 파일에 app.css를 직접 import해서 고쳐 보려 했으나, 그러면 이
+  // 파일의 다른 테스트 5개(태그 칩 버튼을 getByRole(/^데모\d/)로 찾는
+  // 테스트들)가 15초 타임아웃으로 깨졌다 — 실제 CSS가 얹히면서 그
+  // 버튼들이 접근성 트리에서 더 이상 같은 방식으로 안 잡히는 것으로
+  // 보인다. vitest 브라우저 모드는 테스트 파일마다 별도의 페이지를
+  // 쓰므로(실측 확인), app.css가 필요한 그 테스트 하나만 별도 파일로
+  // 떼어 놓는 쪽이 이 파일의 다른 테스트를 안 건드리면서 실제 레이아웃을
+  // 잴 수 있는 방법이었다(Fix Round 1 보고 참고).
 
   it('열 정의에 내용 의존 트랙이 없다', async () => {
     // 위 테스트는 지금 이 화면 폭에서 우연히 값이 맞아떨어질 수도 있다.
