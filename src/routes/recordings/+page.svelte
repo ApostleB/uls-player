@@ -444,7 +444,12 @@
                       );
                     }} />
                 {:else}
+                  <!-- 제목 버튼과 같은 이유로 onclick을 직접 갖는다 — 부모
+                       div가 행 클릭을 끊으므로, 여기 없으면 설명을 눌렀을 때
+                       아무 일도 일어나지 않는다. 더블클릭 편집은 그대로다:
+                       첫 클릭이 행을 고르고 두 번째 클릭에서 편집이 열린다. -->
                   <button type="button" class="text-surface-500 text-left text-sm"
+                    onclick={() => (selectedId = rec.id)}
                     ondblclick={() => (editingDescriptionId = rec.id)}>
                     {rec.description || '설명 없음'}
                   </button>
@@ -464,7 +469,11 @@
                       onclick={() => commitTags(rec.id)}>완료</button>
                   </div>
                 {:else}
+                  <!-- 설명 버튼과 같은 이유다 — 태그 칸은 열 하나를 통째로
+                       차지해서, 여기가 죽어 있으면 행에서 가장 누르기 쉬운
+                       자리가 반응하지 않는다. -->
                   <button type="button" class="flex flex-wrap gap-1 text-left"
+                    onclick={() => (selectedId = rec.id)}
                     ondblclick={() => startEditTags(rec)}>
                     {#each rec.tags as t (t)}<span class="chip preset-tonal">{t}</span>{/each}
                     {#if !rec.tags.length}<span class="text-surface-500 text-sm">태그 없음</span>{/if}

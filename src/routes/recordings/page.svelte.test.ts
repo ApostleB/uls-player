@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { tick } from 'svelte';
 import { SvelteURL } from 'svelte/reactivity';
 import { render } from 'vitest-browser-svelte';
+// 이 파일은 아래에서 '$app/state'의 page를 이미 page라는 이름으로 쓰고
+// 있어서(SvelteKit의 페이지 스토어 목), vitest 브라우저 모드의 page
+// 로케이터는 browserPage로 별칭을 둔다.
+import { page as browserPage } from 'vitest/browser';
 import type { Recording } from '$lib/types';
 import { filterToParams } from '$lib/filter';
 
@@ -86,6 +90,17 @@ function rec(over: Partial<Recording> & { id: string }): Recording {
 // 이벤트를 실제 input 엘리먼트에 직접 디스패치한다.
 function pressEnter(el: HTMLElement | SVGElement) {
   el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+}
+
+// Task 1(행에서 죽은 클릭 영역을 없앤다) 이후로, 설명·태그를 더블클릭해
+// 편집을 여는 동작은 그 첫 클릭에서 행을 선택하기도 한다 — 그러면 재생기가
+// 뜨면서 Player.svelte의 lastId 이펙트가 /api/waveform/:id도 GET한다.
+// 아래 테스트들은 전역 fetch를 통째로 mock해 send()가 보내는 PATCH
+// 횟수를 세는데, 그 mock이 이제 이 파형 GET까지 함께 잡는다. 테스트의
+// 실제 주장은 언제나 "PATCH가 정확히 한 번 나갔다"였으므로, 그 주장을
+// 그대로 지키려면 fetch 호출 전체가 아니라 PATCH 호출만 세야 한다.
+function patchCalls(fetchMock: ReturnType<typeof vi.fn<typeof fetch>>) {
+  return fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH');
 }
 
 function baseData() {
@@ -399,8 +414,9 @@ describe('+page.svelte — 인라인 편집(설명·태그)', () => {
     await expect.element(getByText('서버가 확정한 설명')).toBeInTheDocument();
     await expect.element(getByText('내가 입력한 설명')).not.toBeInTheDocument();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const call = fetchMock.mock.calls[0];
+    const patches = patchCalls(fetchMock);
+    expect(patches).toHaveLength(1);
+    const call = patches[0];
     expect(JSON.parse(call[1]!.body as string)).toEqual({
       op: 'patch',
       id: '1',
@@ -446,8 +462,9 @@ describe('+page.svelte — 인라인 편집(설명·태그)', () => {
     await expect.element(getByText('서버가확정한태그', { exact: true })).toBeInTheDocument();
     await expect.element(getByText('내가입력한태그', { exact: true })).not.toBeInTheDocument();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const call = fetchMock.mock.calls[0];
+    const patches = patchCalls(fetchMock);
+    expect(patches).toHaveLength(1);
+    const call = patches[0];
     expect(JSON.parse(call[1]!.body as string)).toEqual({
       op: 'patch',
       id: '1',
@@ -628,8 +645,9 @@ describe('+page.svelte — 태그 편집 중 다른 행/필터로 전환', () =>
     await getByText('태그 없음').dblClick();
 
     // row1의 초안이 자동으로 저장됐어야 한다 — 완료를 누르지 않았는데도.
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const call = fetchMock.mock.calls[0];
+    const patches = patchCalls(fetchMock);
+    expect(patches).toHaveLength(1);
+    const call = patches[0];
     expect(JSON.parse(call[1]!.body as string)).toEqual({
       op: 'patch',
       id: '1',
@@ -861,5 +879,58 @@ describe('+page.svelte — 목록 테이블 헤더', () => {
 
     const labels = Array.from(header().children).map((c) => c.textContent?.trim());
     expect(labels).toEqual(['선택', '제목', '태그', '녹음일자', '길이', '저장된 확장자']);
+  });
+});
+
+describe('+page.svelte — 행에서 죽은 클릭 영역이 없다', () => {
+  /**
+   * 하단 재생기가 이 제목으로 떴는지 본다 — 행이 재생 대상이 됐다는 뜻이다.
+   *
+   * getByText(title, { exact: true })는 목록 행의 제목 버튼과 재생기 제목이
+   * 둘 다 정확히 같은 문자열이라 strict mode violation(요소 2개)으로
+   * 깨진다(getByRole('strong', ...)로 좁혀도 이 브라우저 프로바이더의 role
+   * 엔진은 <strong>을 매치하지 않아 마찬가지로 깨졌다). Player.svelte는
+   * <audio> 바로 다음 형제 div 안에만 제목 <strong>을 렌더하므로, 그
+   * 구조로 재생기 쪽 제목만 골라 폴링한다.
+   */
+  async function playerShows(title: string) {
+    await expect
+      .poll(() => document.querySelector('audio + div strong')?.textContent?.trim() ?? null)
+      .toBe(title);
+  }
+
+  it('설명을 한 번 클릭하면 그 행이 재생 대상이 된다', async () => {
+    // 설명 버튼에는 ondblclick만 있었고 부모 div가 stopPropagation을 해서,
+    // 한 번 클릭하면 아무 일도 일어나지 않았다 — 사용자가 클릭이 씹혔다고
+    // 여기고 다시 누르게 되던 자리다.
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', description: '빗소리' })]) });
+
+    await browserPage.getByText('빗소리').click();
+
+    await playerShows('레인');
+  });
+
+  it('태그를 한 번 클릭하면 그 행이 재생 대상이 된다', async () => {
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', tags: ['데모'] })]) });
+
+    await browserPage.getByText('데모', { exact: true }).click();
+
+    await playerShows('레인');
+  });
+
+  it('설명이 비어 있어도("설명 없음") 클릭이 먹는다', async () => {
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    await browserPage.getByText('설명 없음').click();
+
+    await playerShows('레인');
+  });
+
+  it('태그가 없어도("태그 없음") 클릭이 먹는다', async () => {
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    await browserPage.getByText('태그 없음').click();
+
+    await playerShows('레인');
   });
 });
