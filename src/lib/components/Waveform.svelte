@@ -106,6 +106,20 @@
   let swallowNextClick = false;
 
   function onPointerDown(e: PointerEvent) {
+    // 이전 제스처가 남긴 삼킴 플래그를 새 제스처 시작 시점마다 정리한다.
+    // 다음 pointerdown은 항상 이전 제스처의 click보다 뒤에 오므로, 여기서
+    // 지운다고 그 click을 못 받는 경로는 생기지 않는다 — 그러면서
+    // "click이 끝내 안 오는" 모든 경우(예: 아래에서 막는 오른쪽 버튼
+    // 제스처를 Escape로 취소하는 경우)를 한 번에 닫는다. 포인터 캡처가
+    // click을 다시 캔버스로 겨냥해준다는 사실(Fix Round 1에서 Chromium
+    // 으로 확인함)에만 기대지 않아도 되는 안전망이기도 하다.
+    swallowNextClick = false;
+
+    // 주 버튼(보통 왼쪽)이 아니면 드래그를 시작하지 않는다 — 오른쪽
+    // 클릭은 컨텍스트 메뉴를 띄우는데, 그 메뉴를 Escape로 닫으면
+    // cancelDrag가 돌면서 다음(무관한) 왼쪽 클릭까지 삼킬 뻔했다.
+    if (e.button !== 0) return;
+
     pressX = e.clientX;
     hoverRatio = ratioFromPointer(e);
     // 캔버스 밖으로 나가도 계속 따라간다 — 끝 근처를 노리다 살짝
@@ -195,6 +209,7 @@
     onpointerdown={onPointerDown}
     onpointermove={onPointerMove}
     onpointerup={onPointerUp}
+    onpointercancel={cancelDrag}
     onpointerleave={() => {
       if (!dragging) hoverRatio = null;
     }}

@@ -744,6 +744,63 @@ test.describe.serial('스캔부터 재생까지', () => {
     expect((await audioState(page)).currentTime).toBeGreaterThan(target - 0.4);
   });
 
+  // Final Review Fix: 오른쪽 버튼은 애초에 드래그를 시작해선 안 된다.
+  // 이 테스트는 오른쪽 버튼으로 누르고 끌고 놓는 동작 자체가 아예
+  // seek를 만들지 않는지만 본다 — swallowNextClick 자정 로직(항목 2)과
+  // 겹치지 않는, onPointerDown의 버튼 가드(항목 1) 하나만 겨냥한
+  // 테스트다.
+  test('오른쪽 버튼으로 누르고 끌고 놓아도 드래그가 시작되지 않는다', async ({ page }) => {
+    await selectRecording(page, QTA_TITLE);
+    expect((await audioState(page)).currentTime).toBeLessThan(0.1);
+
+    const canvas = page.locator('canvas');
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('waveform canvas가 보이지 않습니다');
+    const y = box.y + box.height / 2;
+
+    await page.mouse.move(box.x + box.width * 0.2, y);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move(box.x + box.width * 0.8, y, { steps: 8 });
+    await page.mouse.up({ button: 'right' });
+    // 컨텍스트 메뉴가 열려 있을 수 있으니 닫아 다음 테스트에 영향이
+    // 남지 않게 한다.
+    await page.keyboard.press('Escape');
+
+    await page.waitForTimeout(200);
+    expect((await audioState(page)).currentTime).toBeLessThan(0.1);
+  });
+
+  // Final Review Fix: 리뷰가 지적한 실제 시나리오를 그대로 재현한다 —
+  // 오른쪽 클릭으로 컨텍스트 메뉴를 띄운 뒤 Escape로 닫고, 그 다음
+  // 평범한 왼쪽 클릭이 여전히 먹히는지 본다. 항목 1(버튼 가드)만으로도
+  // 이 시나리오는 막히고, 항목 2(자정)도 독립적으로 같은 경로를
+  // 막아준다 — 그래서 이 테스트 하나로 둘을 따로 구분해내지는 못한다
+  // (리포트의 "Final Review Fix" 절 참고). 그래도 실제로 보고된 버그가
+  // 다시 살아나지 않는지 지키는 회귀 테스트로서는 유효하다.
+  test('오른쪽 클릭으로 컨텍스트 메뉴를 띄우고 Escape로 닫아도, 다음 왼쪽 클릭은 여전히 먹힌다', async ({ page }) => {
+    await selectRecording(page, QTA_TITLE);
+    expect((await audioState(page)).currentTime).toBeLessThan(0.1);
+
+    const canvas = page.locator('canvas');
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('waveform canvas가 보이지 않습니다');
+    const y = box.y + box.height / 2;
+
+    await page.mouse.move(box.x + box.width * 0.5, y);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.up({ button: 'right' });
+    // 실제 컨텍스트 메뉴를 Escape로 닫는다 — 리뷰가 지적한 바로 그 동작.
+    await page.keyboard.press('Escape');
+
+    await page.mouse.click(box.x + box.width * 0.4, y);
+
+    const target = QTA_DURATION_SEC * 0.4;
+    await expect
+      .poll(async () => (await audioState(page)).currentTime, { timeout: 5_000 })
+      .toBeLessThan(target + 0.4);
+    expect((await audioState(page)).currentTime).toBeGreaterThan(target - 0.4);
+  });
+
   test('포맷을 전환해도 재생 위치가 유지된다', async ({ page }) => {
     await selectRecording(page, QTA_TITLE);
     await seekViaWaveform(page, 0.5);

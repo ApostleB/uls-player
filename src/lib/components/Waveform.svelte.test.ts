@@ -223,6 +223,46 @@ describe('Waveform.svelte — 끌어서 점프', () => {
     // 드래그로는 호출하지 않는다 — 뒤이어 오는 click이 기존 경로로 처리한다.
     expect(onseek).not.toHaveBeenCalled();
   });
+
+  // Final Review Fix: 드래그가 pointercancel로(예: 터치 제스처가 스크롤로
+  // 인식되거나, OS·브라우저가 끼어드는 경우) 중단되면, Escape와 같은
+  // 취소 경로(cancelDrag)를 타야 한다. 실제 pointercancel은 Playwright의
+  // page.mouse API로는 재현할 방법을 찾지 못했다(마우스 전용 API라
+  // 터치·OS 인터럽트 계열인 pointercancel을 자연스럽게 만들지 않는다) —
+  // 그래서 이 테스트는 합성 dispatchEvent로 검증한다. 이건 Fix Round 1의
+  // Escape 버그와는 다른 성격이다: 그 버그는 "브라우저가 뒤이어 만드는
+  // 진짜 click"을 합성 이벤트가 재현 못 해서 생긴 간극이었지만,
+  // pointercancel 처리에는 그런 후속 브라우저 합성 이벤트가 없다 —
+  // Svelte가 붙인 실제 onpointercancel 바인딩과 실제 cancelDrag 로직을
+  // 그대로 태우므로 판정력이 있다(뮤테이션으로 확인함).
+  it('제스처가 pointercancel로 취소되면 표시가 즉시 사라지고 이후 pointerup에서도 점프하지 않는다', async () => {
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek });
+
+    const c = canvasOf();
+    c.setPointerCapture = () => {};
+    c.releasePointerCapture = () => {};
+    c.dispatchEvent(
+      new PointerEvent('pointerdown', { clientX: xAt(c, 0.2), bubbles: true, pointerId: 1 })
+    );
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, 0.8), bubbles: true, pointerId: 1 })
+    );
+    // 0.8 * 100초 = 80초 = 1:20 — 재생헤드 선·말풍선이 떠 있어야 한다.
+    await expect.element(page.getByText('1:20')).toBeInTheDocument();
+
+    c.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+
+    // onpointerleave는 dragging이 true인 동안 걸러버리므로, pointercancel이
+    // 직접 지워주지 않으면 다음 제스처가 시작될 때까지 화면에 눌어붙는다.
+    await expect.element(page.getByText('1:20')).not.toBeInTheDocument();
+
+    // 취소된 제스처의 뒤늦은 pointerup이 와도 점프하지 않는다.
+    c.dispatchEvent(
+      new PointerEvent('pointerup', { clientX: xAt(c, 0.8), bubbles: true, pointerId: 1 })
+    );
+    expect(onseek).not.toHaveBeenCalled();
+  });
 });
 
 describe('Waveform.svelte — 키보드 탐색', () => {
