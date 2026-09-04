@@ -503,6 +503,7 @@
 <Player
   recording={selected}
   formats={['original', ...data.formats]}
+  mediaDir={data.mediaDir}
   onbookmark={addBookmark}
   onbookmarkchange={changeBookmarks}
 />

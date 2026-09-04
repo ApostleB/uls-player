@@ -15,10 +15,13 @@
     restoreIfAbsent
   } from '$lib/player';
   import type { LoopState } from '$lib/player';
+  import { mediaFilePath, mediaFileExt } from '$lib/media';
+  import { middleEllipsis } from '$lib/pathDisplay';
 
   let {
     recording = null as Recording | null,
     formats = [] as string[],
+    mediaDir = '',
     onbookmark = (_: Omit<Bookmark, 'id'>) => {},
     // 성공하면 true(또는 true로 resolve하는 Promise)를 돌려줘야 한다 —
     // 실패(false)를 받으면 아래 목록이 낙관적으로 반영해둔 편집을
@@ -90,6 +93,14 @@
 
   const src = $derived(
     recording && recording.files[format] ? `/api/media/${recording.id}/${format}` : ''
+  );
+
+  // 지금 재생 중인 파일이 디스크 어디에 있는지. 서버가 파일을 열 때
+  // 쓰는 것과 같은 함수라, 여기 보이는 경로는 실제로 열리는 경로다.
+  const filePath = $derived(
+    recording && recording.files[format] && mediaDir
+      ? mediaFilePath(mediaDir, recording.id, format, mediaFileExt(format, recording.files[format]))
+      : ''
   );
 
   /**
@@ -430,6 +441,15 @@
             </li>
           {/each}
         </ul>
+      {/if}
+
+      {#if filePath}
+        <!-- 전체 경로는 title에 둔다 — 줄인 문자열만 있으면 실제 위치를
+             알 방법이 없다. 60자는 재생기 폭에서 두 줄로 넘어가지 않는
+             선에서 잡았다. -->
+        <div class="text-surface-500 mt-1 text-right font-mono text-xs" title={filePath}>
+          {middleEllipsis(filePath, 60)}
+        </div>
       {/if}
     </div>
   </div>

@@ -664,6 +664,67 @@ describe('Player.svelte — 연달아 편집해도 앞선 편집을 잃지 않�
   });
 });
 
+describe('Player.svelte — 재생 중인 파일의 저장 경로', () => {
+  it('선택된 포맷의 절대 경로를 보여준다', async () => {
+    render(Player, {
+      recording: rec({
+        id: 'a1b2',
+        files: { original: { ext: 'qta', bytes: 1 }, mp3: { bytes: 2 } }
+      }),
+      formats: ['mp3', 'wav'],
+      mediaDir: '/srv/media'
+    });
+
+    // 줄여서 보여주더라도 전체 경로는 title에 남아야 한다 — 줄인
+    // 문자열만 있으면 사용자가 실제 위치를 알 방법이 없다.
+    const el = await page.getByTitle('/srv/media/mp3/a1b2.mp3').element();
+    expect(el).toBeTruthy();
+  });
+
+  it('재생 중인 녹음이 없으면 경로를 보여주지 않는다', async () => {
+    render(Player, { recording: null, formats: ['mp3'], mediaDir: '/srv/media' });
+
+    expect(document.body.textContent).not.toContain('/srv/media');
+  });
+
+  it('original 포맷은 files의 ext를 써서 경로를 만든다', async () => {
+    // 변환본은 포맷 이름이 곧 확장자지만 original은 아니다 — 여기서
+    // 규칙이 어긋나면 화면이 없는 파일을 가리킨다.
+    render(Player, {
+      recording: rec({ id: 'a1b2', files: { original: { ext: 'qta', bytes: 1 } } }),
+      formats: ['original'],
+      mediaDir: '/srv/media'
+    });
+
+    const el = await page.getByTitle('/srv/media/original/a1b2.qta').element();
+    expect(el).toBeTruthy();
+  });
+
+  it('경로가 60자를 넘어도 title에는 줄이지 않은 전체 경로가 남는다', async () => {
+    // 위 테스트들은 경로가 60자 이하라 title이 줄인 문자열이든 전체
+    // 경로든 값이 같아 title={middleEllipsis(filePath, 60)}로 바꿔도
+    // 통과해버린다(뮤테이션으로 실제 확인함 — task-2-report.md 참고).
+    // filePath가 60자를 넘도록 mediaDir를 충분히 길게 잡아, title이
+    // 실제로 줄지 않았는지를 이 테스트가 구분하게 한다.
+    const longMediaDir = '/Volumes/ExternalStorage/voice-recordings/uls-media-archive-2026';
+    const fullPath = `${longMediaDir}/mp3/a1b2.mp3`;
+    expect(fullPath.length).toBeGreaterThan(60);
+
+    render(Player, {
+      recording: rec({ id: 'a1b2', files: { mp3: { bytes: 2 } } }),
+      formats: ['mp3', 'wav'],
+      mediaDir: longMediaDir
+    });
+
+    const el = await page.getByTitle(fullPath).element();
+    expect(el).toBeTruthy();
+    // 화면에 보이는 텍스트는 줄어든 문자열이어야 한다 — 그렇지 않으면
+    // title도 어차피 같은 문자열이라는 우연으로 위 단언이 통과했을 수
+    // 있다.
+    expect(el.textContent).not.toBe(fullPath);
+  });
+});
+
 describe('Player.svelte — 파형 마커가 북마크 목록과 같은 데이터를 보여준다 (Task 16)', () => {
   it('북마크를 추가하면(props 갱신) 파형에도 같은 메모의 마커가 뜬다', async () => {
     // 처음엔 이 녹음에 북마크가 없다 — 마커도, 목록도 없어야 한다.
