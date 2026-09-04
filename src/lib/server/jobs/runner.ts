@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {
   AppConfig, FileEntry, JobItem, JobStatus, Recording, ScanItem
 } from '$lib/types';
+import { mediaFilePath } from '$lib/media';
 import { convert } from '../media/convert';
 import { probe } from '../media/probe';
 import { generatePeaks } from '../media/waveform';
@@ -88,7 +89,7 @@ export function buildJobs(
 export function makeRunner(cfg: AppConfig): Worker {
   return async (job: JobItem) => {
     const ext = path.extname(job.sourcePath).slice(1);
-    const originalPath = path.join(cfg.mediaDir, 'original', `${job.recordingId}.${ext}`);
+    const originalPath = mediaFilePath(cfg.mediaDir, job.recordingId, 'original', ext);
 
     await fs.mkdir(path.dirname(originalPath), { recursive: true });
 
@@ -123,7 +124,7 @@ export function makeRunner(cfg: AppConfig): Worker {
     const formatErrors: string[] = [];
 
     for (const spec of cfg.formats) {
-      const out = path.join(cfg.mediaDir, spec.name, `${job.recordingId}.${spec.ext}`);
+      const out = mediaFilePath(cfg.mediaDir, job.recordingId, spec.name, spec.ext);
 
       if (job.formats[spec.name] === 'done') {
         try {

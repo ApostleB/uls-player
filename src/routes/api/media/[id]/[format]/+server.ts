@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
-import path from 'node:path';
 import { error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { config } from '$lib/server/config';
 import { getById } from '$lib/server/store/recordings';
+import { mediaFileExt, mediaFilePath } from '$lib/media';
 
 const MIME: Record<string, string> = {
   mp3: 'audio/mpeg',
@@ -21,8 +21,8 @@ export const GET: RequestHandler = async ({ params, request }) => {
   const entry = rec.files[params.format];
   if (!entry) throw error(404, `이 녹음에는 ${params.format} 파일이 없습니다`);
 
-  const ext = params.format === 'original' ? (entry.ext ?? 'bin') : params.format;
-  const file = path.join(config.mediaDir, params.format, `${rec.id}.${ext}`);
+  const ext = mediaFileExt(params.format, entry);
+  const file = mediaFilePath(config.mediaDir, rec.id, params.format, ext);
 
   let size: number;
   try {
