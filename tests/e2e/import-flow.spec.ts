@@ -626,6 +626,82 @@ test.describe.serial('스캔부터 재생까지', () => {
     expect(currentTime).toBeLessThan(mid + 0.4);
   });
 
+  // Task 4 Fix Round 1: 컴포넌트 테스트는 합성 PointerEvent를 직접
+  // dispatchEvent하는데, 합성 이벤트는 UA가 뒤이어 click을 만들어주지
+  // 않는다 — 그래서 "Escape로 드래그를 취소하면 점프하지 않는다"는
+  // 컴포넌트 테스트가 통과해도, 실제 브라우저에서는 놓은 지점이 캔버스
+  // 위였다면 pointerup 뒤에 진짜 click이 이어져 결국 점프해버리는
+  // 버그를 잡아내지 못했다. 아래 두 테스트는 page.mouse.*로 실제
+  // 신뢰된(trusted) 입력을 보내 그 간극에서만 드러나는 버그를 겨냥한다.
+  test('드래그 중 Escape를 누르면 실제 클릭까지 막혀 점프하지 않는다', async ({ page }) => {
+    await selectRecording(page, QTA_TITLE);
+    expect((await audioState(page)).currentTime).toBeLessThan(0.1);
+
+    const canvas = page.locator('canvas');
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('waveform canvas가 보이지 않습니다');
+    const y = box.y + box.height / 2;
+
+    // 0.2 지점을 눌러 0.8 지점까지 실제로 끈다 — 임계값(3px)을 한참
+    // 넘는 이동이라 dragging이 켜진다.
+    await page.mouse.move(box.x + box.width * 0.2, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.8, y, { steps: 5 });
+
+    // 캔버스가 실제로 포커스를 받았어야 이 keydown이 캔버스의
+    // onkeydown(Escape 처리)에 닿는다 — 실제 마우스 다운은 tabindex가
+    // 있는 캔버스에 포커스를 준다.
+    await expect(canvas).toBeFocused();
+    await page.keyboard.press('Escape');
+
+    // 놓는 지점은 여전히 캔버스 위(0.8 지점)다 — 실제 브라우저라면
+    // pointerdown·pointerup이 같은 엘리먼트에서 일어났으니 click이
+    // 뒤따른다. Escape가 그 click까지 막아야 한다.
+    await page.mouse.up();
+
+    // click을 실제로 만들어내는 동작이므로, 이벤트가 처리될 시간을
+    // 준다(고정 sleep이 아니라 재생 위치가 "그대로"인지 재시도로
+    // 확인한다 — 바뀌었다면 그 즉시 실패로 드러난다).
+    await page.waitForTimeout(200);
+    expect((await audioState(page)).currentTime).toBeLessThan(0.1);
+  });
+
+  test('캔버스 밖에서 드래그를 놓아도, 뒤이은 정상 클릭은 계속 먹힌다', async ({ page }) => {
+    // 드래그로 점프한 직후 삼키는 click 플래그가, click이 한 번도 오지
+    // 않는 캔버스-밖-놓기 뒤에 눌어붙어 다음 클릭까지 먹어버리지
+    // 않는지 확인한다.
+    await selectRecording(page, QTA_TITLE);
+    expect((await audioState(page)).currentTime).toBeLessThan(0.1);
+
+    const canvas = page.locator('canvas');
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error('waveform canvas가 보이지 않습니다');
+    const y = box.y + box.height / 2;
+
+    // 0.2 지점에서 눌러 캔버스 오른쪽 바깥까지 끌고 나가 놓는다 —
+    // 오른쪽 끝(전체 길이)으로 고정돼야 한다. 이 놓기는 캔버스 밖이라
+    // 실제 브라우저도 click을 만들지 않는다.
+    await page.mouse.move(box.x + box.width * 0.2, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width + 300, y, { steps: 5 });
+    await page.mouse.up();
+
+    await expect
+      .poll(async () => (await audioState(page)).currentTime, { timeout: 5_000 })
+      .toBeGreaterThan(QTA_DURATION_SEC - 0.3);
+
+    // 완전히 새 제스처로 0.3 지점을 평범하게 클릭한다 — click이 한 번도
+    // 없었던 앞의 놓기 때문에 삼킴 플래그가 여전히 true라면, 이 클릭이
+    // 조용히 먹혀 재생 위치가 그대로(전체 길이) 남는다.
+    await page.mouse.click(box.x + box.width * 0.3, y);
+
+    const target = QTA_DURATION_SEC * 0.3;
+    await expect
+      .poll(async () => (await audioState(page)).currentTime, { timeout: 5_000 })
+      .toBeLessThan(target + 0.4);
+    expect((await audioState(page)).currentTime).toBeGreaterThan(target - 0.4);
+  });
+
   test('포맷을 전환해도 재생 위치가 유지된다', async ({ page }) => {
     await selectRecording(page, QTA_TITLE);
     await seekViaWaveform(page, 0.5);

@@ -140,9 +140,23 @@
   }
 
   function cancelDrag() {
+    // 실제로 누르고 있던 상태였을 때만(pressX가 있을 때만) 뒤이어
+    // 올 click을 삼킨다. Escape가 눌렸을 때 이미 놓여 있었다면(단순히
+    // 캔버스에 포커스만 있던 경우) 삼킬 것이 없다 — 조건 없이 항상
+    // 세우면, 그 뒤 아무 관련 없는 다음 클릭까지 먹어버릴 수 있다.
+    //
+    // Escape는 실제 브라우저에서 pointerup 뒤에도 click을 만든다 —
+    // 캔버스가 pointerdown에서 잡은 포인터 캡처가 아직 살아있는 동안
+    // (release는 이 함수가 아니라 onPointerUp에서 한다) 놓이므로,
+    // 스펙(Pointer Events의 "pointer capture target override")에
+    // 따라 release 위치가 캔버스 안이든 밖이든 뒤이은 click이 캔버스로
+    // 다시 겨냥된다 — dragging·pressX를 지우는 것만으로는 onPointerUp이
+    // 조용히 발을 뺄 뿐, 그 click까지 막지는 못해 결국 점프해버린다.
+    const wasPressed = pressX !== null;
     pressX = null;
     dragging = false;
     hoverRatio = null;
+    if (wasPressed) swallowNextClick = true;
   }
 
   function seekToBookmark(b: Bookmark) {
