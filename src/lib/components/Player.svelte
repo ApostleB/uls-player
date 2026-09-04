@@ -240,6 +240,15 @@
     onbookmark(bookmarkDraft({ loopA, loopB }, audio?.currentTime ?? 0));
   }
 
+  /**
+   * 이 switch는 Space·화살표(재생 위치·볼륨)·m·b만 소유한다. Home/End("처음으로"·
+   * "끝으로")는 여기 없다 — Waveform.svelte 캔버스 자신의 keydown이 그 둘을
+   * 처리한다(전역 핸들러는 대응하는 case가 없다). 화살표가 (Home/End와 달리)
+   * Waveform이 아니라 여기 있는 이유: 화살표는 원래부터 이 전역 단축키였고,
+   * Waveform 캔버스가 나중에 또 처리하게 만들면 keydown이 캔버스→window로
+   * 버블링되면서 한 번 눌러도 두 번 움직였다(fix round 1에서 실제로 재현·
+   * 확정). 그래서 Home/End를 여기 새로 추가하지 말 것 — 이미 있다.
+   */
   function onKeydown(e: KeyboardEvent) {
     if (isTypingTarget(e.target)) return;
     if (!recording) return;
