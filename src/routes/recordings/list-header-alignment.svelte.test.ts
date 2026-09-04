@@ -122,11 +122,11 @@ describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {
     render(Page, { data: rowsWithDifferentBadgeCounts() });
 
     const headerCells = Array.from(header().children) as HTMLElement[];
-    expect(headerCells).toHaveLength(5);
+    expect(headerCells).toHaveLength(6);
 
     // 인덱스로 대응시키기 전에, 헤더의 n번째 자식과 각 행의 n번째
-    // 자식이 실제로 개수가 같은지(선택 · 제목 · 녹음일자 · 길이 ·
-    // 저장된 확장자, 다섯 칸)부터 확인한다 — 성립하지 않으면 아래
+    // 자식이 실제로 개수가 같은지(선택 · 제목 · 태그 · 녹음일자 · 길이 ·
+    // 저장된 확장자, 여섯 칸)부터 확인한다 — 성립하지 않으면 아래
     // 인덱스 대응 비교 자체가 의미가 없다.
     for (const row of rows()) {
       expect(row.children).toHaveLength(headerCells.length);
@@ -141,7 +141,7 @@ describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {
     // 실측하면 헤더의 "선택" 글자칸은 트랙 전체 폭(32px)을 채우고
     // 체크박스는 자기 고유 크기(20px)로 남는다. 이건 정렬이 어긋난 게
     // 아니라 체크박스의 정상적인 렌더링이므로, 이 칸은 왼쪽 끝(칸이
-    // 시작하는 자리)만 비교하고 폭은 비교하지 않는다. 나머지 네 칸은
+    // 시작하는 자리)만 비교하고 폭은 비교하지 않는다. 나머지 다섯 칸은
     // 전부 일반 블록 요소(div/span)라 늘어나 칸을 꽉 채우므로 왼쪽
     // 끝·폭을 모두 비교한다.
     const WIDTH_NOT_COMPARABLE = new Set([0]);

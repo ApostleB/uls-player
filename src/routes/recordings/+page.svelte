@@ -362,8 +362,8 @@
        행마다 개수가 다르다. 그래서 전부 fr과 고정 rem으로만 적는다.
        가변 열의 minmax(0, ...)에서 0 최소값을 빼면 긴 제목이 트랙을
        밀어낸다. -->
-  <div class="overflow-x-auto" style="--row-cols: 2rem minmax(0,3fr) 11rem 5rem 9rem;">
-    <div class="min-w-[48rem]">
+  <div class="overflow-x-auto" style="--row-cols: 2rem minmax(0,3fr) minmax(0,2fr) 11rem 5rem 9rem;">
+    <div class="min-w-[56rem]">
       {#if shown.length}
         <!-- 이 목록은 table이 아니라 ul/li라 이 줄은 셀과 의미적으로
              연결되지 않는다. 각 셀은 이미 자기 내용을 읽을 수 있게
@@ -374,6 +374,7 @@
           style="grid-template-columns: var(--row-cols);">
           <span>선택</span>
           <span>제목</span>
+          <span>태그</span>
           <span>녹음일자</span>
           <span>길이</span>
           <span>저장된 확장자</span>
@@ -445,7 +446,14 @@
               {rec.description || '설명 없음'}
             </button>
           {/if}
+        </div>
 
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <!-- 태그 편집(더블클릭 진입, TagInput, 완료 버튼)은 행 선택과
+             무관한 별개 동작이라, 여기서도 행 클릭이 번지지 않게 끊는다.
+             이 div를 새 상호작용 요소로 만드는 게 아니라, 안에 이미 있는
+             컨트롤의 동작을 행 선택이 가리지 않게 하는 것이다. -->
+        <div class="min-w-0" onclick={(e) => e.stopPropagation()}>
           {#if editingTagsId === rec.id}
             <div class="flex flex-wrap items-center gap-2">
               <TagInput bind:tags={tagsDraft} suggestions={tagNames} />

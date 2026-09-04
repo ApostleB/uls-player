@@ -845,4 +845,24 @@ describe('+page.svelte — 목록 테이블 헤더', () => {
     expect(emptyCard.textContent).toContain('아직 가져온 녹음이 없습니다');
     expect(getComputedStyle(emptyCard).display).not.toBe('grid');
   });
+
+  it('태그가 제목 칸이 아니라 자기 열에 렌더된다', async () => {
+    // 제목 칸(제목·설명이 세로로 쌓인 div) 안에 태그 칩이 남아 있으면
+    // 열로 분리된 게 아니다. 칩이 화면 어딘가에 있다는 것만 확인하면
+    // 분리 전에도 통과하므로, "제목 칸 안에는 없다"까지 본다.
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', tags: ['데모'] })]) });
+
+    const row = document.querySelector('ul.space-y-1 > li') as HTMLElement;
+    const titleCell = row.querySelector('button')!.closest('div')!;
+
+    expect(titleCell.textContent).not.toContain('데모');
+    expect(row.textContent).toContain('데모');
+  });
+
+  it('여섯 번째 열 이름으로 태그를 보여준다', async () => {
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', tags: ['데모'] })]) });
+
+    const labels = Array.from(header().children).map((c) => c.textContent?.trim());
+    expect(labels).toEqual(['선택', '제목', '태그', '녹음일자', '길이', '저장된 확장자']);
+  });
 });
