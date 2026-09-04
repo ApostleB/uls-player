@@ -58,6 +58,15 @@
   let loopB = $state<number | null>(null);
 
   /**
+   * <audio>가 지금 어느 단계인지. 지금까지 이 컴포넌트는 로딩·오류
+   * 이벤트를 하나도 듣지 않아서, 파일을 못 읽어도 화면은 조용히 '재생'
+   * 버튼만 보여줬다 — 눌러도 아무 일이 없고 이유도 알 수 없다.
+   *
+   * 별도 타이머를 두지 않고 <audio>가 이미 내는 이벤트만 쓴다.
+   */
+  let loadState = $state<'idle' | 'loading' | 'ready' | 'error'>('idle');
+
+  /**
    * 북마크 편집·삭제에서 "다음 배열"을 계산할 때 베이스로 쓰는 로컬
    * 사본. recording.bookmarks(프롭)는 onbookmarkchange → +page.svelte의
    * send()가 보낸 PATCH 응답이 돌아와야 갱신된다 — 그 응답을 기다리는
@@ -144,6 +153,8 @@
       if (!rec.files[format]) format = available[0] ?? 'original';
       current = 0;
       loopA = loopB = null;
+      // 이전 녹음의 실패 표시가 새 녹음 위에 남지 않게 한다.
+      loadState = 'loading';
     });
 
     fetch(`/api/waveform/${id}`)
@@ -179,6 +190,23 @@
    */
   function toggle() {
     paused = !paused;
+  }
+
+  /**
+   * 오류 상태에서 다시 시도한다. audio.load()는 미디어 로드 알고리즘을
+   * 처음부터 다시 돌려 리소스를 새로 받아온다 — toggle()과 달리 여기서
+   * 브라우저 API를 직접 부르는 이유는, load()가 다루는 건 "재생 상태"가
+   * 아니라 "리소스"라 bind:paused와 다툴 일이 없기 때문이다(직접 확인:
+   * load()를 불러도 play/pause 이벤트는 나지 않는다 — emptied·loadstart만
+   * 난다. 재생 중이었다면 브라우저가 그 재생을 이벤트 없이 끊는데, 이건
+   * "다른 녹음으로 전환" 때와 같은 abort 경로라 bind:paused가 이미
+   * canplay로 되잡는 경우와 동일하게 처리된다 — 위 paused 선언부 주석,
+   * task-2-report.md의 Fix Round 2 참고). load()가 실행되면 loadstart가
+   * 다시 발생해 기존 onloadstart 핸들러가 loadState를 'loading'으로
+   * 되돌리므로 별도 처리가 필요 없다.
+   */
+  function retry() {
+    audio?.load();
   }
 
   function seek(sec: number) {
@@ -254,7 +282,16 @@
     if (!recording) return;
 
     switch (e.key) {
-      case ' ': e.preventDefault(); toggle(); break;
+      // 로딩 중에는 재생 버튼이 disabled라 눌러도 소용없다는 뜻을
+      // 전달하는데, 이 단축키가 버튼을 거치지 않고 toggle()을 그대로
+      // 부르면 그 뜻이 키보드로는 지켜지지 않는다. 그래서 버튼과 같은
+      // 동작(오류 상태면 다시 시도, 로딩 중이면 아무 것도 안 함)을
+      // 그대로 따른다.
+      case ' ':
+        e.preventDefault();
+        if (loadState === 'error') retry();
+        else if (loadState !== 'loading') toggle();
+        break;
       case 'ArrowLeft': e.preventDefault(); nudge(e.shiftKey ? -10 : -5); break;
       case 'ArrowRight': e.preventDefault(); nudge(e.shiftKey ? 10 : 5); break;
       case 'ArrowUp': e.preventDefault(); volume = Math.min(1, volume + 0.05); break;
@@ -278,6 +315,9 @@
       bind:paused
       ontimeupdate={onTimeUpdate}
       onended={onEnded}
+      onloadstart={() => (loadState = 'loading')}
+      oncanplay={() => (loadState = 'ready')}
+      onerror={() => (loadState = 'error')}
     ></audio>
 
     <div class="mx-auto max-w-6xl space-y-2">
@@ -299,9 +339,20 @@
       <div class="flex flex-wrap items-center gap-2">
         <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(-10)}>−10초</button>
         <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(-5)}>−5초</button>
-        <button type="button" class="btn preset-filled-primary-500" onclick={toggle}>
-          {playing ? '일시정지' : '재생'}
+        <!-- 상태를 재생 버튼 자리에 둔다 — 사용자가 이미 보고 있는 곳이고,
+             "지금은 누를 수 없다"까지 같은 자리에서 전달된다. 오류
+             상태에서는 라벨과 동작을 모두 "다시 시도"로 바꾼다 — 라벨이
+             '재생'인 채로 두면 눌러도 아무 일이 없다는 뜻(toggle은
+             이미 실패한 리소스에 play()만 다시 시도할 뿐 다시 받아오지
+             않는다)과 라벨이 약속하는 동작이 어긋난다. -->
+        <button type="button" class="btn preset-filled-primary-500"
+          disabled={loadState === 'loading'}
+          onclick={loadState === 'error' ? retry : toggle}>
+          {loadState === 'loading' ? '불러오는 중' : loadState === 'error' ? '다시 시도' : playing ? '일시정지' : '재생'}
         </button>
+        {#if loadState === 'error'}
+          <span class="text-error-500 text-sm">불러오지 못했습니다</span>
+        {/if}
         <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(5)}>+5초</button>
         <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(10)}>+10초</button>
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { page } from 'vitest/browser';
 import { render } from 'vitest-browser-svelte';
+import { tick } from 'svelte';
 import type { Bookmark, Recording } from '$lib/types';
 import Player from './Player.svelte';
 
@@ -91,6 +92,13 @@ describe('Player.svelte — 입력 필드에 포커스가 있으면 단축키를
     const screen = render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3', 'wav'] });
     await screen;
 
+    // 녹음을 고르면 lastId 이펙트가 즉시 loadState를 'loading'으로
+    // 만든다(불러오는 중과 실패 관련 Fix round 1). 그 상태에서는 Space도
+    // 재생 버튼과 똑같이 막혀야 하므로(별도 테스트가 그것을 지킨다),
+    // 이 테스트가 원래 확인하려는 "불러오는 중이 아닐 때 Space가
+    // 토글한다"를 보려면 먼저 canplay로 로딩을 끝내야 한다.
+    document.querySelector('audio')!.dispatchEvent(new Event('canplay'));
+
     document.body.dispatchEvent(
       new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
     );
@@ -130,13 +138,28 @@ describe('Player.svelte — 녹음 전환 시 재생 상태 표시가 실제 상
     await screen;
 
     const audioEl = document.querySelector('audio') as HTMLAudioElement;
+    const button = () => document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
+
+    // 녹음을 고르면 lastId 이펙트가 즉시 loadState를 'loading'으로
+    // 만들고, audio의 실제 src(/api/media/aaaa/mp3)는 진짜로 요청된다
+    // — 이 dev 서버에서 그 요청은 결국 진짜 오류로 끝난다(Fix round
+    // 1·2에서 반복 확인). Fix round 2부터 오류 상태는 라벨을 '다시
+    // 시도'로 바꾸므로, 그 진짜 오류가 이 테스트 도중 아무 때나
+    // 끼어들면 '일시정지'/'재생' 라벨을 가릴 수 있다. 그래서 여기서는
+    // retrying assertion으로 뜸을 들이지 않고, canplay를 합성으로
+    // 흘려보낸 직후 tick()으로 반응형 플러시만 정확히 기다린 뒤 즉시
+    // 확인한다 — 진짜 네트워크 응답은 마이크로태스크 하나보다 훨씬
+    // 느리므로 이 시점엔 아직 끼어들 수 없다(같은 기법이 Fix round
+    // 2의 '재생 가능해지면 재생 버튼으로 돌아온다' 테스트에도 있다).
 
     // "재생 중"이었다고 가정한다. 실제 미디어 없이 재생 상태를 흉내내는
     // 표준적인 방법으로 네이티브 paused 게터(읽기 전용 IDL 속성이라
     // 직접 대입은 못 한다)를 스텁하고 play 이벤트를 흉내낸다.
+    audioEl.dispatchEvent(new Event('canplay'));
     Object.defineProperty(audioEl, 'paused', { get: () => false, configurable: true });
     audioEl.dispatchEvent(new Event('play'));
-    await expect.element(page.getByRole('button', { name: '일시정지' })).toBeInTheDocument();
+    await tick();
+    expect(button().textContent?.trim()).toBe('일시정지');
 
     // 브라우저가 src 재할당(레코딩 전환) 시 HTML 미디어 스펙의 로드
     // 알고리즘 abort 단계를 따라 paused를 이벤트 없이 true로 되돌린다.
@@ -144,11 +167,12 @@ describe('Player.svelte — 녹음 전환 시 재생 상태 표시가 실제 상
     Object.defineProperty(audioEl, 'paused', { get: () => true, configurable: true });
     await screen.rerender({ recording: recB, formats: ['mp3', 'wav'] });
     audioEl.dispatchEvent(new Event('canplay'));
+    await tick();
 
     // pause 이벤트가 한 번도 없었는데도 토글 버튼이 "재생"으로 돌아와야
     // 한다 — onplay/onpause만으로 playing을 관리했다면(예전 구현) 이
     // 지점에서 영원히 "일시정지"로 박제된다.
-    await expect.element(page.getByRole('button', { name: '재생' })).toBeInTheDocument();
+    expect(button().textContent?.trim()).toBe('재생');
   });
 });
 
@@ -745,5 +769,184 @@ describe('Player.svelte — 파형 마커가 북마크 목록과 같은 데이�
     await screen.rerender({ recording: withBookmark, formats: ['mp3', 'wav'] });
 
     await expect.element(page.getByRole('button', { name: /마커메모/ })).toBeInTheDocument();
+  });
+});
+
+describe('Player.svelte — 불러오는 중과 실패', () => {
+  /** 렌더된 <audio>에 실제 미디어 이벤트를 흘려보낸다. */
+  function audioEl(): HTMLAudioElement {
+    const el = document.querySelector('audio');
+    if (!el) throw new Error('audio 엘리먼트가 없다');
+    return el as HTMLAudioElement;
+  }
+
+  it('불러오기가 시작되면 재생 버튼 자리에 진행 표시가 뜨고 누를 수 없다', async () => {
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+
+    await expect.element(page.getByRole('button', { name: '불러오는 중' })).toBeDisabled();
+  });
+
+  it('불러오는 중에는 스페이스를 눌러도 토글되지 않는다', async () => {
+    // 버튼은 disabled로 "지금은 누를 수 없다"고 말하는데, 전역 Space
+    // 단축키는 이 버튼을 거치지 않고 toggle()을 직접 부른다 — 버튼만
+    // 막고 단축키를 그대로 두면 그 말이 키보드에는 적용되지 않는다.
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+    await expect.element(page.getByRole('button', { name: '불러오는 중' })).toBeDisabled();
+
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    );
+
+    // toggle()이 불렸다면 bind:paused의 내부 이펙트가 다음 틱에 play()를
+    // 부른다(위 "Space가 재생을 토글한다" 테스트와 같은 지연). 그 지연을
+    // 넉넉히 기다려도 끝내 불리지 않아야 한다는 것을, 같은 vi.waitFor가
+    // 결국 타임아웃으로 거부하는 것으로 확인한다.
+    await expect(
+      vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1), { timeout: 300 })
+    ).rejects.toThrow();
+  });
+
+  it('재생 가능해지면 재생 버튼으로 돌아온다', async () => {
+    // '재생' 라벨만으로는 ready와 error를 구분할 수 없다 — 버튼은
+    // loadState==='loading'일 때만 다른 라벨('불러오는 중')을 쓰고, ready와
+    // error는 둘 다 '재생'으로 렌더링된다(오류는 옆의 별도 문구로만
+    // 드러난다). audio가 실제로 가리키는 /api/media/aaaa/mp3는 (테스트를
+    // 띄우는 dev 서버에서) 진짜로 요청되고, 얼마 뒤 진짜 404로 응답해
+    // 실제 error 이벤트가 도착한다 — 도착하면 onerror가 loadState를
+    // 'error'로 덮어써, retrying assertion(expect.element/vi.waitFor)으로
+    // 뜸을 들이면 canplay 처리 여부와 무관하게 결국 그 실제 오류를
+    // 관찰하고 실패한다(직접 재현해 확인함 — task-2-report.md 참고).
+    // 그래서 여기서는 뜸을 들이지 않는다 — tick()으로 Svelte의 반응형
+    // 플러시(마이크로태스크 한 번)만 정확히 기다린 뒤 바로 확인한다.
+    // 진짜 네트워크 응답은 실제 IPC·네트워크 스택을 거치므로 마이크로
+    // 태스크보다 훨씬 느려 이 시점엔 아직 도착할 수 없다 — canplay를
+    // 처리하지 않았다면(뮤테이션) 이 시점에도 여전히 '불러오는 중'이고,
+    // 처리했다면 이미 '재생'이다.
+    const button = () => document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+    audioEl().dispatchEvent(new Event('canplay'));
+    await tick();
+
+    expect(button().textContent?.trim()).toBe('재생');
+    expect(document.body.textContent).not.toContain('불러오지 못했습니다');
+  });
+
+  it('불러오기가 실패하면 실패했다고 보여준다', async () => {
+    // 지금은 <audio>에 error 핸들러가 아예 없어서, 파일을 못 읽어도
+    // 화면은 조용히 '재생' 버튼만 보여준다 — 눌러도 아무 일이 없다.
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+    audioEl().dispatchEvent(new Event('error'));
+
+    await expect.element(page.getByText('불러오지 못했습니다')).toBeInTheDocument();
+  });
+
+  it('실패 상태에서 버튼을 누르면 리소스를 다시 불러온다(다시 시도)', async () => {
+    // 기준: loadState가 다시 'loading'으로 바뀌는 것만으로는 부족하다
+    // — 실제로 리소스를 다시 받아오는지가 판정 기준이다(Fix round 2).
+    // audio.load()가 미디어 로드 알고리즘을 다시 돌리는 유일한 방법이라
+    // 실제로 불렸는지를 스파이로 직접 확인한다. 네트워크까지 진짜로
+    // 나가게 두면(=스파이에서 흉내내지 않으면) dev 서버로 실제 요청이
+    // 나가 이 테스트의 목적과 무관한 시간차가 생기므로 no-op으로 막는다.
+    const loadSpy = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+    audioEl().dispatchEvent(new Event('error'));
+    await expect.element(page.getByText('불러오지 못했습니다')).toBeInTheDocument();
+
+    // 라벨 자체가 '다시 시도'로 바뀌어 있어야 한다 — '재생'인 채로
+    // 두면(그런데 눌러도 리소스를 다시 안 받아오면) 라벨이 약속하는
+    // 동작과 실제 동작이 어긋난다.
+    await page.getByRole('button', { name: '다시 시도' }).click();
+
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('실패 상태에서는 스페이스도 버튼과 같이 다시 시도한다', async () => {
+    // Fix round 1에서 Space를 버튼과 같은 조건(로딩 중엔 막는다)으로
+    // 맞췄던 것과 같은 이유로, 오류 상태의 동작(다시 시도)도 버튼과
+    // 키보드가 같아야 한다 — 그러지 않으면 버튼을 고쳐도 키보드로는
+    // 여전히 이미 실패한 리소스에 play()만 다시 시도하는(고쳐지지 않는)
+    // 경로가 남는다.
+    const loadSpy = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+    audioEl().dispatchEvent(new Event('error'));
+    await expect.element(page.getByText('불러오지 못했습니다')).toBeInTheDocument();
+
+    document.body.dispatchEvent(
+      new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
+    );
+
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('실패 상태에서 다시 시도를 눌러도 스스로 재생을 시작하지 않는다', async () => {
+    // retry()는 리소스만 다시 불러올 뿐 재생을 요청하지 않는다 —
+    // 사용자가 요청하지 않은 자동 재생이 섞여 들어오면 안 된다.
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+    audioEl().dispatchEvent(new Event('error'));
+    await expect.element(page.getByRole('button', { name: '다시 시도' })).toBeInTheDocument();
+
+    await page.getByRole('button', { name: '다시 시도' }).click();
+
+    expect(playSpy).not.toHaveBeenCalled();
+  });
+
+  it('재생 중 실패했다가 다시 시도로 복구되면 재생 버튼이 실제 상태를 따라간다(일시정지에 박제되지 않는다)', async () => {
+    // load()를 no-op으로 막아 이 테스트가 진짜 네트워크 타이밍과 겨루지
+    // 않게 한다 — 오직 합성 이벤트만으로 상태를 결정한다.
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+    audioEl().dispatchEvent(new Event('canplay'));
+    await expect.element(page.getByRole('button', { name: '재생' })).toBeInTheDocument();
+
+    // "재생 중"이었다고 가정한다 — 위 Finding 1 테스트와 같은 방식으로
+    // 읽기 전용 paused 게터를 스텁하고 play 이벤트를 흉내낸다.
+    Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+    audioEl().dispatchEvent(new Event('play'));
+    await expect.element(page.getByRole('button', { name: '일시정지' })).toBeInTheDocument();
+
+    // 재생 중 실패한다.
+    audioEl().dispatchEvent(new Event('error'));
+    await expect.element(page.getByRole('button', { name: '다시 시도' })).toBeInTheDocument();
+
+    // 다시 시도 -> 실제 load()가 리소스를 다시 받아오면, 브라우저는
+    // "다른 녹음으로 전환" 때와 같은 abort 경로로 재생을 이벤트 없이
+    // 끊는다(paused가 이벤트 없이 true로 돌아간다). 뒤이어 canplay만
+    // 온다 — 이 흐름을 흉내낸다.
+    Object.defineProperty(audioEl(), 'paused', { get: () => true, configurable: true });
+    await page.getByRole('button', { name: '다시 시도' }).click();
+    audioEl().dispatchEvent(new Event('canplay'));
+
+    // pause 이벤트가 한 번도 없었는데도 '일시정지'에 박제되지 않고
+    // 실제 상태(멈춤)를 따라 '재생'으로 돌아와야 한다.
+    await expect.element(page.getByRole('button', { name: '재생' })).toBeInTheDocument();
+  });
+
+  it('다른 녹음으로 바꾸면 실패 표시가 남지 않는다', async () => {
+    const screen = render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+    audioEl().dispatchEvent(new Event('error'));
+    await expect.element(page.getByText('불러오지 못했습니다')).toBeInTheDocument();
+
+    await screen.rerender({ recording: rec({ id: 'bbbb', title: '정류장' }), formats: ['mp3'] });
+
+    expect(document.body.textContent).not.toContain('불러오지 못했습니다');
   });
 });
