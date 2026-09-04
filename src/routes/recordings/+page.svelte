@@ -355,7 +355,32 @@
     </div>
   {/if}
 
-  <ul class="space-y-1">
+  <!-- 열 정의를 여기 한 곳에 두고 헤더 줄과 각 행이 함께 참조한다.
+       행은 각각 독립된 그리드 컨테이너라, 내용에 따라 폭이 정해지는
+       트랙(auto·min-content·max-content·fit-content)을 쓰면 행마다
+       계산 결과가 달라져 열이 다시 어긋난다 — 특히 확장자 배지는
+       행마다 개수가 다르다. 그래서 전부 fr과 고정 rem으로만 적는다.
+       가변 열의 minmax(0, ...)에서 0 최소값을 빼면 긴 제목이 트랙을
+       밀어낸다. -->
+  <div class="overflow-x-auto" style="--row-cols: 2rem minmax(0,3fr) 11rem 5rem 9rem;">
+    <div class="min-w-[48rem]">
+      {#if shown.length}
+        <!-- 이 목록은 table이 아니라 ul/li라 이 줄은 셀과 의미적으로
+             연결되지 않는다. 각 셀은 이미 자기 내용을 읽을 수 있게
+             갖고 있으므로(제목 버튼, 날짜·길이 텍스트, 포맷 배지),
+             연결 없는 라벨이 따로 읽히지 않도록 장식으로 둔다. -->
+        <div data-testid="list-header" aria-hidden="true"
+          class="text-surface-500 grid items-center gap-3 p-3 text-sm"
+          style="grid-template-columns: var(--row-cols);">
+          <span>선택</span>
+          <span>제목</span>
+          <span>녹음일자</span>
+          <span>길이</span>
+          <span>저장된 확장자</span>
+        </div>
+      {/if}
+
+      <ul class="space-y-1">
     {#each shown as rec (rec.id)}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
@@ -368,7 +393,8 @@
            전용 편의로 남긴다. 체크박스·본문 컬럼(제목/설명/태그와 그
            편집 컨트롤)은 각자 onclick에서 stopPropagation해 이 클릭이
            거기까지 번지지 않게 막는다. -->
-      <li class="card hover:preset-tonal flex items-center gap-3 p-3"
+      <li class="card hover:preset-tonal grid items-center gap-3 p-3"
+        style="grid-template-columns: var(--row-cols);"
         class:preset-tonal-primary={selectedId === rec.id}
         onclick={() => (selectedId = rec.id)}>
         <input type="checkbox" class="checkbox"
@@ -383,7 +409,7 @@
              무관한 별개 동작이다. 이 div 자체를 새 상호작용 요소로 만드는
              게 아니라, 그 안의 실제 컨트롤(버튼·입력·TagInput)에게 이미
              있는 동작을 행 선택이 가리지 않게 전파만 끊는 것이다. -->
-        <div class="flex min-w-0 grow flex-col gap-1" onclick={(e) => e.stopPropagation()}>
+        <div class="flex min-w-0 flex-col gap-1" onclick={(e) => e.stopPropagation()}>
           {#if editingId === rec.id}
             <input class="input" value={rec.title}
               onblur={(e) => {
@@ -435,11 +461,11 @@
           {/if}
         </div>
 
-        <span class="text-surface-500 shrink-0 text-sm tabular-nums">
+        <span class="text-surface-500 text-sm tabular-nums">
           {rec.recordedAt.replace('T', ' ').slice(0, 16)}
         </span>
-        <span class="shrink-0 text-sm tabular-nums">{fmt(rec.durationSec)}</span>
-        <div class="flex shrink-0 gap-1">
+        <span class="text-sm tabular-nums">{fmt(rec.durationSec)}</span>
+        <div class="flex gap-1">
           {#each Object.keys(rec.files) as f (f)}
             <span class="badge preset-tonal text-xs uppercase">{f === 'original' ? rec.files[f].ext : f}</span>
           {/each}
@@ -450,7 +476,9 @@
         {recordings.length ? '조건에 맞는 녹음이 없습니다' : '아직 가져온 녹음이 없습니다'}
       </li>
     {/each}
-  </ul>
+      </ul>
+    </div>
+  </div>
 </div>
 
 <Player

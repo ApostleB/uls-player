@@ -761,3 +761,89 @@ describe('+page.svelte — 플레이어의 북마크 메모 편집(Task 16)', ()
     });
   });
 });
+
+describe('+page.svelte — 목록 테이블 헤더', () => {
+  /** 배지 개수가 서로 다른 세 행. 내용 의존 트랙이면 폭이 갈린다. */
+  function rowsWithDifferentBadgeCounts() {
+    return pageData([
+      rec({ id: '1', title: '레인', files: { original: { ext: 'qta', bytes: 100 } } }),
+      rec({
+        id: '2',
+        title: '정류장',
+        files: { original: { ext: 'qta', bytes: 100 }, mp3: { ext: 'mp3', bytes: 200 } }
+      }),
+      rec({
+        id: '3',
+        title: '새벽',
+        files: {
+          original: { ext: 'qta', bytes: 100 },
+          mp3: { ext: 'mp3', bytes: 200 },
+          wav: { ext: 'wav', bytes: 300 }
+        }
+      })
+    ]);
+  }
+
+  function header(): HTMLElement {
+    const el = document.querySelector('[data-testid="list-header"]');
+    if (!el) throw new Error('헤더 줄이 없다');
+    return el as HTMLElement;
+  }
+
+  function rows(): HTMLElement[] {
+    return Array.from(document.querySelectorAll('ul.space-y-1 > li')) as HTMLElement[];
+  }
+
+  it('다섯 열 이름을 보여준다', async () => {
+    render(Page, { data: rowsWithDifferentBadgeCounts() });
+
+    expect(header().textContent).toContain('선택');
+    expect(header().textContent).toContain('제목');
+    expect(header().textContent).toContain('녹음일자');
+    expect(header().textContent).toContain('길이');
+    expect(header().textContent).toContain('저장된 확장자');
+  });
+
+  it('헤더와 모든 행의 열 폭이 실제로 같다', async () => {
+    // 이게 이 기능의 본체다. "정렬됐다"를 눈이 아니라 계산된 값으로
+    // 확인한다 — getComputedStyle의 grid-template-columns는 사용된 픽셀
+    // 폭으로 해석돼 돌아오므로, 헤더와 행이 같은 문자열이면 같은 자리에
+    // 있다는 뜻이다. 배지 개수가 다른 행을 섞어 뒀으므로, 확장자 열이
+    // 내용 의존 트랙이면 행끼리 값이 갈려 여기서 걸린다.
+    render(Page, { data: rowsWithDifferentBadgeCounts() });
+
+    const expected = getComputedStyle(header()).gridTemplateColumns;
+    expect(expected).not.toBe('');
+    expect(expected).not.toBe('none');
+
+    for (const row of rows()) {
+      expect(getComputedStyle(row).gridTemplateColumns).toBe(expected);
+    }
+  });
+
+  it('열 정의에 내용 의존 트랙이 없다', async () => {
+    // 위 테스트는 지금 이 화면 폭에서 우연히 값이 맞아떨어질 수도 있다.
+    // 정의 자체에 내용 의존 트랙이 없다는 것까지 못박아, 폭이 달라져도
+    // 정렬이 유지되는 근거를 남긴다.
+    render(Page, { data: rowsWithDifferentBadgeCounts() });
+
+    const cols = getComputedStyle(header()).getPropertyValue('--row-cols');
+    expect(cols.trim()).not.toBe('');
+    expect(cols).not.toMatch(/\bauto\b|min-content|max-content|fit-content/);
+  });
+
+  it('보여줄 행이 없으면 헤더도 렌더하지 않는다', async () => {
+    // 아무것도 없는 위에 열 이름만 떠 있는 상태를 만들지 않는다.
+    render(Page, { data: pageData([]) });
+
+    expect(document.querySelector('[data-testid="list-header"]')).toBeNull();
+  });
+
+  it('빈 상태 카드는 열 정의를 쓰지 않고 전체 폭을 쓴다', async () => {
+    render(Page, { data: pageData([]) });
+
+    const emptyCard = rows()[0];
+    expect(emptyCard.textContent).toContain('아직 가져온 녹음이 없습니다');
+    expect(getComputedStyle(emptyCard).display).not.toBe('grid');
+  });
+});
