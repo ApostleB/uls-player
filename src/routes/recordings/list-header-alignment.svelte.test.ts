@@ -26,6 +26,7 @@
 import '../../app.css';
 
 import { describe, it, expect, vi } from 'vitest';
+import { page as browserPage } from 'vitest/browser';
 import { SvelteURL } from 'svelte/reactivity';
 import { render } from 'vitest-browser-svelte';
 import type { Recording } from '$lib/types';
@@ -156,6 +157,50 @@ describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {
           expect(Math.abs(actualRect.width - expectedRect.width)).toBeLessThanOrEqual(TOLERANCE_PX);
         }
       });
+    }
+  });
+
+  it('빈 상태 카드는 좁은 화면에서도 화면 안에 보인다', async () => {
+    // Final Review Fix — 빈 상태 카드가 열 정의(overflow-x-auto/
+    // min-w-[56rem]) 래퍼 밖에 있는지를 실제 배치로 잰다. 이 래퍼 안에
+    // 갇히면 카드는 DOM에 있고 메시지 텍스트도 존재하지만(text-center로
+    // 가운데 정렬된 채) 실제 화면 폭보다 훨씬 넓은 박스 한가운데로
+    // 밀려나 사용자 눈에는 안 보인다 — textContent 존재 확인만으로는
+    // 이 상태를 못 잡는다(그게 바로 이 결함이 새어나간 이유였다:
+    // page.svelte.test.ts의 '빈 상태 카드는 열 정의를 쓰지 않고 전체
+    // 폭을 쓴다'는 display !== 'grid'만 보고, 폭이 실제로 뷰포트
+    // 안에 들어오는지는 보지 않는다). 그래서 실제 뷰포트를 좁혀 두고
+    // getBoundingClientRect()로 카드가 문서 폭 안에 있는지를 잰다.
+    //
+    // 375px는 코디네이터가 실측한 회귀 재현 폭(896px 카드가 327px
+    // 스크롤 뷰포트 안에 갇혀 메시지가 x≈448 근처로 밀려나 화면
+    // 밖으로 나갔다)과 같다.
+    await browserPage.viewport(375, 600);
+
+    try {
+      render(Page, { data: pageData([]) });
+
+      const emptyCard = rows()[0];
+      const cardRect = emptyCard.getBoundingClientRect();
+      const viewportWidth = document.documentElement.clientWidth;
+
+      // 카드가 뷰포트보다 넓어서는 안 되고(전체 폭이지 56rem 고정폭이
+      // 아니다), 왼쪽 끝도 0 근처(문서 스크롤 없이 바로 보이는 자리)에
+      // 있어야 한다. 회귀 상태에서는 cardRect.width가 896px(56rem)로
+      // 뷰포트(약 327px, mx-auto max-w-6xl의 p-6 패딩을 뺀 값)보다
+      // 훨씬 넓어져 이 비교가 걸린다.
+      const TOLERANCE_PX = 1;
+      expect(cardRect.left).toBeGreaterThanOrEqual(-TOLERANCE_PX);
+      expect(cardRect.width).toBeLessThanOrEqual(viewportWidth + TOLERANCE_PX);
+      expect(cardRect.right).toBeLessThanOrEqual(viewportWidth + TOLERANCE_PX);
+    } finally {
+      // 이 파일의 다른 테스트(위 '헤더와 모든 행의 열 폭이 실제로
+      // 같다')가 이 좁은 뷰포트를 물려받지 않도록 브라우저 기본
+      // 뷰포트로 되돌린다 — 실행 순서에 이 테스트의 결과가 새지
+      // 않게 하려는 것으로, 그 테스트 자체는(상대 위치 비교라)
+      // 뷰포트 폭에 의존하지 않지만 명시적으로 원복해 우발적인
+      // 순서 의존을 만들지 않는다.
+      await browserPage.viewport(1280, 720);
     }
   });
 });

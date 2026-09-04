@@ -794,15 +794,12 @@ describe('+page.svelte — 목록 테이블 헤더', () => {
     return Array.from(document.querySelectorAll('ul.space-y-1 > li')) as HTMLElement[];
   }
 
-  it('다섯 열 이름을 보여준다', async () => {
-    render(Page, { data: rowsWithDifferentBadgeCounts() });
-
-    expect(header().textContent).toContain('선택');
-    expect(header().textContent).toContain('제목');
-    expect(header().textContent).toContain('녹음일자');
-    expect(header().textContent).toContain('길이');
-    expect(header().textContent).toContain('저장된 확장자');
-  });
+  // 여섯 열 이름을 순서대로 보여준다는 것은 아래 '여섯 번째 열
+  // 이름으로 태그를 보여준다' 테스트가 header().children을 배열로
+  // 통째 비교(toEqual)해 이미 못박고 있다 — 예전에는 태그 칸이
+  // 없어서 다섯 개를 toContain으로만 확인하는 별도 테스트가 있었지만,
+  // 그 다섯 라벨 존재 확인은 아래 여섯 라벨 순서 비교에 완전히
+  // 포함되므로 접었다.
 
   // '헤더와 모든 행의 열 폭이 실제로 같다'(실제 배치 좌표로 정렬을
   // 재는 테스트)는 이 파일이 아니라 list-header-alignment.svelte.test.ts에

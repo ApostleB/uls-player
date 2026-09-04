@@ -355,16 +355,20 @@
     </div>
   {/if}
 
-  <!-- 열 정의를 여기 한 곳에 두고 헤더 줄과 각 행이 함께 참조한다.
-       행은 각각 독립된 그리드 컨테이너라, 내용에 따라 폭이 정해지는
-       트랙(auto·min-content·max-content·fit-content)을 쓰면 행마다
-       계산 결과가 달라져 열이 다시 어긋난다 — 특히 확장자 배지는
-       행마다 개수가 다르다. 그래서 전부 fr과 고정 rem으로만 적는다.
-       가변 열의 minmax(0, ...)에서 0 최소값을 빼면 긴 제목이 트랙을
-       밀어낸다. -->
-  <div class="overflow-x-auto" style="--row-cols: 2rem minmax(0,3fr) minmax(0,2fr) 11rem 5rem 9rem;">
-    <div class="min-w-[56rem]">
-      {#if shown.length}
+  {#if shown.length}
+    <!-- 열 정의를 여기 한 곳에 두고 헤더 줄과 각 행이 함께 참조한다.
+         행은 각각 독립된 그리드 컨테이너라, 내용에 따라 폭이 정해지는
+         트랙(auto·min-content·max-content·fit-content)을 쓰면 행마다
+         계산 결과가 달라져 열이 다시 어긋난다 — 특히 확장자 배지는
+         행마다 개수가 다르다. 그래서 전부 fr과 고정 rem으로만 적는다.
+         가변 열의 minmax(0, ...)에서 0 최소값을 빼면 긴 제목이 트랙을
+         밀어낸다. 이 min-w 래퍼는 실제 열이 있는 행이 있을 때만
+         의미가 있어서 이 {#if} 안에 둔다 — 밖에 두면 아래 {:else}의
+         빈 상태 카드까지 56rem 밑으로 못 내려가게 가둬서, 좁은 화면에서
+         "전체 폭을 쓴다"(스펙 6절)는 카드가 오히려 옆으로 스크롤해야
+         보이는 회귀가 생긴다. -->
+    <div class="overflow-x-auto" style="--row-cols: 2rem minmax(0,3fr) minmax(0,2fr) 11rem 5rem 9rem;">
+      <div class="min-w-[56rem]">
         <!-- 이 목록은 table이 아니라 ul/li라 이 줄은 셀과 의미적으로
              연결되지 않는다. 각 셀은 이미 자기 내용을 읽을 수 있게
              갖고 있으므로(제목 버튼, 날짜·길이 텍스트, 포맷 배지),
@@ -379,114 +383,121 @@
           <span>길이</span>
           <span>저장된 확장자</span>
         </div>
-      {/if}
 
-      <ul class="space-y-1">
-    {#each shown as rec (rec.id)}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <!-- 행 아무 데나 눌러도 재생 대상으로 고른다(Task 15 시접, 스펙:
-           "행을 클릭하면 하단 플레이어에 로드"). li 자체를 새 키보드
-           타깃으로 만들 필요는 없다 — 제목이 이미 진짜 <button>이라
-           Tab·Enter로도 같은 동작에 닿고, li에 role="button"은
-           listitem이 가질 수 없는 role이라 줄 수도 없다. 그래서 li의
-           클릭은 그 외 빈 영역(날짜·길이·포맷 배지)만을 위한 포인터
-           전용 편의로 남긴다. 체크박스·제목/설명 칸·태그 칸은 각자
-           onclick에서 stopPropagation해 이 클릭이 거기까지 번지지
-           않게 막는다. -->
-      <li class="card hover:preset-tonal grid items-center gap-3 p-3"
-        style="grid-template-columns: var(--row-cols);"
-        class:preset-tonal-primary={selectedId === rec.id}
-        onclick={() => (selectedId = rec.id)}>
-        <input type="checkbox" class="checkbox"
-          checked={selectedIds.has(rec.id)}
-          onchange={() => toggle(rec.id)}
-          onclick={(e) => e.stopPropagation()} />
+        <ul class="space-y-1">
+          {#each shown as rec (rec.id)}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <!-- 행 아무 데나 눌러도 재생 대상으로 고른다(Task 15 시접, 스펙:
+                 "행을 클릭하면 하단 플레이어에 로드"). li 자체를 새 키보드
+                 타깃으로 만들 필요는 없다 — 제목이 이미 진짜 <button>이라
+                 Tab·Enter로도 같은 동작에 닿고, li에 role="button"은
+                 listitem이 가질 수 없는 role이라 줄 수도 없다. 그래서 li의
+                 클릭은 그 외 빈 영역(날짜·길이·포맷 배지)만을 위한 포인터
+                 전용 편의로 남긴다. 체크박스·제목/설명 칸·태그 칸은 각자
+                 onclick에서 stopPropagation해 이 클릭이 거기까지 번지지
+                 않게 막는다. -->
+            <li class="card hover:preset-tonal grid items-center gap-3 p-3"
+              style="grid-template-columns: var(--row-cols);"
+              class:preset-tonal-primary={selectedId === rec.id}
+              onclick={() => (selectedId = rec.id)}>
+              <input type="checkbox" class="checkbox"
+                checked={selectedIds.has(rec.id)}
+                onchange={() => toggle(rec.id)}
+                onclick={(e) => e.stopPropagation()} />
 
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <!-- 이 컬럼 안의 클릭은 행 선택으로 안 번진다 — 제목은 자기
-             onclick으로 이미 선택을 직접 처리하고(그래서 stopPropagation
-             이후에도 그대로 동작), 설명의 보기/편집 컨트롤은 선택과
-             무관한 별개 동작이다. 이 div 자체를 새 상호작용 요소로 만드는
-             게 아니라, 그 안의 실제 컨트롤(버튼·입력)에게 이미 있는
-             동작을 행 선택이 가리지 않게 전파만 끊는 것이다. -->
-        <div class="flex min-w-0 flex-col gap-1" onclick={(e) => e.stopPropagation()}>
-          {#if editingId === rec.id}
-            <input class="input" value={rec.title}
-              onblur={(e) => {
-                send({ op: 'patch', id: rec.id, title: e.currentTarget.value }).then(
-                  (ok) => {
-                    if (ok) editingId = null;
-                  }
-                );
-              }} />
-          {:else}
-            <!-- 재생 대상 선택(Task 15의 시접)과 제목 수정 진입을 같은
-                 버튼에 둔다 — 이미 포커스·키보드 조작이 되는 실제 버튼이라
-                 li 자체를 인위적으로 상호작용 요소로 만들 필요가 없다. -->
-            <button type="button" class="text-left"
-              onclick={() => (selectedId = rec.id)}
-              ondblclick={() => (editingId = rec.id)}>
-              {rec.title}
-            </button>
-          {/if}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <!-- 이 컬럼 안의 클릭은 행 선택으로 안 번진다 — 제목은 자기
+                   onclick으로 이미 선택을 직접 처리하고(그래서 stopPropagation
+                   이후에도 그대로 동작), 설명의 보기/편집 컨트롤은 선택과
+                   무관한 별개 동작이다. 이 div 자체를 새 상호작용 요소로 만드는
+                   게 아니라, 그 안의 실제 컨트롤(버튼·입력)에게 이미 있는
+                   동작을 행 선택이 가리지 않게 전파만 끊는 것이다. -->
+              <div class="flex min-w-0 flex-col gap-1" onclick={(e) => e.stopPropagation()}>
+                {#if editingId === rec.id}
+                  <input class="input" value={rec.title}
+                    onblur={(e) => {
+                      send({ op: 'patch', id: rec.id, title: e.currentTarget.value }).then(
+                        (ok) => {
+                          if (ok) editingId = null;
+                        }
+                      );
+                    }} />
+                {:else}
+                  <!-- 재생 대상 선택(Task 15의 시접)과 제목 수정 진입을 같은
+                       버튼에 둔다 — 이미 포커스·키보드 조작이 되는 실제 버튼이라
+                       li 자체를 인위적으로 상호작용 요소로 만들 필요가 없다. -->
+                  <button type="button" class="text-left"
+                    onclick={() => (selectedId = rec.id)}
+                    ondblclick={() => (editingId = rec.id)}>
+                    {rec.title}
+                  </button>
+                {/if}
 
-          {#if editingDescriptionId === rec.id}
-            <input class="input text-sm" value={rec.description} aria-label="설명 수정"
-              onblur={(e) => {
-                send({ op: 'patch', id: rec.id, description: e.currentTarget.value }).then(
-                  (ok) => {
-                    if (ok) editingDescriptionId = null;
-                  }
-                );
-              }} />
-          {:else}
-            <button type="button" class="text-surface-500 text-left text-sm"
-              ondblclick={() => (editingDescriptionId = rec.id)}>
-              {rec.description || '설명 없음'}
-            </button>
-          {/if}
-        </div>
+                {#if editingDescriptionId === rec.id}
+                  <input class="input text-sm" value={rec.description} aria-label="설명 수정"
+                    onblur={(e) => {
+                      send({ op: 'patch', id: rec.id, description: e.currentTarget.value }).then(
+                        (ok) => {
+                          if (ok) editingDescriptionId = null;
+                        }
+                      );
+                    }} />
+                {:else}
+                  <button type="button" class="text-surface-500 text-left text-sm"
+                    ondblclick={() => (editingDescriptionId = rec.id)}>
+                    {rec.description || '설명 없음'}
+                  </button>
+                {/if}
+              </div>
 
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <!-- 태그 편집(더블클릭 진입, TagInput, 완료 버튼)은 행 선택과
-             무관한 별개 동작이라, 여기서도 행 클릭이 번지지 않게 끊는다.
-             이 div를 새 상호작용 요소로 만드는 게 아니라, 안에 이미 있는
-             컨트롤의 동작을 행 선택이 가리지 않게 하는 것이다. -->
-        <div class="min-w-0" onclick={(e) => e.stopPropagation()}>
-          {#if editingTagsId === rec.id}
-            <div class="flex flex-wrap items-center gap-2">
-              <TagInput bind:tags={tagsDraft} suggestions={tagNames} />
-              <button type="button" class="btn btn-sm preset-filled"
-                onclick={() => commitTags(rec.id)}>완료</button>
-            </div>
-          {:else}
-            <button type="button" class="flex flex-wrap gap-1 text-left"
-              ondblclick={() => startEditTags(rec)}>
-              {#each rec.tags as t (t)}<span class="chip preset-tonal">{t}</span>{/each}
-              {#if !rec.tags.length}<span class="text-surface-500 text-sm">태그 없음</span>{/if}
-            </button>
-          {/if}
-        </div>
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <!-- 태그 편집(더블클릭 진입, TagInput, 완료 버튼)은 행 선택과
+                   무관한 별개 동작이라, 여기서도 행 클릭이 번지지 않게 끊는다.
+                   이 div를 새 상호작용 요소로 만드는 게 아니라, 안에 이미 있는
+                   컨트롤의 동작을 행 선택이 가리지 않게 하는 것이다. -->
+              <div class="min-w-0" onclick={(e) => e.stopPropagation()}>
+                {#if editingTagsId === rec.id}
+                  <div class="flex flex-wrap items-center gap-2">
+                    <TagInput bind:tags={tagsDraft} suggestions={tagNames} />
+                    <button type="button" class="btn btn-sm preset-filled"
+                      onclick={() => commitTags(rec.id)}>완료</button>
+                  </div>
+                {:else}
+                  <button type="button" class="flex flex-wrap gap-1 text-left"
+                    ondblclick={() => startEditTags(rec)}>
+                    {#each rec.tags as t (t)}<span class="chip preset-tonal">{t}</span>{/each}
+                    {#if !rec.tags.length}<span class="text-surface-500 text-sm">태그 없음</span>{/if}
+                  </button>
+                {/if}
+              </div>
 
-        <span class="text-surface-500 text-sm tabular-nums">
-          {rec.recordedAt.replace('T', ' ').slice(0, 16)}
-        </span>
-        <span class="text-sm tabular-nums">{fmt(rec.durationSec)}</span>
-        <div class="flex gap-1">
-          {#each Object.keys(rec.files) as f (f)}
-            <span class="badge preset-tonal text-xs uppercase">{f === 'original' ? rec.files[f].ext : f}</span>
+              <span class="text-surface-500 text-sm tabular-nums">
+                {rec.recordedAt.replace('T', ' ').slice(0, 16)}
+              </span>
+              <span class="text-sm tabular-nums">{fmt(rec.durationSec)}</span>
+              <div class="flex gap-1">
+                {#each Object.keys(rec.files) as f (f)}
+                  <span class="badge preset-tonal text-xs uppercase">{f === 'original' ? rec.files[f].ext : f}</span>
+                {/each}
+              </div>
+            </li>
           {/each}
-        </div>
-      </li>
-    {:else}
+        </ul>
+      </div>
+    </div>
+  {:else}
+    <!-- 빈 상태 카드는 열 정의(--row-cols)를 쓰지 않는다(스펙 6절:
+         "빈 상태 카드는 그리드 템플릿을 쓰지 않고 전체 폭을 쓴다") —
+         그래서 위 min-w-[56rem]/overflow-x-auto 래퍼 밖에 따로 둔다.
+         그 래퍼 안에 있었다면 실제 열이 하나도 없는데도 56rem 밑으로
+         못 내려가 좁은 화면에서 카드가 옆으로 밀려나 보였을 것이다. -->
+    <ul class="space-y-1">
       <li class="card preset-tonal p-8 text-center">
         {recordings.length ? '조건에 맞는 녹음이 없습니다' : '아직 가져온 녹음이 없습니다'}
       </li>
-    {/each}
-      </ul>
-    </div>
-  </div>
+    </ul>
+  {/if}
 </div>
 
 <Player
