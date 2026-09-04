@@ -265,7 +265,11 @@
     if (!recording) return;
 
     switch (e.key) {
-      case ' ': e.preventDefault(); toggle(); break;
+      // 로딩 중에는 재생 버튼이 disabled라 눌러도 소용없다는 뜻을
+      // 전달하는데, 이 단축키가 버튼을 거치지 않고 toggle()을 그대로
+      // 부르면 그 뜻이 키보드로는 지켜지지 않는다. 그래서 같은 조건으로
+      // 막는다.
+      case ' ': e.preventDefault(); if (loadState !== 'loading') toggle(); break;
       case 'ArrowLeft': e.preventDefault(); nudge(e.shiftKey ? -10 : -5); break;
       case 'ArrowRight': e.preventDefault(); nudge(e.shiftKey ? 10 : 5); break;
       case 'ArrowUp': e.preventDefault(); volume = Math.min(1, volume + 0.05); break;
