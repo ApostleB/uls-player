@@ -12,7 +12,8 @@
     withBookmarkNote,
     withoutBookmark,
     revertNoteIfUnchanged,
-    restoreIfAbsent
+    restoreIfAbsent,
+    formatTime as fmt
   } from '$lib/player';
   import type { LoopState } from '$lib/player';
   import { mediaFilePath, mediaFileExt } from '$lib/media';
@@ -252,11 +253,6 @@
       case 'm': case 'M': muted = !muted; break;
       case 'b': case 'B': addBookmark(); break;
     }
-  }
-
-  function fmt(sec: number): string {
-    const m = Math.floor(sec / 60);
-    return `${m}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
   }
 </script>
 

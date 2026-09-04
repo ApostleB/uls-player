@@ -50,3 +50,61 @@ describe('Waveform.svelte — 캔버스 클릭으로 탐색', () => {
     expect(ratio).toBeLessThanOrEqual(1);
   });
 });
+
+describe('Waveform.svelte — 호버 시 재생헤드와 시간', () => {
+  /** 캔버스의 실제 폭 안에서 비율 위치의 clientX를 만든다. */
+  function xAt(canvas: Element, ratio: number): number {
+    const r = canvas.getBoundingClientRect();
+    return r.left + r.width * ratio;
+  }
+
+  function canvasOf(): HTMLCanvasElement {
+    const c = document.querySelector('canvas');
+    if (!c) throw new Error('캔버스가 없다');
+    return c as HTMLCanvasElement;
+  }
+
+  it('파형 위에 커서를 올리면 그 지점의 시각을 보여준다', async () => {
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek: vi.fn() });
+
+    const c = canvasOf();
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, 0.5), bubbles: true, pointerId: 1 })
+    );
+
+    // 100초의 절반 → 0:50
+    await expect.element(page.getByText('0:50')).toBeInTheDocument();
+  });
+
+  it('커서가 파형을 벗어나면 표시가 사라진다', async () => {
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek: vi.fn() });
+
+    const c = canvasOf();
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, 0.5), bubbles: true, pointerId: 1 })
+    );
+    await expect.element(page.getByText('0:50')).toBeInTheDocument();
+
+    c.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, pointerId: 1 }));
+
+    // hoverRatio는 pointerleave 핸들러 안에서 동기적으로 null이 되지만,
+    // Svelte 5의 DOM 반영은 마이크로태스크로 미뤄진다(tick으로 확인함).
+    // 그래서 await 없는 document.body.textContent 검사는 반영 전 상태를
+    // 읽어 경쟁 상태로 깨진다 — 재시도하는 locator 단언으로 실제 DOM이
+    // 안정될 때까지 기다린다(고정 sleep이 아니라 관찰 가능한 조건 대기).
+    await expect.element(page.getByText('0:50')).not.toBeInTheDocument();
+  });
+
+  it('호버만으로는 onseek를 호출하지 않는다', async () => {
+    // 스크러빙 없음의 절반이다 — 올려놓기만 해도 소리가 튀면 안 된다.
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5, 0.5, 0.5], progress: 0, durationSec: 100, onseek });
+
+    const c = canvasOf();
+    c.dispatchEvent(
+      new PointerEvent('pointermove', { clientX: xAt(c, 0.5), bubbles: true, pointerId: 1 })
+    );
+
+    expect(onseek).not.toHaveBeenCalled();
+  });
+});

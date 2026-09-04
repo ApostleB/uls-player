@@ -22,6 +22,14 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   );
 }
 
+/** 재생 시간을 m:ss로. 잘못된 값은 0:00으로 떨어진다. */
+export function formatTime(sec: number): string {
+  const t = Number.isFinite(sec) && sec > 0 ? Math.floor(sec) : 0;
+  const m = Math.floor(t / 60);
+  const s = t % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 /** 파형 위 클릭 좌표를 0~1 진행률로 바꾼다. 캔버스 바깥 좌표도 0~1로 clamp한다. */
 export function ratioFromClick(clientX: number, rectLeft: number, rectWidth: number): number {
   if (rectWidth <= 0) return 0;

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  formatTime,
   ratioFromClick,
   barCount,
   bucketMax,
@@ -319,5 +320,25 @@ describe('restoreIfAbsent — 삭제 실패 시 compare-and-swap 되돌리기', 
   it('다시 추가하지 않는 경우 원본과 같은 배열 참조를 그대로 돌려준다', () => {
     const input = [bm('a')];
     expect(restoreIfAbsent(input, bm('a'))).toBe(input);
+  });
+});
+
+describe('formatTime — 재생 시간 표시', () => {
+  it('분:초로 보여주고 초는 두 자리로 채운다', () => {
+    expect(formatTime(0)).toBe('0:00');
+    expect(formatTime(5)).toBe('0:05');
+    expect(formatTime(65)).toBe('1:05');
+    expect(formatTime(600)).toBe('10:00');
+  });
+
+  it('소수점 이하는 버린다', () => {
+    expect(formatTime(65.9)).toBe('1:05');
+  });
+
+  it('음수나 NaN은 0:00으로 떨어진다', () => {
+    // 파형 위 좌표 계산이 어긋나도 "NaN:NaN" 같은 문자열이 화면에
+    // 뜨지는 않게 한다.
+    expect(formatTime(-3)).toBe('0:00');
+    expect(formatTime(Number.NaN)).toBe('0:00');
   });
 });

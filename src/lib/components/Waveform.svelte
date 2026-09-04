@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Bookmark } from '$lib/types';
-  import { barCount, bucketMax, ratioFromClick } from '$lib/player';
+  import { barCount, bucketMax, formatTime, ratioFromClick } from '$lib/player';
 
   let {
     peaks = [] as number[],
@@ -74,6 +74,21 @@
     onseek(ratioFromClick(e.clientX, r.left, r.width));
   }
 
+  /**
+   * 커서가 가리키는 위치(0~1). null이면 표시하지 않는다.
+   *
+   * 이 값은 progress와 별개다 — 드래그·호버 중에도 진행률 채움은
+   * 움직이지 않는다(스크러빙 없음). 소리는 원래 위치에서 계속 나는데
+   * 채움이 커서를 따라가면 소리와 화면이 어긋나 보인다.
+   */
+  let hoverRatio = $state<number | null>(null);
+
+  function ratioFromPointer(e: { clientX: number }): number {
+    if (!canvas) return 0;
+    const r = canvas.getBoundingClientRect();
+    return ratioFromClick(e.clientX, r.left, r.width);
+  }
+
   function seekToBookmark(b: Bookmark) {
     if (!durationSec) return;
     onseek(Math.min(1, Math.max(0, b.atSec / durationSec)));
@@ -86,6 +101,8 @@
     class="block h-16 w-full cursor-pointer"
     style="--wf-played: var(--color-primary-500); --wf-rest: var(--color-surface-400);"
     onclick={seekAt}
+    onpointermove={(e) => (hoverRatio = ratioFromPointer(e))}
+    onpointerleave={() => (hoverRatio = null)}
     role="slider"
     tabindex="0"
     aria-label="재생 위치"
@@ -93,6 +110,27 @@
     aria-valuemax={100}
     aria-valuenow={Math.round(progress * 100)}
   ></canvas>
+
+  {#if hoverRatio !== null}
+    <!-- 선과 말풍선 모두 포인터 이벤트를 받지 않는다 — 커서 바로 아래에
+         있어서, 받으면 자기 자신이 캔버스의 pointermove를 가려 표시가
+         깜빡인다. -->
+    <div
+      class="bg-surface-900-100 pointer-events-none absolute inset-y-0 w-px"
+      style="left: {hoverRatio * 100}%"
+    ></div>
+    <!-- 좌우 끝에서 말풍선이 잘리지 않게 안쪽으로 민다. -->
+    <div
+      class="bg-surface-900-100 text-surface-100-900 pointer-events-none absolute -top-6 rounded px-1 text-xs tabular-nums"
+      style="left: {hoverRatio * 100}%; transform: translateX({hoverRatio < 0.1
+        ? '0'
+        : hoverRatio > 0.9
+          ? '-100%'
+          : '-50%'})"
+    >
+      {formatTime(hoverRatio * durationSec)}
+    </div>
+  {/if}
 
   {#if !peaks.length}
     <!-- 파형이 아직 생성되지 않았을 때(waveform API 404)도 최소한의
