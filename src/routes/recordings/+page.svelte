@@ -391,9 +391,9 @@
            Tab·Enter로도 같은 동작에 닿고, li에 role="button"은
            listitem이 가질 수 없는 role이라 줄 수도 없다. 그래서 li의
            클릭은 그 외 빈 영역(날짜·길이·포맷 배지)만을 위한 포인터
-           전용 편의로 남긴다. 체크박스·본문 컬럼(제목/설명/태그와 그
-           편집 컨트롤)은 각자 onclick에서 stopPropagation해 이 클릭이
-           거기까지 번지지 않게 막는다. -->
+           전용 편의로 남긴다. 체크박스·제목/설명 칸·태그 칸은 각자
+           onclick에서 stopPropagation해 이 클릭이 거기까지 번지지
+           않게 막는다. -->
       <li class="card hover:preset-tonal grid items-center gap-3 p-3"
         style="grid-template-columns: var(--row-cols);"
         class:preset-tonal-primary={selectedId === rec.id}
@@ -406,10 +406,10 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <!-- 이 컬럼 안의 클릭은 행 선택으로 안 번진다 — 제목은 자기
              onclick으로 이미 선택을 직접 처리하고(그래서 stopPropagation
-             이후에도 그대로 동작), 설명·태그의 보기/편집 컨트롤은 선택과
+             이후에도 그대로 동작), 설명의 보기/편집 컨트롤은 선택과
              무관한 별개 동작이다. 이 div 자체를 새 상호작용 요소로 만드는
-             게 아니라, 그 안의 실제 컨트롤(버튼·입력·TagInput)에게 이미
-             있는 동작을 행 선택이 가리지 않게 전파만 끊는 것이다. -->
+             게 아니라, 그 안의 실제 컨트롤(버튼·입력)에게 이미 있는
+             동작을 행 선택이 가리지 않게 전파만 끊는 것이다. -->
         <div class="flex min-w-0 flex-col gap-1" onclick={(e) => e.stopPropagation()}>
           {#if editingId === rec.id}
             <input class="input" value={rec.title}
