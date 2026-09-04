@@ -224,3 +224,59 @@ describe('Waveform.svelte — 끌어서 점프', () => {
     expect(onseek).not.toHaveBeenCalled();
   });
 });
+
+describe('Waveform.svelte — 키보드 탐색', () => {
+  function keyOn(c: HTMLCanvasElement, key: string) {
+    c.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  }
+
+  it('오른쪽 화살표는 5초 앞으로 간다', async () => {
+    const onseek = vi.fn();
+    // 100초짜리에서 20초 지점(progress 0.2) → 25초 → 0.25
+    render(Waveform, { peaks: [0.5, 0.5], progress: 0.2, durationSec: 100, onseek });
+
+    keyOn(canvasOf(), 'ArrowRight');
+
+    expect(onseek).toHaveBeenCalledTimes(1);
+    expect(onseek.mock.calls[0][0]).toBeCloseTo(0.25, 3);
+  });
+
+  it('왼쪽 화살표는 5초 뒤로 간다', async () => {
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5], progress: 0.2, durationSec: 100, onseek });
+
+    keyOn(canvasOf(), 'ArrowLeft');
+
+    expect(onseek.mock.calls[0][0]).toBeCloseTo(0.15, 3);
+  });
+
+  it('Home은 처음으로, End는 끝으로 간다', async () => {
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5], progress: 0.4, durationSec: 100, onseek });
+
+    keyOn(canvasOf(), 'Home');
+    expect(onseek).toHaveBeenLastCalledWith(0);
+
+    keyOn(canvasOf(), 'End');
+    expect(onseek).toHaveBeenLastCalledWith(1);
+  });
+
+  it('시작과 끝을 넘어가지 않는다', async () => {
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5], progress: 0, durationSec: 100, onseek });
+
+    keyOn(canvasOf(), 'ArrowLeft');
+
+    expect(onseek).toHaveBeenCalledWith(0);
+  });
+
+  it('durationSec이 0이면 키를 눌러도 아무 일도 없다', async () => {
+    // 0으로 나눠 NaN을 onseek에 넘기면 재생기가 조용히 망가진다.
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5], progress: 0, durationSec: 0, onseek });
+
+    keyOn(canvasOf(), 'ArrowRight');
+
+    expect(onseek).not.toHaveBeenCalled();
+  });
+});

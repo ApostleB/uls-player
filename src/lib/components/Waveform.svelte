@@ -163,6 +163,27 @@
     if (!durationSec) return;
     onseek(Math.min(1, Math.max(0, b.atSec / durationSec)));
   }
+
+  /** 화살표 한 번에 움직이는 초. 한 문장을 건너뛰기엔 짧고, 위치를
+      더듬기엔 충분한 정도로 잡았다. */
+  const KEY_STEP_SEC = 5;
+
+  function seekByKey(key: string): boolean {
+    // 길이를 모르면 비율을 계산할 수 없다 — 0으로 나눠 NaN을 넘기면
+    // 재생기가 조용히 망가진다.
+    if (!durationSec) return false;
+
+    const at = progress * durationSec;
+    let next: number;
+    if (key === 'ArrowRight') next = at + KEY_STEP_SEC;
+    else if (key === 'ArrowLeft') next = at - KEY_STEP_SEC;
+    else if (key === 'Home') next = 0;
+    else if (key === 'End') next = durationSec;
+    else return false;
+
+    onseek(Math.min(1, Math.max(0, next / durationSec)));
+    return true;
+  }
 </script>
 
 <div class="relative">
@@ -178,7 +199,12 @@
       if (!dragging) hoverRatio = null;
     }}
     onkeydown={(e) => {
-      if (e.key === 'Escape') cancelDrag();
+      if (e.key === 'Escape') {
+        cancelDrag();
+        return;
+      }
+      // 화살표가 페이지를 스크롤하지 않게 막는다 — 처리한 키만.
+      if (seekByKey(e.key)) e.preventDefault();
     }}
     role="slider"
     tabindex="0"
