@@ -614,6 +614,48 @@ test.describe.serial('스캔부터 재생까지', () => {
     expect((await audioState(page)).volume).toBeCloseTo(0.95, 2);
   });
 
+  // Fix Round 1: Waveform 캔버스에 role=slider·tabindex가 있고 Player.svelte의
+  // svelte:window keydown이 이미 ArrowLeft/ArrowRight를 처리하고 있었다.
+  // 캔버스 자신도 화살표를 처리하게 만들면(첫 커밋이 그랬다) keydown이
+  // 캔버스 → window로 버블링되면서 두 핸들러가 같은 키 입력 한 번에
+  // 모두 반응해, 한 번 눌러도 두 번 움직이는 사고가 난다.
+  //
+  // 이 픽스처(QTA 2.28초)는 5초 스텝 하나만으로 이미 끝까지 clamp되므로,
+  // "몇 초 움직였나"로는 단일 반응(5초 → clamp)과 이중 반응(5초 →
+  // clamp → 다시 5초 → 여전히 같은 clamp)을 구별할 수 없다 — 두 경우
+  // 모두 도착 지점이 똑같다. 그래서 도착 값이 아니라 audio.currentTime
+  // setter가 몇 번 호출됐는지를 직접 센다: 핸들러가 하나만 반응하면
+  // 정확히 1번, 이중으로 반응하면 2번 호출된다.
+  test('파형(슬라이더)에 포커스가 있을 때 화살표를 누르면 정확히 한 핸들러만 반응한다', async ({ page }) => {
+    await selectRecording(page, QTA_TITLE);
+    expect((await audioState(page)).currentTime).toBeLessThan(0.1);
+
+    await page.locator('audio').evaluate((el) => {
+      const audio = el as HTMLAudioElement & { __setCount: number };
+      audio.__setCount = 0;
+      const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime')!;
+      Object.defineProperty(audio, 'currentTime', {
+        configurable: true,
+        get() {
+          return desc.get!.call(audio);
+        },
+        set(v: number) {
+          audio.__setCount += 1;
+          desc.set!.call(audio, v);
+        }
+      });
+    });
+
+    await page.getByRole('slider', { name: '재생 위치' }).focus();
+    await page.keyboard.press('ArrowRight');
+
+    const setCount = await page
+      .locator('audio')
+      .evaluate((el) => (el as HTMLAudioElement & { __setCount: number }).__setCount);
+
+    expect(setCount).toBe(1);
+  });
+
   test('파형을 클릭하면 그 위치로 재생 위치가 이동한다', async ({ page }) => {
     await selectRecording(page, QTA_TITLE);
     expect((await audioState(page)).currentTime).toBeLessThan(0.1);

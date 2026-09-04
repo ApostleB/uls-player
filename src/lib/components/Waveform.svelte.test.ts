@@ -230,26 +230,6 @@ describe('Waveform.svelte — 키보드 탐색', () => {
     c.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
   }
 
-  it('오른쪽 화살표는 5초 앞으로 간다', async () => {
-    const onseek = vi.fn();
-    // 100초짜리에서 20초 지점(progress 0.2) → 25초 → 0.25
-    render(Waveform, { peaks: [0.5, 0.5], progress: 0.2, durationSec: 100, onseek });
-
-    keyOn(canvasOf(), 'ArrowRight');
-
-    expect(onseek).toHaveBeenCalledTimes(1);
-    expect(onseek.mock.calls[0][0]).toBeCloseTo(0.25, 3);
-  });
-
-  it('왼쪽 화살표는 5초 뒤로 간다', async () => {
-    const onseek = vi.fn();
-    render(Waveform, { peaks: [0.5, 0.5], progress: 0.2, durationSec: 100, onseek });
-
-    keyOn(canvasOf(), 'ArrowLeft');
-
-    expect(onseek.mock.calls[0][0]).toBeCloseTo(0.15, 3);
-  });
-
   it('Home은 처음으로, End는 끝으로 간다', async () => {
     const onseek = vi.fn();
     render(Waveform, { peaks: [0.5, 0.5], progress: 0.4, durationSec: 100, onseek });
@@ -261,21 +241,30 @@ describe('Waveform.svelte — 키보드 탐색', () => {
     expect(onseek).toHaveBeenLastCalledWith(1);
   });
 
-  it('시작과 끝을 넘어가지 않는다', async () => {
-    const onseek = vi.fn();
-    render(Waveform, { peaks: [0.5, 0.5], progress: 0, durationSec: 100, onseek });
-
-    keyOn(canvasOf(), 'ArrowLeft');
-
-    expect(onseek).toHaveBeenCalledWith(0);
-  });
-
-  it('durationSec이 0이면 키를 눌러도 아무 일도 없다', async () => {
-    // 0으로 나눠 NaN을 onseek에 넘기면 재생기가 조용히 망가진다.
+  it('durationSec이 0이면 Home/End를 눌러도 아무 일도 없다', async () => {
+    // durationSec이 0이면 "끝"이 어디인지 알 수 없다 — 조용히 무시해야 한다.
     const onseek = vi.fn();
     render(Waveform, { peaks: [0.5, 0.5], progress: 0, durationSec: 0, onseek });
 
-    keyOn(canvasOf(), 'ArrowRight');
+    keyOn(canvasOf(), 'End');
+
+    expect(onseek).not.toHaveBeenCalled();
+  });
+
+  // Fix Round 1: 화살표는 이 컴포넌트가 처리하지 않는다 — Player.svelte의
+  // svelte:window keydown이 이미 ArrowLeft/ArrowRight를 ±5초(Shift면
+  // ±10초)로 처리하고, keydown은 캔버스에서 window까지 버블링된다. 여기서도
+  // 화살표를 처리하면 한 번 눌러도 두 번(캔버스 자신 + window로 버블링된
+  // 뒤 그 핸들러) 움직이는 사고가 난다 — 실제로 이 커밋 이전 버전에서
+  // 재현했다(fix round 1 참고). 이 테스트는 그 설계를 못박아, 나중에 누가
+  // "키보드 탐색이니 화살표도 여기서 처리해야지" 하고 되돌리는 걸 막는다.
+  it('화살표는 캔버스 자신이 처리하지 않는다(전역 단축키와 이중 반응 방지)', async () => {
+    const onseek = vi.fn();
+    render(Waveform, { peaks: [0.5, 0.5], progress: 0.2, durationSec: 100, onseek });
+
+    const c = canvasOf();
+    keyOn(c, 'ArrowRight');
+    keyOn(c, 'ArrowLeft');
 
     expect(onseek).not.toHaveBeenCalled();
   });

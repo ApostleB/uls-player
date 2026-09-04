@@ -164,24 +164,24 @@
     onseek(Math.min(1, Math.max(0, b.atSec / durationSec)));
   }
 
-  /** 화살표 한 번에 움직이는 초. 한 문장을 건너뛰기엔 짧고, 위치를
-      더듬기엔 충분한 정도로 잡았다. */
-  const KEY_STEP_SEC = 5;
-
+  /**
+   * Home/End만 여기서 처리한다 — ArrowLeft/ArrowRight는 일부러 손대지
+   * 않는다. Player.svelte의 svelte:window keydown이 이미 화살표를
+   * ±5초(Shift면 ±10초)로 처리하고 있고, keydown은 캔버스에서 window까지
+   * 그대로 버블링된다(우리가 stopPropagation을 하지 않으므로). 여기서
+   * 화살표까지 다시 처리하면 캔버스가 먼저 한 번 옮기고 나서 그 이벤트가
+   * window까지 올라가 또 한 번 옮겨, 한 번 눌러도 두 번 움직이는
+   * 사고(Fix Round 1에서 실제로 재현·확정)가 난다. Home/End는 그 전역
+   * 핸들러에 대응하는 case가 아예 없어 이 위험이 없다.
+   */
   function seekByKey(key: string): boolean {
-    // 길이를 모르면 비율을 계산할 수 없다 — 0으로 나눠 NaN을 넘기면
-    // 재생기가 조용히 망가진다.
+    // 길이를 모르면 "끝"이 어디인지 알 수 없다 — 조용히 무시한다.
     if (!durationSec) return false;
 
-    const at = progress * durationSec;
-    let next: number;
-    if (key === 'ArrowRight') next = at + KEY_STEP_SEC;
-    else if (key === 'ArrowLeft') next = at - KEY_STEP_SEC;
-    else if (key === 'Home') next = 0;
-    else if (key === 'End') next = durationSec;
+    if (key === 'Home') onseek(0);
+    else if (key === 'End') onseek(1);
     else return false;
 
-    onseek(Math.min(1, Math.max(0, next / durationSec)));
     return true;
   }
 </script>
@@ -203,7 +203,9 @@
         cancelDrag();
         return;
       }
-      // 화살표가 페이지를 스크롤하지 않게 막는다 — 처리한 키만.
+      // Home/End가 페이지를 스크롤하지 않게 막는다 — 처리한 키만
+      // (화살표는 일부러 여기서 처리하지 않으므로 그 preventDefault도
+      // Player.svelte의 전역 핸들러 몫이다).
       if (seekByKey(e.key)) e.preventDefault();
     }}
     role="slider"
