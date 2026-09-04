@@ -34,3 +34,6 @@ vite.config.ts.timestamp-*
 .superpowers/
 # Playwright
 test-results
+
+# 음성 메모 원본 사본 — 커밋하지 않는다
+/.inbox/
