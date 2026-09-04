@@ -747,3 +747,59 @@ describe('Player.svelte — 파형 마커가 북마크 목록과 같은 데이�
     await expect.element(page.getByRole('button', { name: /마커메모/ })).toBeInTheDocument();
   });
 });
+
+describe('Player.svelte — 불러오는 중과 실패', () => {
+  /** 렌더된 <audio>에 실제 미디어 이벤트를 흘려보낸다. */
+  function audioEl(): HTMLAudioElement {
+    const el = document.querySelector('audio');
+    if (!el) throw new Error('audio 엘리먼트가 없다');
+    return el as HTMLAudioElement;
+  }
+
+  it('불러오기가 시작되면 재생 버튼 자리에 진행 표시가 뜨고 누를 수 없다', async () => {
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+
+    await expect.element(page.getByRole('button', { name: '불러오는 중' })).toBeDisabled();
+  });
+
+  it('재생 가능해지면 재생 버튼으로 돌아온다', async () => {
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+    audioEl().dispatchEvent(new Event('canplay'));
+
+    await expect.element(page.getByRole('button', { name: '재생' })).toBeInTheDocument();
+  });
+
+  it('불러오기가 실패하면 실패했다고 보여준다', async () => {
+    // 지금은 <audio>에 error 핸들러가 아예 없어서, 파일을 못 읽어도
+    // 화면은 조용히 '재생' 버튼만 보여준다 — 눌러도 아무 일이 없다.
+    render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+    audioEl().dispatchEvent(new Event('error'));
+
+    await expect.element(page.getByText('불러오지 못했습니다')).toBeInTheDocument();
+  });
+
+  it('제목은 불러오는 동안에도 바로 보인다', async () => {
+    // 클릭이 먹었다는 것을 알리는 가장 빠른 신호다.
+    render(Player, { recording: rec({ id: 'aaaa', title: '레인' }), formats: ['mp3'] });
+
+    audioEl().dispatchEvent(new Event('loadstart'));
+
+    await expect.element(page.getByText('레인')).toBeInTheDocument();
+  });
+
+  it('다른 녹음으로 바꾸면 실패 표시가 남지 않는다', async () => {
+    const screen = render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+    audioEl().dispatchEvent(new Event('error'));
+    await expect.element(page.getByText('불러오지 못했습니다')).toBeInTheDocument();
+
+    await screen.rerender({ recording: rec({ id: 'bbbb', title: '정류장' }), formats: ['mp3'] });
+
+    expect(document.body.textContent).not.toContain('불러오지 못했습니다');
+  });
+});

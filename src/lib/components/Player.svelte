@@ -58,6 +58,15 @@
   let loopB = $state<number | null>(null);
 
   /**
+   * <audio>가 지금 어느 단계인지. 지금까지 이 컴포넌트는 로딩·오류
+   * 이벤트를 하나도 듣지 않아서, 파일을 못 읽어도 화면은 조용히 '재생'
+   * 버튼만 보여줬다 — 눌러도 아무 일이 없고 이유도 알 수 없다.
+   *
+   * 별도 타이머를 두지 않고 <audio>가 이미 내는 이벤트만 쓴다.
+   */
+  let loadState = $state<'idle' | 'loading' | 'ready' | 'error'>('idle');
+
+  /**
    * 북마크 편집·삭제에서 "다음 배열"을 계산할 때 베이스로 쓰는 로컬
    * 사본. recording.bookmarks(프롭)는 onbookmarkchange → +page.svelte의
    * send()가 보낸 PATCH 응답이 돌아와야 갱신된다 — 그 응답을 기다리는
@@ -144,6 +153,8 @@
       if (!rec.files[format]) format = available[0] ?? 'original';
       current = 0;
       loopA = loopB = null;
+      // 이전 녹음의 실패 표시가 새 녹음 위에 남지 않게 한다.
+      loadState = 'loading';
     });
 
     fetch(`/api/waveform/${id}`)
@@ -278,6 +289,9 @@
       bind:paused
       ontimeupdate={onTimeUpdate}
       onended={onEnded}
+      onloadstart={() => (loadState = 'loading')}
+      oncanplay={() => (loadState = 'ready')}
+      onerror={() => (loadState = 'error')}
     ></audio>
 
     <div class="mx-auto max-w-6xl space-y-2">
@@ -299,9 +313,16 @@
       <div class="flex flex-wrap items-center gap-2">
         <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(-10)}>−10초</button>
         <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(-5)}>−5초</button>
-        <button type="button" class="btn preset-filled-primary-500" onclick={toggle}>
-          {playing ? '일시정지' : '재생'}
+        <!-- 상태를 재생 버튼 자리에 둔다 — 사용자가 이미 보고 있는 곳이고,
+             "지금은 누를 수 없다"까지 같은 자리에서 전달된다. -->
+        <button type="button" class="btn preset-filled-primary-500"
+          disabled={loadState === 'loading'}
+          onclick={toggle}>
+          {loadState === 'loading' ? '불러오는 중' : playing ? '일시정지' : '재생'}
         </button>
+        {#if loadState === 'error'}
+          <span class="text-error-500 text-sm">불러오지 못했습니다</span>
+        {/if}
         <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(5)}>+5초</button>
         <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(10)}>+10초</button>
 
