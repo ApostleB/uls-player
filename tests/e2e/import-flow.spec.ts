@@ -68,14 +68,21 @@ async function selectRecording(page: Page, title: string, options: { pause?: boo
   // waitForTimeout(200) 뒤 currentTime<0.1을 기대하는데, 자동재생이 그
   // 200ms 동안 실제로 재생을 진행시켜 실패한다). 자동재생 자체를
   // 검증하는 테스트만 { pause: false }로 이 헬퍼를 불러 그 상태를 그대로
-  // 관찰하고, 나머지는 기본값으로 곧바로 멈춰 예전과 같은 정지된 기준선
-  // (currentTime=0, '재생' 버튼)으로 돌아간다 — Space로 멈춘다(실제
-  // 사용자가 쓰는 것과 같은 경로이자, 이 파일의 다른 곳들과 같은 방식으로
-  // bind:paused를 거쳐서만 상태를 바꾼다).
+  // 관찰하고, 나머지는 기본값으로 Space를 눌러 멈춘다(실제 사용자가 쓰는
+  // 것과 같은 경로이자, 이 파일의 다른 곳들과 같은 방식으로 bind:paused를
+  // 거쳐서만 상태를 바꾼다). 다만 Space를 누르는 순간까지도 재생은 계속
+  // 진행돼 있으므로 currentTime은 0이 아니다 — 멈추는 것만으로는 "예전과
+  // 같은 정지된 기준선(currentTime=0)"이 되지 않는다. 이 헬퍼를 부르는
+  // 12곳이 currentTime<0.1 여유를 가정하므로, Space로 멈춘 뒤
+  // currentTime을 명시적으로 0으로 되돌려 결정적인 기준선을 만든다(실측:
+  // 이 마진을 0.154초 초과로 깬 실패가 실제로 관찰됐다).
   if (pause) {
     await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
     await page.keyboard.press('Space');
     await expect(page.getByRole('button', { name: '재생' })).toBeVisible();
+    await page.locator('audio').evaluate((el) => {
+      (el as HTMLAudioElement).currentTime = 0;
+    });
   }
 }
 
@@ -581,6 +588,45 @@ test.describe.serial('스캔부터 재생까지', () => {
     await page.keyboard.press('m');
     expect((await audioState(page)).muted).toBe(false);
     await expect(page.getByRole('button', { name: '음소거' })).toBeVisible();
+  });
+
+  test('재생 중인 행에서 다른 행을 클릭하면 새 행이 즉시 재생된다', async ({ page }) => {
+    // Player.svelte의 `paused = true; paused = false;` 이중 대입은 정확히
+    // 이 경우 — 이미 재생 중이던 행에서 다른 행으로 넘어가는 것 — 를
+    // 위해 존재한다(그 위 주석·task-3-report.md §1 참고). 단위 테스트는
+    // play()를 목으로 막고 브라우저의 abort를 흉내내는 반면, 여기서는
+    // 진짜 오디오 파일 두 개로 실제 행→행 전환을 구동해 새 행이 단순히
+    // "선택"만 되는 게 아니라 실제로 재생되는지까지 확인한다.
+    await selectRecording(page, QTA_TITLE, { pause: false });
+    await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
+    await expect
+      .poll(async () => (await audioState(page)).currentTime, { timeout: 3_000 })
+      .toBeGreaterThan(0.05);
+
+    const srcBefore = await page.locator('audio').getAttribute('src');
+    const idBefore = srcBefore?.match(/\/api\/media\/([^/]+)\//)?.[1];
+    expect(idBefore).toBeTruthy();
+
+    const waveform = page.waitForResponse(
+      (res) => res.url().includes('/api/waveform/') && res.request().method() === 'GET'
+    );
+    await page.getByRole('button', { name: M4A_TITLE, exact: true }).click();
+    const waveformRes = await waveform;
+    const idAfter = waveformRes.url().match(/\/api\/waveform\/([^/?]+)/)?.[1];
+    expect(idAfter).toBeTruthy();
+    expect(idAfter).not.toBe(idBefore);
+
+    // 행 B의 <audio> src가 실제로 idAfter를 가리키는지(=재생기가 진짜로
+    // 다른 녹음으로 넘어갔는지), 그리고 단순히 "선택됨"으로 보이는 게
+    // 아니라 실제로 재생 중인지(paused=false, currentTime이 실제로
+    // 진행됨)를 둘 다 확인한다 — 이게 바로 이중 대입이 지키는 계약이다.
+    const srcAfter = await page.locator('audio').getAttribute('src');
+    expect(srcAfter).toContain(`/api/media/${idAfter}/`);
+    await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
+    expect((await audioState(page)).paused).toBe(false);
+    await expect
+      .poll(async () => (await audioState(page)).currentTime, { timeout: 3_000 })
+      .toBeGreaterThan(0.05);
   });
 
   test('방향키로 재생 위치와 볼륨을 조절한다', async ({ page }) => {
