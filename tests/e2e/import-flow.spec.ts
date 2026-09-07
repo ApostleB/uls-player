@@ -340,6 +340,13 @@ test.describe.serial('스캔부터 재생까지', () => {
   // 여전히 no-op이라 못 고친다 — 대신 네이티브 scrollIntoView로
   // 강제로 뷰포트 중앙까지 끌어올려 Player가 뜬 뒤에도 안전한
   // 위치를 확보한다). 단언은 그대로 두고 상호작용 대상만 옮긴다.
+  //
+  // 이건 테스트 전용 편법이 아니라 실사용자도 그대로 겪는 앱 버그다 — 두 번의
+  // 물리 클릭도 같은 좌표를 다시 겨냥하지 않고, Player 마운트는 사람의
+  // 더블클릭 간격보다 먼저 끝난다. scrollIntoView에는 이걸 대신할 사용자
+  // 조작이 없어 테스트가 이 경로 자체를 피해가는 것뿐이다 — 잊힌 편법이
+  // 아니라 추적 중인 결함이다. 자세한 내용과 후보 해결 방향은
+  // docs/known-issues.md 참고.
   test('설명 인라인 편집이 blur로 저장되고 새로고침 후에도 남는다', async ({ page }) => {
     await page.goto('/recordings');
     const row = rowFor(page, QTA_TITLE);
