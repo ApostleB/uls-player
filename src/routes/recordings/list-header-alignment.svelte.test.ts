@@ -75,6 +75,12 @@ function pageData(recordings: Recording[]) {
   return { recordings, tags: [], formats: ['mp3', 'wav'], mediaDir: '' };
 }
 
+// page.svelte.test.ts의 같은 조치와 동일하다(주석은 그쪽 참고) — Task 3부터
+// 행을 선택하면 Player 마운트만으로 자동재생이 걸리는데, 이 파일은 배치
+// 측정이 목적이라 재생 자체와 무관하다. 존재하지 않는 가짜 id의 진짜
+// play()를 그대로 두면 처리되지 않은 프라미스 거부가 생긴다.
+HTMLMediaElement.prototype.play = () => Promise.resolve();
+
 describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {
   /** 배지 개수가 서로 다른 세 행. 내용 의존 트랙이면 폭이 갈린다. */
   function rowsWithDifferentBadgeCounts() {

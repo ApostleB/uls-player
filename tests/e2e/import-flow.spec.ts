@@ -38,7 +38,8 @@ const M4A_TITLE_FROM_FILE_META = '화양동 16 2';
 
 let srcDir: string;
 
-async function selectRecording(page: Page, title: string) {
+async function selectRecording(page: Page, title: string, options: { pause?: boolean } = {}) {
+  const { pause = true } = options;
   await page.goto('/recordings');
   const waveform = page.waitForResponse(
     (res) => res.url().includes('/api/waveform/') && res.request().method() === 'GET'
@@ -58,6 +59,24 @@ async function selectRecording(page: Page, title: string) {
   // 대신 쓴다 — onclick도 없고 포커스도 못 받는 순수 장식용 div라, 클릭해도
   // 아무 부작용 없이 이전 포커스만 날아간다.
   await page.getByTestId('list-header').click();
+
+  // Task 3부터 행을 클릭하면(=듣겠다는 뜻) 자동재생이 걸린다. 이 헬퍼를
+  // 쓰는 테스트 대부분은 재생 상태·위치와 무관한데(드래그, 포맷 전환,
+  // 북마크, 파형 클릭 등), 실제 오디오가 실제로 흘러가면 currentTime이
+  // 계속 움직여 "아직 처음 위치"라고 가정한 기존 단언들이 시간차에 따라
+  // 깨진다(실측: "오른쪽 버튼으로 누르고 끌고 놓아도..." 테스트가
+  // waitForTimeout(200) 뒤 currentTime<0.1을 기대하는데, 자동재생이 그
+  // 200ms 동안 실제로 재생을 진행시켜 실패한다). 자동재생 자체를
+  // 검증하는 테스트만 { pause: false }로 이 헬퍼를 불러 그 상태를 그대로
+  // 관찰하고, 나머지는 기본값으로 곧바로 멈춰 예전과 같은 정지된 기준선
+  // (currentTime=0, '재생' 버튼)으로 돌아간다 — Space로 멈춘다(실제
+  // 사용자가 쓰는 것과 같은 경로이자, 이 파일의 다른 곳들과 같은 방식으로
+  // bind:paused를 거쳐서만 상태를 바꾼다).
+  if (pause) {
+    await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
+    await page.keyboard.press('Space');
+    await expect(page.getByRole('button', { name: '재생' })).toBeVisible();
+  }
 }
 
 function rowFor(page: Page, title: string) {
@@ -493,10 +512,13 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('행을 클릭하면 재생기가 뜨고 포맷 버튼 세 개가 보인다', async ({ page }) => {
-    await selectRecording(page, QTA_TITLE);
+    await selectRecording(page, QTA_TITLE, { pause: false });
 
+    // Task 3부터 행을 클릭하면(=듣겠다는 뜻) 자동재생이 걸린다 — 예전엔
+    // 여기서 '재생'(멈춤) 버튼을 기대했지만, no-auto-play 결정이
+    // 뒤집혔으므로 이 시점엔 이미 재생 중이어야 한다.
     await expect(page.locator('audio')).toBeAttached();
-    await expect(page.getByRole('button', { name: '재생' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
     await expect(page.getByRole('slider', { name: '재생 위치' })).toBeVisible();
 
     // exact: true — FilterBar의 확장자 칩(Task 4)이 붙은 뒤로 접두사가 같은
@@ -508,7 +530,13 @@ test.describe.serial('스캔부터 재생까지', () => {
   });
 
   test('입력 필드에 포커스가 있으면 재생 단축키가 무시된다', async ({ page }) => {
-    await selectRecording(page, QTA_TITLE);
+    await selectRecording(page, QTA_TITLE, { pause: false });
+
+    // Task 3부터 행을 클릭하면 자동재생이 걸린다 — 이 테스트가 보려는
+    // 것은 검색창에 포커스가 있을 때 Space가 재생 상태를 건드리지
+    // 않는다는 것이지, 처음부터 멈춰 있어야 한다는 것이 아니다. 자동
+    // 재생이 자리잡은(이미 재생 중인) 상태를 기준선으로 잡는다.
+    await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
 
     const search = page.getByPlaceholder('검색어');
     await search.click();
@@ -516,14 +544,15 @@ test.describe.serial('스캔부터 재생까지', () => {
 
     // Space가 재생을 토글하지 않고, 대신 평범하게 입력 필드에 공백 한 글자로 들어간다.
     await expect(search).toHaveValue(' ');
-    await expect(page.getByRole('button', { name: '재생' })).toBeVisible();
-    expect((await audioState(page)).paused).toBe(true);
+    await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
+    expect((await audioState(page)).paused).toBe(false);
   });
 
   test('스페이스로 재생/일시정지, M으로 음소거를 전환한다', async ({ page }) => {
-    await selectRecording(page, QTA_TITLE);
+    await selectRecording(page, QTA_TITLE, { pause: false });
 
-    await page.keyboard.press('Space');
+    // Task 3부터 행을 클릭하면 자동재생이 걸린다 — 여기서부터 이미
+    // 재생 중이다(예전에는 멈춰 있었다).
     await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
     expect((await audioState(page)).paused).toBe(false);
 
@@ -535,9 +564,15 @@ test.describe.serial('스캔부터 재생까지', () => {
       .poll(async () => (await audioState(page)).currentTime, { timeout: 3_000 })
       .toBeGreaterThan(0.05);
 
+    // 자동재생 중이므로 첫 Space는 멈춘다(예전 순서와 반대).
     await page.keyboard.press('Space');
     await expect(page.getByRole('button', { name: '재생' })).toBeVisible();
     expect((await audioState(page)).paused).toBe(true);
+
+    // 두 번째 Space는 다시 재생한다.
+    await page.keyboard.press('Space');
+    await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
+    expect((await audioState(page)).paused).toBe(false);
 
     await page.keyboard.press('m');
     expect((await audioState(page)).muted).toBe(true);

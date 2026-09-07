@@ -67,6 +67,20 @@ function setSearchParams(qs: string) {
   mockUrl.search = qs;
 }
 
+/**
+ * Task 3부터 행을 클릭해 Player가 뜨면 마운트만으로 자동재생을 건다
+ * (Player.svelte의 lastId 이펙트 참고). 이 파일 대부분의 테스트는 행
+ * 클릭·인라인 편집·필터처럼 재생 자체와 무관한데, 존재하지 않는 가짜
+ * id의 진짜 play()를 그대로 두면 매번 처리되지 않은 프라미스 거부가
+ * 생긴다 — bind:paused(node_modules/svelte 내부 구현)가 실패한 play()를
+ * 자기 쪽 상태만 되돌리고 나서 에러를 다시 던지기 때문이다(실측:
+ * task-3-report.md, src/lib/components/Player.svelte.test.ts의 같은
+ * 조치 참고). vi.spyOn이 아니라 프로토타입 자체를 안전한 기본값으로
+ * 바꿔둔다 — vi.spyOn으로 만든 목만 걷어내는 정리 루틴에 의존하지 않고,
+ * 이 파일의 모든 테스트에 항상 적용되게 한다.
+ */
+HTMLMediaElement.prototype.play = () => Promise.resolve();
+
 function rec(over: Partial<Recording> & { id: string }): Recording {
   return {
     title: '레인',
