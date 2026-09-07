@@ -39,6 +39,11 @@ describe('recordingExtensions', () => {
     const corrupted = rec('6', { original: { ext: 'qta', bytes: 1 }, mp3: null as any, wav: { bytes: 1 } });
     expect(recordingExtensions(corrupted).sort()).toEqual(['qta', 'wav']);
   });
+
+  it('포맷 항목이 객체가 아니면(문자열 등) 건너뛴다', () => {
+    const bogus = rec('7', { original: { ext: 'qta', bytes: 1 }, mp3: 'oops' as any, wav: { bytes: 1 } });
+    expect(recordingExtensions(bogus).sort()).toEqual(['qta', 'wav']);
+  });
 });
 
 describe('extensionCounts', () => {
