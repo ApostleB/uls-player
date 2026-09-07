@@ -36,10 +36,19 @@ export interface RecordingsFile {
 
 export type TagMode = 'and' | 'or';
 
+export type SearchScope = 'all' | 'title' | 'description' | 'tags';
+
 export interface Filter {
   q: string;
+  /** 검색어를 어디에 맞춰볼지. 'all'은 제목·설명·태그를 함께 본다. */
+  scope: SearchScope;
   tags: string[];
   tagMode: TagMode;
+  /**
+   * 원본 확장자와 변환 포맷 이름이 섞여 들어온다. 여럿이면 AND —
+   * 모두 가진 녹음만 통과한다.
+   */
+  ext: string[];
   /** YYYY-MM-DD, 포함 */
   from: string;
   /** YYYY-MM-DD, 포함 */

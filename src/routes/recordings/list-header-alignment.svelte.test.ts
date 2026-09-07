@@ -69,7 +69,10 @@ function rec(over: Partial<Recording> & { id: string }): Recording {
 }
 
 function pageData(recordings: Recording[]) {
-  return { recordings, tags: [], formats: ['mp3', 'wav'] };
+  // mediaDir는 load가 실제로 내려보내는 값이라 타입상 필수다. 빈
+  // 문자열이면 Player가 파일 경로 줄을 렌더하지 않으므로 이 파일이
+  // 재는 배치는 그대로다.
+  return { recordings, tags: [], formats: ['mp3', 'wav'], mediaDir: '' };
 }
 
 describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {
@@ -202,5 +205,90 @@ describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {
       // 순서 의존을 만들지 않는다.
       await browserPage.viewport(1280, 720);
     }
+  });
+
+  it('플레이어가 뜬 채로 목록을 끝까지 스크롤해도 마지막 행이 그 밑에 깔리지 않는다', async () => {
+    // 회귀 대상: 이 파일 위쪽 컨테이너(`+page.svelte`)의 pb-*가 예약해
+    // 두는 여백이 Player.svelte(`fixed inset-x-0 bottom-0`)의 실제 렌더링
+    // 높이보다 작으면, 목록을 끝까지 내렸을 때 마지막 행의 아랫부분이
+    // 고정 플레이어 밑에 조용히 깔린다 — 그 위를 눌러도 행이 아니라
+    // 플레이어가 클릭을 가로챈다. 사전 존재 버그(task-6-report.md 4절):
+    // 실측 Player 높이 193px(북마크 없음) vs 당시 pb-40 = 160px.
+    //
+    // Player는 fixed라 문서 흐름에서 완전히 빠져 있다. 그래서 "목록을
+    // 끝까지 스크롤"했을 때 마지막 행의 뷰포트 기준 아랫변은 정확히
+    // (뷰포트 높이 − pb)에 온다 — 위 컨테이너의 마지막 자식이 그 행이고,
+    // pb는 그 뒤에 남는 유일한 여백이라서다. 이 부등식(Player 높이 >
+    // pb ⇔ 겹침)은 목록 전체 길이와 무관하게 성립하므로, 실제로
+    // 스크롤 가능한 만큼(뷰포트보다 큰) 더미 행을 채우고 진짜로 끝까지
+    // 스크롤해 그 조건을 있는 그대로 재현한다.
+    //
+    // Player는 파형·전송 버튼 말고도 파일 경로 줄(mediaDir가 있을 때)과
+    // 북마크 목록(있을 때만 렌더)에 따라 키가 달라진다 — 북마크가 여러
+    // 개면 칩 목록이 새 줄로 넘어가 그만큼 더 커진다(이번 태스크의 실측:
+    // 0개 193px, 여러 개(한 줄) 249px, 8개(두 줄) 301px, 15개(세 줄) 353px).
+    // 그래서 이 테스트는 파일 경로가 보이고 북마크가 여러 개(6개) 붙은,
+    // 실제로 더 키가 큰 쪽을 골라 잰다 — 기본 상태(북마크 0개)만 재는
+    // 것보다 더 강한 핀이다.
+    const bookmarks = Array.from({ length: 6 }, (_, i) => ({
+      id: `bm-${i}`,
+      atSec: i * 3,
+      endSec: null,
+      note: `메모${i + 1}`
+    }));
+
+    const recordings = [
+      // 목록이 뷰포트(1280×720)보다 확실히 길어야 "끝까지 스크롤"이
+      // 의미가 있다 — 그래야 마지막 행이 스크롤 전에는 화면 중간에
+      // 있다가, 끝까지 내렸을 때 비로소 문서 맨 아래 근처로 온다.
+      ...Array.from({ length: 12 }, (_, i) => rec({ id: `filler-${i}`, title: `더미 ${i}` })),
+      rec({
+        id: 'target',
+        title: '마지막 행',
+        files: {
+          original: { ext: 'qta', bytes: 100 },
+          mp3: { ext: 'mp3', bytes: 200 },
+          wav: { ext: 'wav', bytes: 300 }
+        },
+        bookmarks
+      })
+    ];
+
+    // 행을 선택하면 Player가 떠서 파형을 /api/waveform/:id로 GET한다
+    // (page.svelte.test.ts와 같은 이유의 스텁). 이 테스트가 재는 배치
+    // (파일 경로 줄·북마크 목록)는 recording prop에서 바로 오는 값이라
+    // 이 응답 내용과는 무관하다 — 그래서 빈 배열이면 충분하다.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(
+        async () =>
+          new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+      )
+    );
+
+    // pageData()의 mediaDir: ''는 파일 경로 줄을 일부러 꺼 둔 값이다(그쪽
+    // 파일 상단 주석 참고) — 이 테스트는 그 줄이 켜진 실제 배치를 재야
+    // 하므로 여기서만 채워 넣는다.
+    const { getByRole } = render(Page, {
+      data: { ...pageData(recordings), mediaDir: '/media' }
+    });
+
+    await getByRole('button', { name: '마지막 행' }).click();
+
+    const player = document.querySelector('.fixed.inset-x-0.bottom-0');
+    if (!player) throw new Error('플레이어가 뜨지 않았다');
+
+    window.scrollTo(0, document.documentElement.scrollHeight);
+
+    const rowEls = rows();
+    const lastRow = rowEls[rowEls.length - 1];
+    const rowRect = lastRow.getBoundingClientRect();
+    const playerRect = (player as HTMLElement).getBoundingClientRect();
+
+    // 마지막 행의 아랫변이 플레이어의 윗변보다 아래로 내려가면(=겹치면)
+    // 회귀. TOLERANCE_PX는 이 파일의 다른 테스트와 같은 이유(서브픽셀
+    // 레이아웃)로 둔다.
+    const TOLERANCE_PX = 1;
+    expect(rowRect.bottom).toBeLessThanOrEqual(playerRect.top + TOLERANCE_PX);
   });
 });

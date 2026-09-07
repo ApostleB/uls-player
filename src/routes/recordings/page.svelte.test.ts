@@ -28,7 +28,7 @@ vi.mock('$app/navigation', () => ({
 }));
 
 // 화면은 page.url.searchParams를 $effect 안에서 읽는다 — 외부에서 URL이
-// 바뀌면(메뉴바 검색 등) 그 이펙트가 다시 돌아야 하므로, 단순한 고정
+// 바뀌면(링크 진입·뒤로 가기) 그 이펙트가 다시 돌아야 하므로, 단순한 고정
 // 객체가 아니라 svelte/reactivity의 SvelteURL로 진짜 $app/state의 반응성을
 // 재현한다. setSearchParams()가 이 URL을 바꿔 "화면 밖에서 URL이 바뀌는"
 // 상황을 흉내낸다.
@@ -110,7 +110,11 @@ function baseData() {
       rec({ id: '2', title: '정류장', tags: [] })
     ],
     tags: [{ tag: '데모', count: 1 }],
-    formats: ['mp3', 'wav']
+    formats: ['mp3', 'wav'],
+    // mediaDir는 load가 실제로 내려보내는 값이라 타입상 필수다. 빈
+    // 문자열이면 Player가 파일 경로 줄을 렌더하지 않으므로(그쪽
+    // filePath 파생 참고) 이 테스트들이 보는 화면은 그대로다.
+    mediaDir: ''
   };
 }
 
@@ -125,7 +129,11 @@ function twoRowDataWithDistinctDurations() {
       rec({ id: '2', title: '정류장', tags: [], durationSec: 200 })
     ],
     tags: [{ tag: '데모', count: 1 }],
-    formats: ['mp3', 'wav']
+    formats: ['mp3', 'wav'],
+    // mediaDir는 load가 실제로 내려보내는 값이라 타입상 필수다. 빈
+    // 문자열이면 Player가 파일 경로 줄을 렌더하지 않으므로(그쪽
+    // filePath 파생 참고) 이 테스트들이 보는 화면은 그대로다.
+    mediaDir: ''
   };
 }
 
@@ -134,7 +142,7 @@ function twoRowDataWithDistinctDurations() {
 // 자유롭게 넣을 수 있어야 하고, titles()로 화면에 실제 보이는 제목만
 // 순서대로 뽑아 필터링 결과를 짧게 비교한다.
 function pageData(recordings: Recording[]) {
-  return { recordings, tags: [], formats: ['mp3', 'wav'] };
+  return { recordings, tags: [], formats: ['mp3', 'wav'], mediaDir: '' };
 }
 
 // 각 행의 제목은 li 안의 첫 번째 button이다(체크박스는 input이라
@@ -171,11 +179,12 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
   });
 
   it('URL로 들어온 q와 로컬에서 고른 태그가 합쳐져 그대로 쿼리스트링에 반영된다', async () => {
-    // q 입력은 메뉴바로 옮겨갔다 — 이 화면은 렌더하지 않으므로, 메뉴바
-    // 검색과 같은 결과(URL의 q 변경)를 setSearchParams로 흉내낸다. 태그는
-    // 여전히 이 화면(FilterBar) 안의 로컬 조작이라 그대로 클릭한다 — 두
-    // 경로로 들어온 값이 하나의 쿼리스트링으로 합쳐지는지가 이 테스트의
-    // 핵심이다.
+    // q 입력은 이 화면(SearchBar)으로 돌아왔지만, 이 테스트가 검증하는
+    // 것은 URL로 들어온 q — 링크로 직접 진입하거나 뒤로 가기로 되돌아온
+    // 경우 — 와 로컬 태그가 하나의 쿼리스트링으로 합쳐지는지다. 그래서
+    // 검색창에 타이핑하는 대신 setSearchParams로 URL 쪽을 흉내낸다.
+    // 태그는 여전히 이 화면(FilterBar) 안의 로컬 조작이라 그대로 클릭한다
+    // — 두 경로로 들어온 값이 합쳐지는지가 이 테스트의 핵심이다.
     const { getByRole } = render(Page, { data: baseData() });
 
     setSearchParams('?q=레인');
@@ -184,8 +193,10 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
 
     const expected = filterToParams({
       q: '레인',
+      scope: 'all',
       tags: ['데모'],
       tagMode: 'and',
+      ext: [],
       from: '',
       to: ''
     }).toString();
@@ -200,11 +211,10 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
   });
 
   it('태그를 눌러 바꾼 값이 그 자리에서 되돌아가지 않는다(실제 SvelteKit에서 재현한 회귀)', async () => {
-    // 원래 이 테스트는 검색창 타이핑을 재현했다 — 하지만 q 입력은 메뉴바로
-    // 옮겨가 이 화면에는 더 이상 없다. 버그의 본질은 "URL을 거치지 않은
-    // 로컬 필터 변경이 곧바로 되돌아가는가"이지 q냐 tags냐가 아니다(아래
-    // untrack 주석 참고) — 그래서 이 화면에 남은 유일한 로컬 변경 경로인
-    // 태그 칩 클릭으로 같은 경로를 재현한다.
+    // 버그의 본질은 "URL을 거치지 않은 로컬 필터 변경이 곧바로
+    // 되돌아가는가"이지 q냐 tags냐가 아니다(아래 untrack 주석 참고) —
+    // 그래서 디바운스가 끼지 않아 타이밍이 단순한 태그 칩 클릭으로
+    // 같은 경로를 재현한다.
     //
     // untrack 없이 URL → 필터 이펙트가 filter 필드를 읽으면, 로컬 태그
     // 클릭 그 자체가(필터 → URL 이펙트의 goto가 아직 mockUrl에 반영되기도
@@ -227,8 +237,8 @@ describe('+page.svelte — 필터를 URL에 반영', () => {
   });
 
   it('외부에서 URL의 q가 바뀌면 목록이 따라간다', async () => {
-    // 메뉴바 검색이 이 경로로 동작한다 — 목록이 URL을 한 번만 읽고 말면
-    // 메뉴바에서 검색해도 목록이 그대로 남는다.
+    // 링크로 직접 들어오거나 뒤로 가기를 하면 이 경로로 동작한다 — 목록이
+    // URL을 한 번만 읽고 말면 그 두 경우에 목록이 그대로 남는다.
     const { rerender } = render(Page, {
       data: pageData([rec({ id: '1', title: '레인' }), rec({ id: '2', title: '정류장' })])
     });
@@ -283,8 +293,10 @@ describe('+page.svelte — 초기화 버튼', () => {
 
     await expect.element(getByText('2 / 2')).toBeInTheDocument();
 
-    // q는 이제 메뉴바 검색이 URL을 바꿔서 들어온다 — setSearchParams로
-    // 흉내낸다.
+    // 링크로 직접 들어오거나 뒤로 가기를 하면 q가 URL로 들어온다 —
+    // setSearchParams로 흉내낸다. (검색창 타이핑으로 넣으면 디바운스
+    // 250ms를 기다려야 해서, 초기화라는 이 테스트의 주제와 무관한
+    // 타이밍이 끼어든다.)
     setSearchParams('?q=아무거나');
     await tick();
     await getByRole('button', { name: /^데모\d/ }).click();
@@ -293,9 +305,10 @@ describe('+page.svelte — 초기화 버튼', () => {
     await getByRole('button', { name: '초기화' }).click();
     // 0/2였던 게 2/2로 돌아온다는 것 자체가 태그뿐 아니라 q도 함께
     // 비워졌다는 증거다 — q가 "아무거나"로 남아 있었다면 태그를 지워도
-    // 어떤 제목도 그 문자열을 포함하지 않아 여전히 0/2였을 것이다. 이
-    // 화면에는 더 이상 q를 직접 보여주는 입력이 없어 값을 눈으로 확인할
-    // 수 없으므로, 결과 카운트로 간접 검증한다.
+    // 어떤 제목도 그 문자열을 포함하지 않아 여전히 0/2였을 것이다.
+    // (검색창의 값 자체가 비워지는지는 SearchBar.svelte.test.ts의
+    // '바깥에서의 변경'과 아래 '초기화는 대기 중이던 키 입력까지
+    // 지운다'가 따로 못박는다.)
     await expect.element(getByText('2 / 2')).toBeInTheDocument();
 
     // 리셋이 얼려 있는 EMPTY_FILTER를 그대로 재사용했다면, 여기서
@@ -304,6 +317,79 @@ describe('+page.svelte — 초기화 버튼', () => {
     // 객체가 진짜 새 객체(얼지 않은)인지를 이 재클릭으로 검증한다.
     await getByRole('button', { name: /^데모\d/ }).click();
     await expect.element(getByText('1 / 2')).toBeInTheDocument();
+  });
+
+  it('초기화는 아직 커밋되지 않은 키 입력까지 지운다', async () => {
+    // SearchBar는 바깥에서 filter.q가 바뀌면 입력창(draft)에 그대로
+    // 반영한다 — 디바운스 타이머가 대기 중이어도 마찬가지다. Task 3
+    // 리뷰에서 "타이머가 대기 중이면 바깥 변경을 무시하자"는 가드가
+    // 제안됐는데, 그 가드는 바로 이 테스트를 깨뜨린다: 초기화는 filter
+    // 객체를 통째로 갈아끼우는 방식이라 정확히 이 경로를 지나가므로,
+    // 가드가 있으면 방금 친 글자가 draft에 남았다가 250ms 뒤 타이머가
+    // 그 값을 filter.q에 다시 써서 검색어가 되살아난다.
+    //
+    // 그래서 지금 동작(바깥 변경이 이긴다)이 옳고, 이 테스트가 그걸
+    // 못박는다. 잃는 것은 "250ms 안에 초기화를 누른 사용자의 마지막
+    // 키 입력"뿐인데, 그건 사용자가 방금 지우라고 지시한 값이다.
+    const { getByRole, getByLabelText } = render(Page, { data: baseData() });
+
+    const search = getByLabelText('검색어');
+    await search.fill('레인');
+    // 디바운스(250ms)가 끝나기 전에 초기화를 누른다.
+    await getByRole('button', { name: '초기화' }).click();
+
+    await expect.element(search).toHaveValue('');
+
+    // 그리고 대기 중이던 타이머가 뒤늦게 되살리지 않는다 — 디바운스가
+    // 지나갈 시간을 충분히 준 뒤에도 비어 있어야 한다.
+    await new Promise((r) => setTimeout(r, 400));
+    expect((search.element() as HTMLInputElement).value).toBe('');
+    expect(gotoMock).toHaveBeenLastCalledWith('/recordings', {
+      replaceState: true,
+      keepFocus: true,
+      noScroll: true
+    });
+  });
+});
+
+describe('+page.svelte — 검색 디바운스가 다른 필터 조작과 겹칠 때', () => {
+  it('디바운스가 대기 중일 때 태그를 눌러도 입력한 검색어가 사라지지 않는다', async () => {
+    // 위 초기화 테스트와 짝이다. 초기화는 filter 객체 자체를 갈아끼워
+    // SearchBar의 "바깥 변경 반영" 이펙트를 지나가지만, 태그 칩은
+    // filter.tags만 바꾼다 — q를 건드리지 않으므로 그 이펙트가 아예
+    // 다시 돌지 않아야 하고, 따라서 아직 커밋되지 않은 키 입력도
+    // 살아남아야 한다. (여기서 draft가 날아가면 "태그를 고르는 순간
+    // 방금 친 검색어가 사라진다"는 실제 사용자 버그다.)
+    const { getByRole, getByLabelText } = render(Page, { data: baseData() });
+
+    const search = getByLabelText('검색어');
+    await search.fill('레인');
+    await getByRole('button', { name: /^데모\d/ }).click();
+
+    expect((search.element() as HTMLInputElement).value).toBe('레인');
+
+    // 그리고 디바운스가 끝나면 검색어와 태그가 하나의 쿼리스트링으로
+    // 함께 실린다 — 둘 중 하나가 다른 하나를 덮어쓰지 않는다.
+    const expected = filterToParams({
+      q: '레인',
+      scope: 'all',
+      tags: ['데모'],
+      tagMode: 'and',
+      ext: [],
+      from: '',
+      to: ''
+    }).toString();
+
+    await vi.waitFor(
+      () => {
+        expect(gotoMock).toHaveBeenLastCalledWith(`?${expected}`, {
+          replaceState: true,
+          keepFocus: true,
+          noScroll: true
+        });
+      },
+      { timeout: 2000 }
+    );
   });
 });
 
@@ -371,7 +457,8 @@ describe('+page.svelte — data 재동기화', () => {
     const refreshed = {
       recordings: [rec({ id: '3', title: '새로_가져온_녹음', tags: [] })],
       tags: [],
-      formats: ['mp3', 'wav']
+      formats: ['mp3', 'wav'],
+      mediaDir: ''
     };
     await rerender({ data: refreshed });
 
@@ -408,8 +495,11 @@ describe('+page.svelte — 인라인 편집(설명·태그)', () => {
     await getByText('설명 없음').first().dblClick();
     await getByLabelText('설명 수정').fill('내가 입력한 설명');
     // 이 컴포넌트에는 blur 전용 API가 없으니, 편집 중인 입력 밖의 다른
-    // 요소를 눌러 실제 blur를 일으킨다.
-    await getByText('ULS Player').click();
+    // 요소를 눌러 실제 blur를 일으킨다. 예전에는 화면 상단의 <h1>ULS
+    // Player</h1>를 눌렀는데, 그 제목은 검색창이 목록으로 들어오면서
+    // 사라졌다(같은 문자열은 이제 메뉴바 로고뿐이고 메뉴바는 +layout에
+    // 있어 이 렌더에 포함되지 않는다) — 대신 항상 떠 있는 검색창을 누른다.
+    await getByLabelText('검색어').click();
 
     await expect.element(getByText('서버가 확정한 설명')).toBeInTheDocument();
     await expect.element(getByText('내가 입력한 설명')).not.toBeInTheDocument();
@@ -694,7 +784,8 @@ describe('+page.svelte — 플레이어의 북마크 메모 편집(Task 16)', ()
         })
       ],
       tags: [],
-      formats: ['mp3', 'wav']
+      formats: ['mp3', 'wav'],
+      mediaDir: ''
     };
   }
 
@@ -719,16 +810,19 @@ describe('+page.svelte — 플레이어의 북마크 메모 편집(Task 16)', ()
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const { getByRole, getByPlaceholder, getByText } = render(Page, { data: dataWithBookmark() });
+    const { getByRole, getByPlaceholder, getByText, getByLabelText } = render(Page, {
+      data: dataWithBookmark()
+    });
 
     // 행을 선택해 하단 고정 플레이어를 연다(Task 15 시접).
     await getByRole('button', { name: '레인' }).click();
     await expect.element(getByPlaceholder('메모')).toBeInTheDocument();
 
     await getByPlaceholder('메모').fill('내가 입력한 메모');
-    // blur 전용 API가 없으니 편집 중인 입력 밖의 다른 요소를 눌러 실제
-    // blur를 일으킨다(다른 인라인 편집 테스트들과 같은 패턴).
-    await getByText('ULS Player').click();
+    // blur 전용 API가 없으니 편집 중인 입력 밖의 다른 요소(항상 떠 있는
+    // 검색창)를 눌러 실제 blur를 일으킨다(다른 인라인 편집 테스트들과
+    // 같은 패턴).
+    await getByLabelText('검색어').click();
 
     // 행 선택 자체가 Player의 파형(fetch('/api/waveform/1'))도 불러오므로
     // fetch 총 호출 수는 이 흐름과 무관하게 1보다 클 수 있다 — 실제로
@@ -756,13 +850,15 @@ describe('+page.svelte — 플레이어의 북마크 메모 편집(Task 16)', ()
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const { getByRole, getByPlaceholder, getByText } = render(Page, { data: dataWithBookmark() });
+    const { getByRole, getByPlaceholder, getByText, getByLabelText } = render(Page, {
+      data: dataWithBookmark()
+    });
 
     await getByRole('button', { name: '레인' }).click();
     await expect.element(getByPlaceholder('메모')).toBeInTheDocument();
 
     await getByPlaceholder('메모').fill('저장 안 될 메모');
-    await getByText('ULS Player').click();
+    await getByLabelText('검색어').click();
 
     // send()가 실패를 삼키지 않고 카드로 보여준다.
     await expect.element(getByText('동시에 삭제된 행입니다')).toBeInTheDocument();
