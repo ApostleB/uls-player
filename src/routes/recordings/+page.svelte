@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount, untrack } from 'svelte';
+  import { untrack } from 'svelte';
   import { page } from '$app/state';
   import { afterNavigate, goto } from '$app/navigation';
   import type { Bookmark, Filter, Recording } from '$lib/types';
   import { applyFilter, filterFromParams, filterToParams } from '$lib/filter';
-  import { registerListFilter } from '$lib/listFilterBridge';
+  import { extensionCounts } from '$lib/extensions';
+  import SearchBar from '$lib/components/SearchBar.svelte';
   import FilterBar from '$lib/components/FilterBar.svelte';
   import TagInput from '$lib/components/TagInput.svelte';
   import Player from '$lib/components/Player.svelte';
@@ -62,6 +63,10 @@
   // 행 인라인 태그 편집·일괄 태그 추가/제거의 자동완성 후보.
   const tagNames = $derived(tags.map((t) => t.tag));
 
+  // 목록 전체가 이미 화면에 내려와 있고, 태그와 달리 확장자는 UI로
+  // 바뀌지 않는다 — 서버가 셀 이유가 없다.
+  const exts = $derived(extensionCounts(recordings));
+
   // 선택은 필터가 바뀌어도 유지된다(스펙 의도: 필터로 골라낸 뒤 다시
   // 넓혀서 일괄 작업을 계속할 수 있어야 한다) — 다만 지금 화면에 없는
   // 선택 행이 섞여 있으면 일괄 작업이 안 보이는 행에도 적용된다는 걸
@@ -99,16 +104,8 @@
     routerReady = true;
   });
 
-  // 메뉴바(+layout.svelte, 항상 떠 있다)의 검색이 이 화면의 filter.q를
-  // 직접 바꿀 수 있도록 등록한다 — 자세한 이유는 $lib/listFilterBridge.ts
-  // 참고(최종 브랜치 리뷰 발견 1: 메뉴바 검색과 아래 필터 → URL 이펙트가
-  // 각자 goto를 부르면 서로 다른 순간의 스냅샷을 기준으로 겹쳐 써서 한쪽
-  // 변경이 사라지는 경합이 있었다). 이 화면이 언마운트되면(다른 페이지로
-  // 이동) 해제해, 더 이상 존재하지 않는 filter를 메뉴바가 계속 바꾸려는
-  // 일이 없게 한다.
-  onMount(() => registerListFilter((q) => (filter.q = q)));
-
-  // URL → 필터. 메뉴바 검색처럼 이 화면 밖에서 URL이 바뀌는 경우를 따라간다.
+  // URL → 필터. 링크로 직접 진입하거나 뒤로 가기처럼 이 화면 밖에서
+  // URL이 바뀌는 경우를 따라간다.
   //
   // 아래의 필터 → URL 이펙트와 짝이라 루프가 될 수 있다. 들어온 값을
   // 같은 방식으로 직렬화해 지금 필터와 비교하고, 다를 때만 반영해서
@@ -173,13 +170,10 @@
   // 테스트가 정확히 이 단일 클릭 시나리오를 재현한다. 프로덕션 빌드(vite
   // preview)로도 재현했다. 그래서 이번 라운드에서도 그대로 둔다.)
   //
-  // 이 이펙트는 이제 이 화면에서 URL로 goto를 부르는 유일한 지점이다 —
-  // 메뉴바 검색은 더 이상 자기 goto를 따로 부르지 않고, 위 onMount에서
-  // 등록한 대로 filter.q만 바꾼다(최종 브랜치 리뷰 발견 1). 태그·기간·
-  // 검색어가 전부 이 하나의 filter 객체를 거쳐서만 URL에 반영되므로,
-  // "지금 쿼리가 뭐냐"를 이 이펙트 밖에서 스냅샷으로 다시 읽어 병합할
-  // 필요가 없다 — 그런 스냅샷이 없으니 두 writer가 서로 다른 순간의
-  // 값을 기준으로 겹쳐 써서 한쪽 변경을 지우는 경합도 성립하지 않는다.
+  // 이 이펙트는 이 화면에서 URL로 goto를 부르는 유일한 지점이다. 검색어·
+  // 범위·태그·기간·확장자가 전부 이 하나의 filter 객체를 거쳐서만 URL에
+  // 반영되므로, "지금 쿼리가 뭐냐"를 스냅샷으로 다시 읽어 병합할 필요가
+  // 없다 — 읽을 스냅샷이 없으니 그게 낡을 일도 없다.
   $effect(() => {
     if (!routerReady) return;
     const qs = filterToParams(filter).toString();
@@ -301,12 +295,13 @@
 </script>
 
 <div class="mx-auto max-w-6xl space-y-4 p-6 pb-40">
-  <header class="flex items-baseline justify-between">
-    <h1 class="h2">ULS Player</h1>
-    <a href="/import" class="btn preset-filled">가져오기</a>
-  </header>
+  <SearchBar bind:filter total={recordings.length} shown={shown.length} />
 
-  <FilterBar bind:filter {tags} total={recordings.length} shown={shown.length} />
+  <div class="flex justify-end">
+    <a href="/import" class="btn preset-filled">가져오기</a>
+  </div>
+
+  <FilterBar bind:filter {tags} {exts} />
 
   {#if errorMessage}
     <aside class="card preset-tonal-error p-4">{errorMessage}</aside>
