@@ -69,7 +69,10 @@ function rec(over: Partial<Recording> & { id: string }): Recording {
 }
 
 function pageData(recordings: Recording[]) {
-  return { recordings, tags: [], formats: ['mp3', 'wav'] };
+  // mediaDir는 load가 실제로 내려보내는 값이라 타입상 필수다. 빈
+  // 문자열이면 Player가 파일 경로 줄을 렌더하지 않으므로 이 파일이
+  // 재는 배치는 그대로다.
+  return { recordings, tags: [], formats: ['mp3', 'wav'], mediaDir: '' };
 }
 
 describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {

@@ -145,7 +145,7 @@ describe('+page.svelte — 저장 제출 중 버튼 비활성화 (Must Fix 2)', 
  */
 describe('+page.svelte — 마운트 시 SSE 연결 (Must Fix 3)', () => {
   it('저장을 누르지 않아도(새로고침 등) 마운트되자마자 진행 상황 스트림을 연다', async () => {
-    render(Page, { data: { tags: [], formats: ['mp3'] }, form: undefined });
+    render(Page, { data: { tags: [], formats: ['mp3'] }, form: null });
 
     await vi.waitFor(() => {
       expect(FakeEventSource.instances).toHaveLength(1);
@@ -182,7 +182,7 @@ describe('+page.svelte — 재시도 (Must Fix 3)', () => {
   it('재시도가 성공하면 스트림을 다시 연다', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })));
 
-    render(Page, { data: { tags: [], formats: ['mp3'] }, form: undefined });
+    render(Page, { data: { tags: [], formats: ['mp3'] }, form: null });
     await reachClosedFailedState();
 
     await page.getByRole('button', { name: /실패한 1개 재시도/ }).click();
@@ -198,7 +198,7 @@ describe('+page.svelte — 재시도 (Must Fix 3)', () => {
   it('재시도 요청이 실패하면(서버 오류 응답) 에러 카드로 알려준다', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
 
-    render(Page, { data: { tags: [], formats: ['mp3'] }, form: undefined });
+    render(Page, { data: { tags: [], formats: ['mp3'] }, form: null });
     await reachClosedFailedState();
 
     await page.getByRole('button', { name: /실패한 1개 재시도/ }).click();
@@ -214,7 +214,7 @@ describe('+page.svelte — 재시도 (Must Fix 3)', () => {
       })
     );
 
-    render(Page, { data: { tags: [], formats: ['mp3'] }, form: undefined });
+    render(Page, { data: { tags: [], formats: ['mp3'] }, form: null });
     await reachClosedFailedState();
 
     await page.getByRole('button', { name: /실패한 1개 재시도/ }).click();

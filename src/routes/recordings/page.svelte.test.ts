@@ -110,7 +110,11 @@ function baseData() {
       rec({ id: '2', title: '정류장', tags: [] })
     ],
     tags: [{ tag: '데모', count: 1 }],
-    formats: ['mp3', 'wav']
+    formats: ['mp3', 'wav'],
+    // mediaDir는 load가 실제로 내려보내는 값이라 타입상 필수다. 빈
+    // 문자열이면 Player가 파일 경로 줄을 렌더하지 않으므로(그쪽
+    // filePath 파생 참고) 이 테스트들이 보는 화면은 그대로다.
+    mediaDir: ''
   };
 }
 
@@ -125,7 +129,11 @@ function twoRowDataWithDistinctDurations() {
       rec({ id: '2', title: '정류장', tags: [], durationSec: 200 })
     ],
     tags: [{ tag: '데모', count: 1 }],
-    formats: ['mp3', 'wav']
+    formats: ['mp3', 'wav'],
+    // mediaDir는 load가 실제로 내려보내는 값이라 타입상 필수다. 빈
+    // 문자열이면 Player가 파일 경로 줄을 렌더하지 않으므로(그쪽
+    // filePath 파생 참고) 이 테스트들이 보는 화면은 그대로다.
+    mediaDir: ''
   };
 }
 
@@ -134,7 +142,7 @@ function twoRowDataWithDistinctDurations() {
 // 자유롭게 넣을 수 있어야 하고, titles()로 화면에 실제 보이는 제목만
 // 순서대로 뽑아 필터링 결과를 짧게 비교한다.
 function pageData(recordings: Recording[]) {
-  return { recordings, tags: [], formats: ['mp3', 'wav'] };
+  return { recordings, tags: [], formats: ['mp3', 'wav'], mediaDir: '' };
 }
 
 // 각 행의 제목은 li 안의 첫 번째 button이다(체크박스는 input이라
@@ -371,7 +379,8 @@ describe('+page.svelte — data 재동기화', () => {
     const refreshed = {
       recordings: [rec({ id: '3', title: '새로_가져온_녹음', tags: [] })],
       tags: [],
-      formats: ['mp3', 'wav']
+      formats: ['mp3', 'wav'],
+      mediaDir: ''
     };
     await rerender({ data: refreshed });
 
@@ -694,7 +703,8 @@ describe('+page.svelte — 플레이어의 북마크 메모 편집(Task 16)', ()
         })
       ],
       tags: [],
-      formats: ['mp3', 'wav']
+      formats: ['mp3', 'wav'],
+      mediaDir: ''
     };
   }
 
