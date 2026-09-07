@@ -68,8 +68,11 @@ describe('FilterBar — 초기화', () => {
   it('검색어·범위·확장자·태그·기간을 모두 비운다', async () => {
     const { state } = setup({
       q: '레인', scope: 'tags', tags: ['데모'], tagMode: 'or',
-      ext: ['qta'], from: '2026-01-01', to: '2026-12-31'
+      from: '2026-01-01', to: '2026-12-31'
     });
+    await page.getByRole('button', { name: /^qta/ }).click();
+    await tick();
+    expect(state.filter.ext).toEqual(['qta']);
     await page.getByRole('button', { name: '초기화' }).click();
     await tick();
     expect(state.filter).toEqual(EMPTY_FILTER);

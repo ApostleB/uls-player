@@ -11,13 +11,13 @@
 
   function toggleTag(tag: string) {
     filter.tags = filter.tags.includes(tag)
-      ? filter.tags.filter((t) => t !== tag)
+      ? filter.tags.filter((t: string) => t !== tag)
       : [...filter.tags, tag];
   }
 
   function toggleExt(ext: string) {
     filter.ext = filter.ext.includes(ext)
-      ? filter.ext.filter((e) => e !== ext)
+      ? filter.ext.filter((e: string) => e !== ext)
       : [...filter.ext, ext];
   }
 </script>
