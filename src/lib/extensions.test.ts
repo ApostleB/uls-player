@@ -34,6 +34,11 @@ describe('recordingExtensions', () => {
     const wavOriginal = rec('5', { original: { ext: 'wav', bytes: 1 }, wav: { bytes: 1 } });
     expect(recordingExtensions(wavOriginal)).toEqual(['wav']);
   });
+
+  it('손상된 포맷 항목(null)은 건너뛴다', () => {
+    const corrupted = rec('6', { original: { ext: 'qta', bytes: 1 }, mp3: null as any, wav: { bytes: 1 } });
+    expect(recordingExtensions(corrupted).sort()).toEqual(['qta', 'wav']);
+  });
 });
 
 describe('extensionCounts', () => {
@@ -60,5 +65,16 @@ describe('extensionCounts', () => {
 
   it('빈 목록은 빈 배열', () => {
     expect(extensionCounts([])).toEqual([]);
+  });
+
+  it('같은 그룹에서 개수가 같으면 확장자명 사전순', () => {
+    // 원본 그룹에서 aaa, bbb 각 1개씩
+    const aaa = rec('6', { original: { ext: 'aaa', bytes: 1 }, mp3: { bytes: 1 } });
+    const bbb = rec('7', { original: { ext: 'bbb', bytes: 1 }, mp3: { bytes: 1 } });
+    const counts = extensionCounts([aaa, bbb]);
+    const order = counts.map((c) => c.ext);
+    // 원본 그룹: aaa(1), bbb(1) — 같은 개수면 사전순 aaa < bbb
+    // 변환 그룹: mp3(2)
+    expect(order).toEqual(['aaa', 'bbb', 'mp3']);
   });
 });

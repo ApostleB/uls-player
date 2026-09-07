@@ -12,7 +12,7 @@ import type { Recording } from './types';
 export function recordingExtensions(rec: Recording): string[] {
   const out: string[] = [];
   for (const [key, entry] of Object.entries(rec.files ?? {})) {
-    const ext = key === 'original' ? entry?.ext : key;
+    const ext = key === 'original' ? entry?.ext : entry && key;
     if (ext && !out.includes(ext)) out.push(ext);
   }
   return out;
