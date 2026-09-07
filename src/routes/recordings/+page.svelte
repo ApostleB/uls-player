@@ -141,7 +141,7 @@
   // 원인에서 나왔다: @sveltejs/kit@2.70.3의 replaceState/pushState는
   // page.url을 절대 갱신하지 않는다(client.js 확인) — 얕은 라우팅으로
   // 쓴 필터는 브라우저 주소창에는 보이지만 SvelteKit이 아는 page.url에는
-  // 영영 반영되지 않아, page.url을 읽는 다른 코드(메뉴바의 q prop 등)가
+  // 영영 반영되지 않아, page.url을 읽는 다른 코드가
   // 전부 낡은 값을 본다. goto로 바꾸면 모든 필터 변경이 진짜 내비게이션이
   // 되어 page.url이 항상 최신이 되므로, 이 클래스의 버그 전체가 뿌리에서
   // 사라진다.

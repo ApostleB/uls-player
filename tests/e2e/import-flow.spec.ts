@@ -48,8 +48,16 @@ async function selectRecording(page: Page, title: string) {
   // 방금 누른 제목 버튼에 포커스가 남아 있으면, 뒤이은 Space 단축키가
   // 재생/일시정지 토글과 그 버튼의 기본 활성화 동작(브라우저가 Space를
   // 버튼 클릭으로도 해석한다) 둘 다에 걸릴 수 있다. 포커스를 옮겨 순수하게
-  // svelte:window의 키보드 핸들러만 타게 한다.
-  await page.locator('h1', { hasText: 'ULS Player' }).click();
+  // svelte:window의 키보드 핸들러만 타게 한다. 유닛 테스트는 이럴 때
+  // getByLabelText('검색어')를 blur 타깃으로 쓰지만, 여기서는 그게 안
+  // 맞는다 — 이 헬퍼를 쓰는 테스트 대부분이 바로 다음에 Space·M·화살표
+  // 같은 단축키를 누르는데, isTypingTarget(src/lib/player.ts)이 포커스가
+  // input·textarea·select·contenteditable에 있으면 그 즉시 무시하도록
+  // 되어 있어(Player.svelte의 onKeydown 첫 줄) 검색 입력에 포커스를 두면
+  // 단축키 자체가 죽어버린다. 목록 헤더 줄(data-testid="list-header")을
+  // 대신 쓴다 — onclick도 없고 포커스도 못 받는 순수 장식용 div라, 클릭해도
+  // 아무 부작용 없이 이전 포커스만 날아간다.
+  await page.getByTestId('list-header').click();
 }
 
 function rowFor(page: Page, title: string) {
@@ -205,32 +213,21 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
   });
 
-  test('메인에서 메뉴바로 검색하면 목록으로 이동하며 걸러진다', async ({ page }) => {
-    await page.goto('/');
-    const search = page.getByPlaceholder('제목 검색');
-    await search.fill('새로운');
-    await search.press('Enter');
-
-    await expect(page).toHaveURL(/\/recordings\?.*q=/);
-    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
-  });
-
   test('검색·태그 필터로 좁혀지고, 없는 조건이면 안내 문구가 뜬다', async ({ page }) => {
     await page.goto('/recordings');
 
-    await page.getByPlaceholder('제목 검색').fill('당신');
+    await page.getByPlaceholder('검색어').fill('당신');
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toHaveCount(0);
-    await page.getByPlaceholder('제목 검색').fill('');
+    await page.getByPlaceholder('검색어').fill('');
     // 이전엔 여기서 검색 내비게이션이 끝나길 명시적으로 기다려야 했다 —
-    // 메뉴바 검색과 태그 클릭이 각자 goto를 불렀고, 둘이 겹치면 한쪽
-    // 변경이 지워지는 경합이 있었기 때문이다(최종 브랜치 리뷰 발견 1,
-    // 아래 "태그 클릭과 메뉴바 검색이 겹쳐도..." 테스트 참고). 지금은
-    // 메뉴바 검색이 목록의 filter.q만 바꾸고 실제 goto는 필터→URL
-    // 이펙트 하나가 전담하므로(src/lib/listFilterBridge.ts) 그 경합
-    // 자체가 성립하지 않는다 — 이 기다림은 더 이상 정확성을 위해
-    // 필요하지 않고, 그저 다음 단계로 넘어가기 전에 검색이 실제로
-    // 끝났다는 걸 보여주는 용도로만 남긴다.
+    // 한때는 메뉴바의 검색창과 목록의 태그 클릭이 각자 다른 곳에서
+    // URL을 바꿨고, 둘이 겹치면 한쪽 변경이 지워지는 경합이 있었다.
+    // 지금은 검색창도 목록 화면 자신의 것이라 필터를 바꾸는 것도 실제
+    // goto를 부르는 것도 이 화면의 필터→URL 이펙트 하나뿐이고, writer가
+    // 하나뿐이니 그런 경합 자체가 성립하지 않는다 — 이 기다림은 더 이상
+    // 정확성을 위해 필요하지 않고, 그저 다음 단계로 넘어가기 전에 검색이
+    // 실제로 끝났다는 걸 보여주는 용도로만 남긴다.
     await expect(page).toHaveURL(/\/recordings$/);
 
     // '데모' 태그는 qta 녹음에만 붙었다.
@@ -240,7 +237,7 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toHaveCount(0);
     await demoFilterChip.click(); // 태그 필터 해제
 
-    await page.getByPlaceholder('제목 검색').fill('존재하지않는제목');
+    await page.getByPlaceholder('검색어').fill('존재하지않는제목');
     await expect(page.getByText('조건에 맞는 녹음이 없습니다')).toBeVisible();
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toHaveCount(0);
@@ -263,7 +260,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   // 테스트로는 못 잡는다 — 그쪽은 $app/state를 통째로 모킹해 실제 라우터의
   // 비동기 타이밍(goto가 아직 안 끝난 틈) 자체가 존재하지 않는다. 실제
   // 브라우저·실제 라우터가 있어야 재현되므로 여기 E2E에 둔다.
-  test('목록에서 태그를 고른 뒤 메뉴바로 검색해도 태그 필터가 유지된다', async ({ page }) => {
+  test('목록에서 태그를 고른 뒤 검색해도 태그 필터가 유지된다', async ({ page }) => {
     await page.goto('/recordings');
 
     // '데모' 태그는 qta 녹음에만 붙었다(위 가져오기 테스트에서 붙인 뒤로
@@ -279,8 +276,8 @@ test.describe.serial('스캔부터 재생까지', () => {
     const qtaDate = await recordedDate(page, QTA_TITLE);
     await page.locator('input[type="date"]').first().fill(qtaDate);
 
-    // 태그·기간을 고른 채로 메뉴바에서 검색한다.
-    const search = page.getByPlaceholder('제목 검색');
+    // 태그·기간을 고른 채로 검색한다.
+    const search = page.getByPlaceholder('검색어');
     await search.fill(QTA_TITLE);
     await search.press('Enter');
 
@@ -313,10 +310,10 @@ test.describe.serial('스캔부터 재생까지', () => {
   // replaceState는 page.url을 절대 안 바꾸므로, 메뉴바의 q prop
   // (page.url.searchParams.get('q'))이 옛 검색어를 계속 돌려줬다. 이번
   // 라운드에서 그 replaceState 자체를 goto로 바꿔 뿌리에서 고쳤다.
-  test('목록에서 초기화하면 메뉴바 검색창도 함께 비워진다', async ({ page }) => {
+  test('목록에서 초기화하면 검색창도 함께 비워진다', async ({ page }) => {
     await page.goto('/recordings');
 
-    const search = page.getByPlaceholder('제목 검색');
+    const search = page.getByPlaceholder('검색어');
     await search.fill(QTA_TITLE);
     await search.press('Enter');
     await expect(page).toHaveURL(/[?&]q=/);
@@ -329,64 +326,6 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(search).toHaveValue('');
     await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
-  });
-
-  // 최종 브랜치 리뷰 발견 1: 태그 클릭(필터→URL 이펙트의 goto)과 메뉴바
-  // 검색(예전엔 자기 goto)은 둘 다 비동기다 — 그 사이 순간에는
-  // location.search·page.url이 아직 낡은 값을 돌려준다. 위의 두 테스트는
-  // (Fix round 1·2) 매번 한쪽 내비게이션이 완전히 끝난 뒤에 다음 조작을
-  // 하므로 이 경합 자체를 만들지 않는다 — 이 테스트는 태그 클릭이 만든
-  // 변경이 반영되길 기다리지 않고 곧바로(같은 동기 실행 안에서) 검색을
-  // 커밋해 일부러 겹치게 만든다.
-  //
-  // click()·press()를 Playwright API로 따로 호출하면 각 호출이 CDP
-  // 왕복(수 ms)을 거치는데, 이 라우트의 goto는 네트워크 요청 없이(load가
-  // event를 안 읽어 재실행되지 않는다 — 위 필터→URL 이펙트 주석 참고)
-  // 마이크로태스크만으로 끝나 그 짧은 시간 안에 이미 반영돼 버릴 수 있다
-  // — 그러면 겹침 자체가 타이밍 운에 좌우돼 테스트가 들쑥날쑥해진다.
-  // 고정 sleep으로 폭을 벌리는 대신, 두 조작을 한 page.evaluate 안에서
-  // await 없이 연달아 디스패치한다 — 자바스크립트는 단일 스레드라 이
-  // 동기 실행이 끝나기 전에는 어떤 마이크로태스크(goto의 이어지는 처리
-  // 포함)도 끼어들 수 없으므로, 겹침이 우연이 아니라 항상 보장된다.
-  test('태그 클릭과 메뉴바 검색이 겹쳐도 서로의 변경을 지우지 않는다', async ({ page }) => {
-    await page.goto('/recordings');
-
-    await page.evaluate((tag) => {
-      const chip = [...document.querySelectorAll<HTMLButtonElement>('button.chip')].find((el) =>
-        el.textContent?.includes(tag)
-      );
-      if (!chip) throw new Error(`태그 칩을 못 찾음: ${tag}`);
-      // 로컬 filter.tags 변경 → 필터→URL 이펙트가 goto를 시작한다(아직 안
-      // 끝남 — await하지 않는다).
-      chip.click();
-
-      // 같은 동기 실행 안에서 곧바로 검색을 커밋한다. MenuBar는
-      // bind:value라 네이티브 value setter로 값을 넣고 input 이벤트를
-      // 직접 쏴야 Svelte의 바인딩이 반응한다(실제 타이핑을 흉내낸다).
-      const search = document.querySelector<HTMLInputElement>('input[placeholder="제목 검색"]');
-      if (!search) throw new Error('검색창을 못 찾음');
-      const nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype,
-        'value'
-      )?.set;
-      nativeSetter?.call(search, '겹침');
-      search.dispatchEvent(new Event('input', { bubbles: true }));
-      search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    }, '데모');
-
-    // 두 변경 다 결국 URL에 반영돼야 한다 — 경합이 재발하면 둘 중 하나가
-    // 없다.
-    await expect(page).toHaveURL(/[?&]tags=/);
-    await expect(page).toHaveURL(/[?&]q=/);
-
-    // FilterBar의 "데모" 칩도 계속 선택된 채로 남아 있어야 한다 —
-    // URL→필터 이펙트가 화면 표시까지 되돌리지 않았다는 증거다(경합이
-    // 재발하면 태그가 URL에서만이 아니라 이 칩에서도 풀린다).
-    await expect(tagFilterChip(page, '데모')).toHaveClass(/preset-filled-primary-500/);
-
-    // 다음 테스트가 깨끗한 상태에서 시작하도록 되돌린다.
-    await page.getByRole('button', { name: '초기화' }).click();
-    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
   });
 
   test('설명 인라인 편집이 blur로 저장되고 새로고침 후에도 남는다', async ({ page }) => {
@@ -450,7 +389,7 @@ test.describe.serial('스캔부터 재생까지', () => {
     await page.goto('/recordings');
 
     await rowFor(page, M4A_TITLE).locator('input[type="checkbox"]').check();
-    await page.getByPlaceholder('제목 검색').fill('새로운'); // qta 제목만 남긴다
+    await page.getByPlaceholder('검색어').fill('새로운'); // qta 제목만 남긴다
 
     await expect(page.getByText('1개 선택됨')).toBeVisible();
     await expect(page.getByText(/현재 필터에 없는 1개 포함/)).toBeVisible();
@@ -539,7 +478,10 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: '재생' })).toBeVisible();
     await expect(page.getByRole('slider', { name: '재생 위치' })).toBeVisible();
 
-    await expect(page.getByRole('button', { name: 'qta' })).toBeVisible();
+    // exact: true — FilterBar의 확장자 칩(Task 4)이 붙은 뒤로 접두사가 같은
+    // "qta 1" 같은 칩도 이 role/name에 걸린다. 칩과 이 포맷 전환 버튼을
+    // 구분하려면 정확히 일치해야 한다(브리프의 칩 셀렉터 주의사항과 같은 이유).
+    await expect(page.getByRole('button', { name: 'qta', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'mp3', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'wav', exact: true })).toBeVisible();
   });
@@ -547,7 +489,7 @@ test.describe.serial('스캔부터 재생까지', () => {
   test('입력 필드에 포커스가 있으면 재생 단축키가 무시된다', async ({ page }) => {
     await selectRecording(page, QTA_TITLE);
 
-    const search = page.getByPlaceholder('제목 검색');
+    const search = page.getByPlaceholder('검색어');
     await search.click();
     await page.keyboard.press('Space');
 
@@ -844,5 +786,35 @@ test.describe.serial('스캔부터 재생까지', () => {
     await selectRecording(page, QTA_TITLE);
     await expect(page.getByRole('button', { name: '북마크 삭제' })).toHaveCount(0);
     await expect(page.getByPlaceholder('메모')).toHaveCount(0);
+  });
+
+  test('검색 범위를 태그로 바꾸면 제목이 같아도 걸리지 않는다', async ({ page }) => {
+    await page.goto('/recordings');
+
+    const search = page.getByPlaceholder('검색어');
+    await search.fill(QTA_TITLE);
+    await search.press('Enter');
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
+
+    // 범위를 태그로 좁히면 제목에만 있는 낱말은 더 이상 걸리지 않는다.
+    await page.getByLabel('검색 범위').selectOption('tags');
+    await expect(page).toHaveURL(/[?&]scope=tags/);
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toHaveCount(0);
+  });
+
+  test('확장자 칩으로 원본 형식을 좁힌다', async ({ page }) => {
+    await page.goto('/recordings');
+
+    // 픽스처의 두 녹음은 원본 확장자가 서로 다르다.
+    await page.getByRole('button', { name: /^m4a/ }).click();
+    await expect(page).toHaveURL(/[?&]ext=m4a/);
+    await expect(page.getByRole('button', { name: M4A_TITLE, exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toHaveCount(0);
+  });
+
+  test('목록 상단에 앱 이름이 중복으로 나오지 않는다', async ({ page }) => {
+    await page.goto('/recordings');
+    // 메뉴바의 로고 링크 하나만 남아야 한다.
+    await expect(page.getByText('ULS Player', { exact: true })).toHaveCount(1);
   });
 });
