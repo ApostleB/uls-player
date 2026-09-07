@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Filter } from '$lib/types';
+  import { EMPTY_FILTER } from '$lib/filter';
 
   let {
     filter = $bindable<Filter>(),
@@ -24,7 +25,7 @@
       <input type="date" class="input" bind:value={filter.to} />
     </label>
     <button type="button" class="btn btn-sm preset-tonal"
-      onclick={() => (filter = { q: '', tags: [], tagMode: 'and', from: '', to: '' })}>
+      onclick={() => (filter = { ...EMPTY_FILTER })}>
       초기화
     </button>
     <span class="text-surface-500 ml-auto text-sm tabular-nums">{shown} / {total}</span>
