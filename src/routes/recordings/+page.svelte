@@ -294,7 +294,7 @@
   }
 </script>
 
-<div class="mx-auto max-w-6xl space-y-4 p-6 pb-40">
+<div class="mx-auto max-w-6xl space-y-4 p-6 pb-80">
   <SearchBar bind:filter total={recordings.length} shown={shown.length} />
 
   <div class="flex justify-end">
