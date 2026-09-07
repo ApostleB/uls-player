@@ -1,18 +1,24 @@
 <script lang="ts">
   import type { Filter } from '$lib/types';
+  import type { ExtensionCount } from '$lib/extensions';
   import { EMPTY_FILTER } from '$lib/filter';
 
   let {
     filter = $bindable<Filter>(),
     tags = [] as { tag: string; count: number }[],
-    total = 0,
-    shown = 0
+    exts = [] as ExtensionCount[]
   } = $props();
 
   function toggleTag(tag: string) {
     filter.tags = filter.tags.includes(tag)
       ? filter.tags.filter((t) => t !== tag)
       : [...filter.tags, tag];
+  }
+
+  function toggleExt(ext: string) {
+    filter.ext = filter.ext.includes(ext)
+      ? filter.ext.filter((e) => e !== ext)
+      : [...filter.ext, ext];
   }
 </script>
 
@@ -28,8 +34,21 @@
       onclick={() => (filter = { ...EMPTY_FILTER })}>
       초기화
     </button>
-    <span class="text-surface-500 ml-auto text-sm tabular-nums">{shown} / {total}</span>
   </div>
+
+  <!-- 고를 것이 하나뿐인 필터는 자리만 차지한다. 태그 줄이 같은 판단을 한다. -->
+  {#if exts.length > 1}
+    <div class="flex flex-wrap items-center gap-2">
+      <span class="text-surface-500 text-sm">확장자</span>
+      {#each exts as e (e.ext)}
+        <button type="button"
+          class="chip {filter.ext.includes(e.ext) ? 'preset-filled-primary-500' : 'preset-tonal'}"
+          onclick={() => toggleExt(e.ext)}>
+          {e.ext}<span class="ml-1 opacity-60 tabular-nums">{e.count}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
 
   {#if tags.length}
     <div class="flex flex-wrap items-center gap-2">
