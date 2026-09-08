@@ -1162,3 +1162,111 @@ describe('Player.svelte — 녹음을 바꾸면 재생을 시작한다', () => {
     expect(audioEl().currentTime).toBe(30);
   });
 });
+
+describe('Player.svelte — playRequest로 재클릭 재생 의사를 받는다 (Task 1)', () => {
+  function audioEl(): HTMLAudioElement {
+    const el = document.querySelector('audio');
+    if (!el) throw new Error('audio 엘리먼트가 없다');
+    return el as HTMLAudioElement;
+  }
+
+  function simulateRealPlaySucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+    audioEl().dispatchEvent(new Event('play'));
+  }
+
+  function simulateRealPauseSucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => true, configurable: true });
+    audioEl().dispatchEvent(new Event('pause'));
+  }
+
+  /**
+   * recording을 재생 중인 상태로 마운트한다. 위 여러 describe와 같은
+   * 이유로 play()/pause() 둘 다 목으로 막되, 성공했다면 벌어질 일
+   * (네이티브 paused가 실제로 바뀌는 것과 그에 따른 이벤트)까지 함께
+   * 흉내낸다 — 그러지 않으면 이 파일에 실제 미디어가 없어 네이티브
+   * 상태가 저절로 안 바뀐다.
+   */
+  async function setupPlaying() {
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      simulateRealPlaySucceeds();
+      return Promise.resolve();
+    });
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
+      simulateRealPauseSucceeds();
+    });
+
+    const recording = rec({ id: 'aaaa' });
+    const screen = render(Player, { recording, formats: ['mp3'] });
+    await screen;
+    audioEl().dispatchEvent(new Event('canplay'));
+    // 마운트 자체가 자동재생을 건다(lastId 이펙트) — 그 비동기 play()
+    // 호출이 실제로 반영될 때까지 기다린 뒤에야 "이미 재생 중"인
+    // 상태에서 테스트를 시작할 수 있다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+
+    // screen 자체를 그대로 퍼뜨리면(스프레드) 안 된다 — render()가 돌려주는
+    // 객체는 `await screen`이 되도록 열거 가능한 then 메서드를 갖고 있고,
+    // 그 then까지 함께 복사되면 이 반환 객체 자체가 "thenable"이 되어버려
+    // async 함수가 이 객체를 그대로 resolve하지 않고 그 then()을 다시
+    // 호출해 언래핑한다 — 그 then()은 render()가 만들 때 캡처해 둔 원래
+    // 결과(audio·recording을 더하기 전)로 resolve하므로, 여기서 추가한
+    // 필드가 조용히 사라진다(실측: 처음 시도했을 때 audio가 undefined로
+    // 나왔다). 그래서 필요한 필드만 명시적으로 골라 담는다.
+    return { rerender: screen.rerender, audio: audioEl(), recording };
+  }
+
+  function toggleButton(): HTMLButtonElement {
+    return document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
+  }
+
+  /**
+   * 재생/일시정지 토글 버튼을 눌러 멈춘다 — 스페이스로 멈추는 것과
+   * 동등하다(둘 다 toggle()). 이 파일의 다른 describe들과 같은 이유로
+   * `page.getByRole(...).click()` 같은 재시도형 로케이터가 아니라
+   * document.querySelector로 얻은 참조를 즉시 동기적으로 클릭한다 —
+   * 라벨을 기준으로 기다리면(재시도형 API), 그 사이 실제 네트워크가
+   * /api/media/aaaa/mp3에 대해 진짜 404로 응답해 loadState가 'error'로
+   * 바뀌어 버튼 라벨이 "다시 시도"로 영영 고정될 수 있다(이 파일 여러
+   * 곳의 실측 주석과 같은 함정 — task-2/3-report.md 참고). 즉시
+   * 클릭하면 그 실제 응답이 도착하기 전에(마이크로태스크보다 느리다)
+   * 끝난다.
+   */
+  async function pause() {
+    toggleButton().click();
+    await tick();
+  }
+
+  it('일시정지된 녹음에 재생 요청이 오면 이어서 재생한다', async () => {
+    const { rerender, audio } = await setupPlaying();
+    audio.currentTime = 12;
+    await pause();
+    expect(audio.paused).toBe(true);
+
+    await rerender({ playRequest: 1 });
+    await vi.waitFor(() => expect(audio.paused).toBe(false));
+    // 이어서 재생이지 다시 시작이 아니다.
+    expect(audio.currentTime).toBeGreaterThan(11);
+  });
+
+  it('재생 중에 재생 요청이 와도 위치가 0으로 돌아가지 않는다', async () => {
+    const { rerender, audio } = await setupPlaying();
+    audio.currentTime = 12;
+
+    await rerender({ playRequest: 1 });
+    await tick();
+    expect(audio.currentTime).toBeGreaterThan(11);
+    expect(audio.paused).toBe(false);
+  });
+
+  it('같은 녹음의 새 객체로 바뀌어도(목록 갱신) 위치가 유지된다', async () => {
+    // send()가 PATCH 응답으로 목록을 덮어쓰면 같은 id의 새 객체가 온다.
+    // playRequest는 그대로이므로 아무 일도 일어나면 안 된다.
+    const { rerender, audio, recording } = await setupPlaying();
+    audio.currentTime = 12;
+
+    await rerender({ recording: { ...recording, description: '고침' } });
+    await tick();
+    expect(audio.currentTime).toBeGreaterThan(11);
+  });
+});

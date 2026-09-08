@@ -23,6 +23,12 @@
     recording = null as Recording | null,
     formats = [] as string[],
     mediaDir = '',
+    /**
+     * 행을 누를 때마다 오르는 카운터. selectedId만으로는 "이미 고른 행을
+     * 다시 눌렀다"를 전할 수 없다 — 같은 값 재대입은 Svelte 수준에서
+     * 무변화라 이펙트가 돌지 않는다.
+     */
+    playRequest = 0,
     onbookmark = (_: Omit<Bookmark, 'id'>) => {},
     // 성공하면 true(또는 true로 resolve하는 Promise)를 돌려줘야 한다 —
     // 실패(false)를 받으면 아래 목록이 낙관적으로 반영해둔 편집을
@@ -137,10 +143,29 @@
    * 안 울려서 클릭이 씹힌 줄 알았다"로 드러나, 그 판단을 뒤집는다.
    */
   let lastId: string | null = null;
+  let lastPlayRequest = 0;
   $effect(() => {
     const id = recording?.id ?? null;
-    if (id === lastId) return;
+    const req = playRequest;
+
+    const idChanged = id !== lastId;
+    const requested = req !== lastPlayRequest;
     lastId = id;
+    lastPlayRequest = req;
+
+    // 참조만 바뀐 경우다(목록 갱신). 아무것도 건드리지 않는다.
+    if (!idChanged && !requested) return;
+
+    if (!idChanged) {
+      // 이미 고른 행을 다시 눌렀다. 리셋하지 않는다 — 위치도 A-B 구간도
+      // 그대로 두고, 멈춰 있었다면 이어서 재생만 한다.
+      //
+      // 여기서는 id가 바뀔 때와 달리 이중 쓰기가 필요 없다. 재생 중이면
+      // paused가 이미 false고, 거기에 false를 넣는 것이 무변화라는 사실이
+      // 정확히 원하는 "아무 일 없음"이다.
+      paused = false;
+      return;
+    }
 
     if (!id) {
       peaks = [];

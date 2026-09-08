@@ -1224,3 +1224,78 @@ describe('+page.svelte — 제목·설명 인라인 편집', () => {
     expect(patchCalls(fetchMock)).toHaveLength(1);
   });
 });
+
+describe('+page.svelte — 이미 고른 행을 다시 눌러도 재생 요청이 올라간다(Task 1)', () => {
+  // 이 describe 안에서만 play()/pause()를 목으로 감싼다 — 파일 전역
+  // afterEach는 vi.unstubAllGlobals()만 하지 vi.restoreAllMocks()는
+  // 안 하므로, 다른 describe에 새어 나가지 않게 여기서 직접 되돌린다.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function audioEl(): HTMLAudioElement {
+    const el = document.querySelector('audio');
+    if (!el) throw new Error('audio 엘리먼트가 없다');
+    return el as HTMLAudioElement;
+  }
+
+  function toggleButton(): HTMLButtonElement {
+    return document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
+  }
+
+  /**
+   * Player.svelte.test.ts와 같은 이유로, 실제 미디어가 없는 이 환경에서
+   * play()/pause()가 "성공했다면" 벌어질 일(네이티브 paused가 실제로
+   * 바뀌는 것과 그에 따른 이벤트)까지 함께 흉내낸다.
+   */
+  function simulateRealPlaySucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+    audioEl().dispatchEvent(new Event('play'));
+  }
+
+  function simulateRealPauseSucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => true, configurable: true });
+    audioEl().dispatchEvent(new Event('pause'));
+  }
+
+  it('이미 고른 행을 다시 눌러도 재생 요청이 올라가 이어서 재생한다', async () => {
+    // 재생 의사는 selectedId가 아니라 playRequest 카운터가 나른다. 같은
+    // 행을 다시 누르면 selectedId는 같은 값 재대입이라 그 자체로는 아무
+    // 신호도 안 나간다 — playerPlayRequest() 같은 내부 값은 화면에서
+    // 직접 읽을 수 없으므로, 관찰 가능한 결과로 확인한다: 일시정지해 둔
+    // 뒤 같은 행을 다시 누르면 이어서 재생되는지를 본다.
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      simulateRealPlaySucceeds();
+      return Promise.resolve();
+    });
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
+      simulateRealPauseSucceeds();
+    });
+
+    const { getByRole } = render(Page, { data: baseData() });
+    const row = getByRole('button', { name: '레인', exact: true });
+
+    await row.click();
+    // 행을 처음 고르면 Player의 lastId 이펙트가 자동재생을 건다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    // canplay가 와야 loadState가 'loading'에서 벗어나 토글 버튼의
+    // disabled가 풀린다 — 이걸 빼먹으면 아래 클릭이 조용히 씹힌다.
+    audioEl().dispatchEvent(new Event('canplay'));
+    await tick();
+
+    // 일시정지한다 — document.querySelector로 얻은 참조를 즉시
+    // 동기적으로 클릭한다(재시도형 로케이터로 라벨을 기다리면, 그 사이
+    // 실제 네트워크가 /api/media 요청에 진짜 404로 응답해 loadState가
+    // 'error'로 바뀌어 라벨이 "다시 시도"에 영영 고정될 수 있다 —
+    // Player.svelte.test.ts의 같은 함정 참고).
+    toggleButton().click();
+    await tick();
+    expect(audioEl().paused).toBe(true);
+
+    // 이미 고른 행을 다시 누른다. selectedId는 같은 값 재대입이라
+    // 무변화지만, playRequest 카운터는 올라가야 하고 그래서 이어서
+    // 재생돼야 한다.
+    await row.click();
+    await vi.waitFor(() => expect(audioEl().paused).toBe(false));
+  });
+});

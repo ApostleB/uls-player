@@ -41,6 +41,19 @@
   // 목록 접힘도 없다. Task 15가 이 값을 읽어 하단 고정 플레이어에 녹음을
   // 로드한다.
   let selectedId = $state<string | null>(null);
+  /**
+   * 행을 누르는 것은 듣겠다는 뜻이다. selectedId만으로는 그 뜻을 전할 수
+   * 없다 — 이미 고른 행을 다시 누르면 같은 값 재대입이라 Svelte 수준에서
+   * 무변화라서, 재생기가 그 클릭을 볼 방법이 없다. 누를 때마다 오르는
+   * 카운터를 함께 보낸다.
+   */
+  let playRequest = $state(0);
+
+  function selectRow(id: string) {
+    selectedId = id;
+    playRequest += 1;
+  }
+
   const selected = $derived(recordings.find((r) => r.id === selectedId) ?? null);
 
   // data는 SvelteKit이 load를 다시 실행할 때마다(예: /import에서 돌아오는
@@ -422,7 +435,7 @@
             <li class="card hover:preset-tonal grid items-center gap-3 p-3"
               style="grid-template-columns: var(--row-cols);"
               class:preset-tonal-primary={selectedId === rec.id}
-              onclick={() => (selectedId = rec.id)}>
+              onclick={() => selectRow(rec.id)}>
               <input type="checkbox" class="checkbox"
                 checked={selectedIds.has(rec.id)}
                 onchange={() => toggle(rec.id)}
@@ -460,7 +473,7 @@
                        버튼에 둔다 — 이미 포커스·키보드 조작이 되는 실제 버튼이라
                        li 자체를 인위적으로 상호작용 요소로 만들 필요가 없다. -->
                   <button type="button" class="text-left"
-                    onclick={() => (selectedId = rec.id)}
+                    onclick={() => selectRow(rec.id)}
                     ondblclick={() => (editingId = rec.id)}>
                     {rec.title}
                   </button>
@@ -487,7 +500,7 @@
                        아무 일도 일어나지 않는다. 더블클릭 편집은 그대로다:
                        첫 클릭이 행을 고르고 두 번째 클릭에서 편집이 열린다. -->
                   <button type="button" class="text-surface-500 text-left text-sm"
-                    onclick={() => (selectedId = rec.id)}
+                    onclick={() => selectRow(rec.id)}
                     ondblclick={() => (editingDescriptionId = rec.id)}>
                     {rec.description || '설명 없음'}
                   </button>
@@ -511,7 +524,7 @@
                        차지해서, 여기가 죽어 있으면 행에서 가장 누르기 쉬운
                        자리가 반응하지 않는다. -->
                   <button type="button" class="flex flex-wrap gap-1 text-left"
-                    onclick={() => (selectedId = rec.id)}
+                    onclick={() => selectRow(rec.id)}
                     ondblclick={() => startEditTags(rec)}>
                     {#each rec.tags as t (t)}<span class="chip preset-tonal">{t}</span>{/each}
                     {#if !rec.tags.length}<span class="text-surface-500 text-sm">태그 없음</span>{/if}
@@ -549,6 +562,7 @@
 
 <Player
   recording={selected}
+  {playRequest}
   formats={['original', ...data.formats]}
   mediaDir={data.mediaDir}
   onbookmark={addBookmark}
