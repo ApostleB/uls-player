@@ -31,10 +31,39 @@ export function mediaFilePath(
 }
 
 /**
- * 제목에서 남길 최대 글자수. 뒤에 붙는 `_YYYY-MM-DD.ext`까지 합쳐도
- * 대부분의 파일 시스템 한도(255바이트)에 여유가 있다.
+ * 파일명 전체(제목+구분자+날짜+확장자)가 넘지 않을 바이트 수. 255바이트는
+ * 흔한 파일 시스템 한도(ext4, APFS, NTFS)지만, 다운로드 시 브라우저나
+ * OS가 " (1)" 같은 걸 덧붙이는 경우가 있어 240으로 15바이트 여유를 둔다.
+ *
+ * 글자수가 아니라 바이트로 재는 이유: 이 앱의 제목은 전부 한글이고,
+ * UTF-8에서 한글 한 글자는 3바이트다. 글자수 기준 상한은 실제 파일
+ * 시스템이 강제하는 바이트 상한과 다른 단위라 의미가 없다.
  */
-const MAX_TITLE_CHARS = 80;
+const MAX_FILENAME_BYTES = 240;
+
+function byteLength(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
+/**
+ * UTF-8 바이트 기준으로 문자열을 자르되, 멀티바이트 글자를 반으로
+ * 쪼개지 않는다. 자른 바이트 열이 유효한 UTF-8이 될 때까지 끝에서부터
+ * 한 바이트씩 물러난다 — 글자 하나는 최대 4바이트라 몇 번 안에 끝난다.
+ */
+function truncateToUtf8Bytes(s: string, maxBytes: number): string {
+  const bytes = new TextEncoder().encode(s);
+  if (bytes.length <= maxBytes) return s;
+
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  for (let end = maxBytes; end >= 0; end--) {
+    try {
+      return decoder.decode(bytes.slice(0, end));
+    } catch {
+      // 멀티바이트 글자 중간에서 잘렸다 — 한 바이트 더 물러난다.
+    }
+  }
+  return '';
+}
 
 /**
  * 다운로드 파일명을 만든다 — `제목_녹음일자.확장자`.
@@ -50,15 +79,24 @@ const MAX_TITLE_CHARS = 80;
 export function downloadFileName(title: string, recordedAt: string, ext: string): string {
   const date = recordedAt.slice(0, 10);
 
-  const safe = title
+  const sanitized = title
     // 제어문자와 파일명에 못 쓰는 글자. Windows가 거부하는 집합이 가장
     // 넓어서 그것을 기준으로 잡는다.
     .replace(/[\x00-\x1f<>:"/\\|?*]/g, '-')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/^[.\s]+|[.\s]+$/g, '')
-    .slice(0, MAX_TITLE_CHARS)
-    .trim();
+    .replace(/^[.\s]+|[.\s]+$/g, '');
+
+  // 제목이 쓸 수 있는 바이트는 전체 한도에서 `_날짜.확장자` 몫을 뺀
+  // 나머지다 — 확장자 길이가 qta/m4a/mp3/wav로 다르니 고정폭으로 잡지
+  // 않는다.
+  const fixedSuffix = `_${date}.${ext}`;
+  const titleByteBudget = Math.max(0, MAX_FILENAME_BYTES - byteLength(fixedSuffix));
+
+  // 바이트로 잘라내면 잘린 지점에 원래 제목 중간에 있던 마침표나
+  // 공백이 새로 끝자리로 드러날 수 있다 — 앞뒤 마침표를 이미 뗀
+  // 뒤에 자르기 때문이다. 자른 다음 한 번 더 떨어낸다.
+  const safe = truncateToUtf8Bytes(sanitized, titleByteBudget).replace(/[.\s]+$/, '');
 
   return safe ? `${safe}_${date}.${ext}` : `${date}.${ext}`;
 }

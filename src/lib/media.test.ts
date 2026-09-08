@@ -64,9 +64,10 @@ describe('downloadFileName', () => {
   });
 
   it('아주 긴 제목은 잘라낸다', () => {
-    // 대부분의 파일 시스템이 파일명 255바이트를 넘기지 못한다.
+    // 대부분의 파일 시스템이 파일명 255바이트를 넘기지 못한다 — 한글은
+    // UTF-8에서 글자당 3바이트라 글자수가 아니라 바이트로 재야 한다.
     const name = downloadFileName('가'.repeat(300), '2026-07-09T00:00:00+09:00', 'mp3');
-    expect(name.length).toBeLessThanOrEqual(100);
+    expect(new TextEncoder().encode(name).length).toBeLessThanOrEqual(240);
     expect(name.endsWith('_2026-07-09.mp3')).toBe(true);
   });
 });
