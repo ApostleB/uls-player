@@ -94,6 +94,20 @@
     [...selectedIds].filter((id) => !shown.some((r) => r.id === id)).length
   );
 
+  // 서버(routes/api/download/+server.ts)는 고른 포맷의 파일이 없는
+  // 녹음을 조용히 건너뛰고, 하나도 못 담으면 404를 던진다. 이 화면은
+  // 폼 POST로 보낸다(위 다운로드 폼 주석 참고 — 수 GB짜리 zip을 fetch로
+  // 받으면 메모리에 통째로 올라간다) — 그래서 그 404는 fetch 에러가
+  // 아니라 탭 전체 내비게이션이 되고, 이 프로젝트엔 +error.svelte가
+  // 없어 사용자는 SvelteKit 기본 에러 페이지에 떨어져 선택·스크롤
+  // 위치를 잃는다. data.recordings(→ recordings)가 이미 각 녹음의
+  // files 맵을 들고 있으니, 제출 전에 실제로 몇 개가 담길지 여기서
+  // 미리 센다 — 버튼 라벨과 비활성화 여부가 둘 다 이 값을 쓴다.
+  const downloadableCount = $derived(
+    [...selectedIds].filter((id) => recordings.some((r) => r.id === id && r.files[downloadFormat]))
+      .length
+  );
+
   // SvelteKit 클라이언트 라우터는 하이드레이션이 끝난 뒤에야 goto 같은
   // 내비게이션 함수를 안전하게 받아준다. 이 컴포넌트의 첫 $effect 실행은
   // 하이드레이션 과정 그 자체(같은 마운트 배치) 안에서 일어나므로, 라우터가
@@ -402,8 +416,17 @@
             {/each}
           </select>
         </label>
-        <button type="submit" class="btn btn-sm preset-tonal">
-          {selectedIds.size}개 내려받기
+        <!-- 라벨은 selectedIds.size가 아니라 downloadableCount를 쓴다 —
+             서버가 이 포맷 파일이 없는 녹음을 조용히 건너뛰므로, 선택
+             개수를 그대로 보여주면 실제로 담기는 것보다 많다고 약속하는
+             셈이다. 두 수가 같으면("2개") 굳이 분수로 안 보여도 정직하고,
+             다르면("1/2개") 선택한 것 중 몇 개만 실제로 담긴다는 걸
+             바로 알 수 있게 한다. 하나도 못 담으면(downloadableCount가
+             0) 버튼을 비활성화해 그 404 자체를 흔한 경우에서 막는다 —
+             파일이 로드 이후 사라지는 경합은 여전히 남지만(이 화면이
+             막을 수 있는 범위 밖), 그 경우는 드물다. -->
+        <button type="submit" class="btn btn-sm preset-tonal" disabled={!downloadableCount}>
+          {downloadableCount}{downloadableCount === selectedIds.size ? '' : `/${selectedIds.size}`}개 내려받기
         </button>
       </form>
 

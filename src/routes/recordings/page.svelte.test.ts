@@ -1337,4 +1337,93 @@ describe('+page.svelte — 선택 항목을 zip으로 내려받기', () => {
     const format = form.querySelector('input[name="format"]') as HTMLInputElement;
     expect(format.value).toBe('wav');
   });
+
+  // 서버(routes/api/download/+server.ts)는 고른 포맷의 파일이 없는
+  // 녹음을 조용히 건너뛰고, 하나도 못 담으면 404를 던진다 — 폼 POST라
+  // 이 프로젝트에 없는 SvelteKit 기본 에러 페이지로 탭 전체가 튕긴다.
+  // 아래 세 테스트는 그 gap을 메우는 파생값(downloadableCount)을
+  // 못박는다: 라벨은 선택 개수가 아니라 실제로 담길 개수를 보여줘야
+  // 하고, 하나도 안 담기면 버튼 자체가 막혀야 한다.
+  it('고른 녹음이 모두 고른 포맷을 가지면 그 개수로 라벨을 단다', async () => {
+    const { getByRole, getByText } = render(Page, {
+      data: pageData([
+        rec({
+          id: '1',
+          title: '레인',
+          files: { original: { ext: 'qta', bytes: 100 }, mp3: { ext: 'mp3', bytes: 50 } }
+        }),
+        rec({
+          id: '2',
+          title: '정류장',
+          files: { original: { ext: 'qta', bytes: 100 }, mp3: { ext: 'mp3', bytes: 60 } }
+        })
+      ])
+    });
+
+    // 체크박스는 접근 이름이 없다(위 테스트들과 같은 이유) — 위치로
+    // 두 행을 모두 고른다.
+    const checkboxes = getByRole('checkbox');
+    await checkboxes.nth(0).click();
+    await checkboxes.nth(1).click();
+
+    // 기본 포맷은 mp3고(+page.svelte 주석 참고) 두 행 다 mp3 파일을
+    // 갖고 있으니, 선택 개수 그대로("2개")가 정직한 라벨이다 — 분수로
+    // 안 나타난다.
+    await expect.element(getByText('2개 내려받기')).toBeInTheDocument();
+  });
+
+  it('일부만 가진 포맷으로 바꾸면 라벨의 개수도 그만큼 줄어든다', async () => {
+    const { getByRole, getByLabelText, getByText } = render(Page, {
+      data: pageData([
+        rec({
+          id: '1',
+          title: '레인',
+          files: {
+            original: { ext: 'qta', bytes: 100 },
+            mp3: { ext: 'mp3', bytes: 50 },
+            wav: { ext: 'wav', bytes: 500 }
+          }
+        }),
+        rec({
+          id: '2',
+          title: '정류장',
+          files: { original: { ext: 'qta', bytes: 100 }, mp3: { ext: 'mp3', bytes: 60 } }
+        })
+      ])
+    });
+
+    const checkboxes = getByRole('checkbox');
+    await checkboxes.nth(0).click();
+    await checkboxes.nth(1).click();
+    await expect.element(getByText('2개 내려받기')).toBeInTheDocument();
+
+    const select = (await getByLabelText('내려받을 포맷').element()) as HTMLSelectElement;
+    select.value = 'wav';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await tick();
+
+    // '정류장'은 wav 파일이 없다 — 서버가 그 행을 조용히 건너뛰므로
+    // 실제로 담기는 건 1개뿐이다. "2/2"가 아니라 "1/2"라야 정직하다.
+    await expect.element(getByText('1/2개 내려받기')).toBeInTheDocument();
+  });
+
+  it('고른 녹음 중 아무도 그 포맷을 갖지 않으면 버튼이 비활성화된다', async () => {
+    const { getByRole } = render(Page, {
+      data: pageData([
+        rec({ id: '1', title: '레인', files: { original: { ext: 'qta', bytes: 100 } } }),
+        rec({ id: '2', title: '정류장', files: { original: { ext: 'qta', bytes: 100 } } })
+      ])
+    });
+
+    const checkboxes = getByRole('checkbox');
+    await checkboxes.nth(0).click();
+    await checkboxes.nth(1).click();
+
+    // 기본 포맷 mp3를 둘 다 갖고 있지 않다 — 그대로 제출하면 서버가
+    // 404를 던지고, 폼 POST라 브라우저 탭 전체가 이 프로젝트에 없는
+    // 기본 에러 페이지로 튕긴다. 그 경로를 버튼 비활성화로 흔한
+    // 경우에서 막는다(파일이 로드 이후 사라지는 경합까지는 못 막는다
+    // — 이 화면이 알 수 없는 범위라 out of scope).
+    await expect.element(getByRole('button', { name: /내려받기/ })).toBeDisabled();
+  });
 });
