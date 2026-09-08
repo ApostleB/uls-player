@@ -53,6 +53,12 @@ export const POST: RequestHandler = async ({ request }) => {
   for (const id of ids) {
     const rec = await getById(config, id);
     if (!rec) continue;
+    // Object.hasOwn로 소유 속성만 본다 — 그냥 rec.files[format]이면
+    // format이 'constructor' 같은 프로토타입 이름일 때 실제 파일이 아닌
+    // Object.prototype의 값을 읽어버린다. 지금은 그 값들이 함수라 아래
+    // mediaFileExt/mediaFilePath가 만드는 경로가 stat에서 그냥 404로
+    // 끝나 exploit 가능하진 않지만, 클래스 전체를 여기서 없앤다.
+    if (!Object.hasOwn(rec.files, format)) continue;
     const entry = rec.files[format];
     if (!entry) continue;
 

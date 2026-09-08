@@ -1214,7 +1214,7 @@ describe('Player.svelte — playRequest로 재클릭 재생 의사를 받는다 
       simulateRealPlaySucceeds();
       return Promise.resolve();
     });
-    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
       simulateRealPauseSucceeds();
     });
 
@@ -1235,7 +1235,7 @@ describe('Player.svelte — playRequest로 재클릭 재생 의사를 받는다 
     // 결과(audio·recording을 더하기 전)로 resolve하므로, 여기서 추가한
     // 필드가 조용히 사라진다(실측: 처음 시도했을 때 audio가 undefined로
     // 나왔다). 그래서 필요한 필드만 명시적으로 골라 담는다.
-    return { rerender: screen.rerender, audio: audioEl(), recording };
+    return { rerender: screen.rerender, audio: audioEl(), recording, playSpy, pauseSpy };
   }
 
   function toggleButton(): HTMLButtonElement {
@@ -1284,11 +1284,63 @@ describe('Player.svelte — playRequest로 재클릭 재생 의사를 받는다 
   it('같은 녹음의 새 객체로 바뀌어도(목록 갱신) 위치가 유지된다', async () => {
     // send()가 PATCH 응답으로 목록을 덮어쓰면 같은 id의 새 객체가 온다.
     // playRequest는 그대로이므로 아무 일도 일어나면 안 된다.
+    //
+    // 참조만 바뀌었을 뿐이라는 것을 currentTime만으로는 증명하지 못한다
+    // — lastPlayRequest 메모를 없애 requested가 항상 true가 되게 해도
+    // idChanged가 false라 "이어서 재생" 분기(paused = false)로 빠지는데,
+    // 그 분기는 위치를 건드리지 않으므로 currentTime 단언은 그대로
+    // 통과한다. 그래서 재생을 미리 멈춰 두고, 참조 교체 뒤에도 여전히
+    // 멈춰 있는지(=아무 일도 일어나지 않았는지)를 함께 확인한다 —
+    // lastPlayRequest 메모가 없으면 이 분기가 paused를 false로 되돌려
+    // 재생이 다시 시작되므로 여기서 RED가 된다.
     const { rerender, audio, recording } = await setupPlaying();
     audio.currentTime = 12;
+    await pause();
+    expect(audio.paused).toBe(true);
 
     await rerender({ recording: { ...recording, description: '고침' } });
     await tick();
     expect(audio.currentTime).toBeGreaterThan(11);
+    expect(audio.paused).toBe(true);
+  });
+
+  it('spec §3.3 — 이어서 재생은 단일 쓰기라 네이티브·반응형이 어긋나 있어도 그대로 둔다', async () => {
+    // §3.3: "재생 중이라면 paused가 이미 false이고, 거기에 false를
+    // 넣는 것이 무변화라는 사실이 정확히 원하는 '아무 일 없음'이다.
+    // 그러므로 이 경로는 paused = false 한 번으로 끝낸다."
+    //
+    // 반응형 paused와 실제 네이티브 상태가 둘 다 재생 중으로 맞는
+    // 보통의 경우에는 단일 쓰기·이중 쓰기가 관측 가능한 차이를 전혀
+    // 만들지 않는다(직접 검증: 이미 재생 중인 상태에서 playRequest만
+    // 올려도 두 구현 모두 play/pause 스파이가 추가로 불리지 않는다) —
+    // 그 경우만 놓고 보면 §3.3은 정말 스타일 선호로 보일 수 있다.
+    //
+    // 차이는 이 파일의 `simulateBrowserAbortsOnSrcChange`가 흉내내는
+    // 것과 같은 메커니즘(브라우저의 로드 알고리즘이 이벤트 없이 네이티브
+    // paused를 되돌리는 것)이 **같은 id에서** 일어난 경우에 드러난다.
+    // 이 경로는 id가 바뀌지 않으므로 lastId 가드가 이중 쓰기를 강제하는
+    // 그 분기를 타지 않는다 — 오직 이 `!idChanged` 분기만 지나간다.
+    // 단일 쓰기 `paused = false`는 반응형 값이 이미 false이므로 무변화
+    // — bind:paused 내부 이펙트가 다시 스케줄되지 않아 어긋남을 고치지
+    // 않고 play()도 다시 부르지 않는다(아래 단언이 그 "그대로 둠"을
+    // 고정한다). `paused = true; paused = false;` 이중 쓰기로 바꾸면
+    // 첫 대입이 실제 변화라 이펙트가 다시 스케줄되고, 최종값(false)과
+    // 실제 네이티브(true)가 어긋나 있어 play()를 한 번 더 불러 이
+    // 테스트를 깨뜨린다(직접 뮤테이션 검증: RED).
+    //
+    // 이 어긋남 자체는 지금 코드에서 도달하지 않는다 — 같은 id로 src가
+    // 바뀌는 유일한 경로(switchFormat)는 이 이펙트가 아니라
+    // restorePlaybackPosition()으로 스스로 복구한다(player.ts 참고).
+    // 그래도 §3.3이 명시적으로 트레이드오프하는 지점(네이티브 어긋남을
+    // 스스로 고치지 않는 대가로 이미 맞는 상태에서는 아무 일도 안
+    // 만든다)을 코드로 못박아 둔다.
+    const { rerender, audio, playSpy } = await setupPlaying();
+    const playCallsBefore = playSpy.mock.calls.length;
+
+    Object.defineProperty(audio, 'paused', { get: () => true, configurable: true });
+    await rerender({ playRequest: 1 });
+    await tick();
+
+    expect(playSpy.mock.calls.length).toBe(playCallsBefore);
   });
 });

@@ -380,7 +380,7 @@ describe('+page.svelte — 재생 바 높이(실제 배치)', () => {
     // 실사용을 대표하지 못한다. 실제 저장소의 269개 녹음은 전부 이 세
     // 파일을 갖고 있으므로, 선택된 바에는 항상 포맷 버튼 세 개(원본·
     // mp3·wav)와 그 다운로드 링크가 뜬다 — 그 실제 모양으로 재야 한다.
-    const { getByRole, getByTestId } = render(Page, {
+    const { getByRole, getByTestId, getByText } = render(Page, {
       data: {
         ...pageData([
           rec({
@@ -400,6 +400,10 @@ describe('+page.svelte — 재생 바 높이(실제 배치)', () => {
     const bar = () =>
       (getByTestId('player-bar').element() as HTMLElement).getBoundingClientRect().height;
     const empty = bar();
+
+    // spec §2.2: 아무것도 고르지 않은 빈 바의 제목 자리는 정확히 이
+    // 문구여야 한다 — 지금까지는 높이만 쟀고 문구 자체는 테스트가 없었다.
+    expect(getByText('목록에서 녹음을 고르세요').element()).toBeTruthy();
 
     await getByRole('button', { name: '레인', exact: true }).click();
     await tick();
