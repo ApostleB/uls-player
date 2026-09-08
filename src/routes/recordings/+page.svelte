@@ -220,6 +220,33 @@
     return true;
   }
 
+  /**
+   * 제목·설명 편집에서 Enter로 저장을 마친다. 저장 자체는 onblur 한
+   * 곳에서만 하므로, 여기서는 blur만 시킨다 — 트리거는 셋(blur·Enter·완료
+   * 버튼)이지만 저장 경로는 하나다.
+   *
+   * 조합 중인 Enter는 무시한다. 한글에서는 조합 중에도 keydown이 오는데
+   * 그때 처리하면 TagInput이 겪었던 것처럼 값이 갈라진다. 조합이 끝나면
+   * 브라우저가 Enter를 한 번 더 주므로 저장할 기회를 잃지 않는다.
+   */
+  function commitOnEnter(e: KeyboardEvent) {
+    if (e.isComposing) return;
+    if (e.key !== 'Enter') return;
+    (e.currentTarget as HTMLInputElement).blur();
+  }
+
+  /**
+   * 편집 모드가 열릴 때(= 이 input이 새로 생성될 때) 곧바로 포커스를
+   * 준다. 이게 없으면 더블클릭 후 완료 버튼을 바로 누르는 경로에서 input이
+   * 한 번도 포커스된 적이 없어 blur가 안 일어나고, 완료가 아무것도 저장하지
+   * 못한 채 편집 모드만 남는다. Svelte action은 엘리먼트가 마운트될 때 한
+   * 번만 실행돼 이 타이밍과 정확히 맞고, onblur 하나로 저장을 몰아둔 기존
+   * 구조를 그대로 둔 채(새 저장 경로를 추가하지 않고) 포커스만 옮긴다.
+   */
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+  }
+
   function toggle(id: string) {
     const s = new Set(selectedIds);
     s.has(id) ? s.delete(id) : s.add(id);
@@ -410,14 +437,24 @@
                    동작을 행 선택이 가리지 않게 전파만 끊는 것이다. -->
               <div class="flex min-w-0 flex-col gap-1" onclick={(e) => e.stopPropagation()}>
                 {#if editingId === rec.id}
-                  <input class="input" value={rec.title}
-                    onblur={(e) => {
-                      send({ op: 'patch', id: rec.id, title: e.currentTarget.value }).then(
-                        (ok) => {
-                          if (ok) editingId = null;
-                        }
-                      );
-                    }} />
+                  <div class="flex items-center gap-2">
+                    <!-- py-1로 줄인다 — 기본 높이 그대로면 편집을 시작할 때
+                         행이 커져서 아래 행들이 밀린다. -->
+                    <input class="input py-1" value={rec.title} aria-label="제목 수정"
+                      use:focusOnMount
+                      onkeydown={commitOnEnter}
+                      onblur={(e) => {
+                        send({ op: 'patch', id: rec.id, title: e.currentTarget.value }).then(
+                          (ok) => {
+                            if (ok) editingId = null;
+                          }
+                        );
+                      }} />
+                    <!-- 저장하지 않는다 — blur만 일으킨다. 저장은 위
+                         onblur 하나가 맡는다. -->
+                    <button type="button" class="btn btn-sm preset-filled shrink-0"
+                      aria-label="제목 편집 완료">완료</button>
+                  </div>
                 {:else}
                   <!-- 재생 대상 선택(Task 15의 시접)과 제목 수정 진입을 같은
                        버튼에 둔다 — 이미 포커스·키보드 조작이 되는 실제 버튼이라
@@ -430,14 +467,20 @@
                 {/if}
 
                 {#if editingDescriptionId === rec.id}
-                  <input class="input text-sm" value={rec.description} aria-label="설명 수정"
-                    onblur={(e) => {
-                      send({ op: 'patch', id: rec.id, description: e.currentTarget.value }).then(
-                        (ok) => {
-                          if (ok) editingDescriptionId = null;
-                        }
-                      );
-                    }} />
+                  <div class="flex items-center gap-2">
+                    <input class="input py-1 text-sm" value={rec.description} aria-label="설명 수정"
+                      use:focusOnMount
+                      onkeydown={commitOnEnter}
+                      onblur={(e) => {
+                        send({ op: 'patch', id: rec.id, description: e.currentTarget.value }).then(
+                          (ok) => {
+                            if (ok) editingDescriptionId = null;
+                          }
+                        );
+                      }} />
+                    <button type="button" class="btn btn-sm preset-filled shrink-0"
+                      aria-label="설명 편집 완료">완료</button>
+                  </div>
                 {:else}
                   <!-- 제목 버튼과 같은 이유로 onclick을 직접 갖는다 — 부모
                        div가 행 클릭을 끊으므로, 여기 없으면 설명을 눌렀을 때

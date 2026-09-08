@@ -67,6 +67,20 @@ function setSearchParams(qs: string) {
   mockUrl.search = qs;
 }
 
+/**
+ * Task 3부터 행을 클릭해 Player가 뜨면 마운트만으로 자동재생을 건다
+ * (Player.svelte의 lastId 이펙트 참고). 이 파일 대부분의 테스트는 행
+ * 클릭·인라인 편집·필터처럼 재생 자체와 무관한데, 존재하지 않는 가짜
+ * id의 진짜 play()를 그대로 두면 매번 처리되지 않은 프라미스 거부가
+ * 생긴다 — bind:paused(node_modules/svelte 내부 구현)가 실패한 play()를
+ * 자기 쪽 상태만 되돌리고 나서 에러를 다시 던지기 때문이다(실측:
+ * task-3-report.md, src/lib/components/Player.svelte.test.ts의 같은
+ * 조치 참고). vi.spyOn이 아니라 프로토타입 자체를 안전한 기본값으로
+ * 바꿔둔다 — vi.spyOn으로 만든 목만 걷어내는 정리 루틴에 의존하지 않고,
+ * 이 파일의 모든 테스트에 항상 적용되게 한다.
+ */
+HTMLMediaElement.prototype.play = () => Promise.resolve();
+
 function rec(over: Partial<Recording> & { id: string }): Recording {
   return {
     title: '레인',
@@ -1028,5 +1042,185 @@ describe('+page.svelte — 행에서 죽은 클릭 영역이 없다', () => {
     await browserPage.getByText('태그 없음').click();
 
     await playerShows('레인');
+  });
+});
+
+describe('+page.svelte — 제목·설명 인라인 편집', () => {
+  /** 편집 중인 입력창을 찾는다. */
+  function editInput(label: string): HTMLInputElement {
+    const el = document.querySelector(`input[aria-label="${label}"]`);
+    if (!el) throw new Error(`${label} 입력창이 없다`);
+    return el as HTMLInputElement;
+  }
+
+  /**
+   * 이 파일은 fetch를 테스트마다 각자 모킹한다(파일 전역 모킹이 없다).
+   * typeof fetch로 시그니처를 못박는 것도 기존 테스트와 같은 이유다 —
+   * 안 하면 mock.calls의 각 항목이 빈 튜플이 되어 인자 접근이 컴파일
+   * 에러가 난다.
+   */
+  function stubFetch() {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ recordings: [], tags: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  // task-4-brief.md의 원안은 이 describe의 여러 테스트에서 fetchMock
+  // 자체의 호출 여부·횟수를 직접 단언했다. 그런데 이 파일에는 이미
+  // 위쪽에 patchCalls()가 있고, 그 헬퍼의 주석이 설명하는 것과 정확히
+  // 같은 이유로 그 단언은 이 코드베이스에서 성립하지 않는다: 설명·제목
+  // 버튼을 더블클릭하면 첫 클릭이 행을 선택해(Task "행을 누르면 재생을
+  // 시작한다") Player.svelte의 lastId 이펙트가 /api/waveform/:id를
+  // 먼저 GET하고, 이 describe의 stubFetch()는 전역 fetch를 통째로
+  // 잡으므로 그 GET도 fetchMock에 함께 찍힌다. 실측(구현 전 실행)으로도
+  // 확인했다: '조합 중인 Enter로는 저장하지 않는다'는 조합 처리와
+  // 무관하게 이 GET 한 번만으로 이미 실패했고, '완료 버튼...정확히
+  // 한 번'은 GET 1회 + PATCH 1회로 항상 2가 되어 실패했으며, '제목
+  // 편집에도 Enter와...'는 Enter를 보내기도 전에 이 GET 때문에
+  // `toHaveBeenCalled()`가 이미 참이 되어 아무것도 못 박지 못했다(요구
+  // 사항 4번 "구현 전에 통과하면 안 된다"에 그대로 걸린다). 그래서 이
+  // 네 테스트는 fetchMock 전체가 아니라 patchCalls(fetchMock)(=
+  // /api/recordings로 나간 PATCH만 필터링)로 저장 여부·횟수를 잰다 —
+  // 브라우저에서 실제로 지키려는 요구사항(저장 경로는 하나, 조합 중
+  // Enter는 무시)은 그대로 두고, 이 페이지에 이미 있는 무관한 부수효과
+  // (재생 시작 시 파형을 받아오는 GET)만 걸러낸다.
+
+  it('설명 편집에서 Enter를 누르면 저장된다', async () => {
+    const fetchMock = stubFetch();
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', description: '빗소리' })]) });
+
+    await browserPage.getByText('빗소리').dblClick();
+    const input = editInput('설명 수정');
+    // 최종 브랜치 리뷰 전까지는 더블클릭으로 편집 모드에 들어가도 이
+    // 입력창에 자동으로 포커스가 가지 않았다(태그 편집은 지금도 그렇다 —
+    // 완료 버튼에 onclick이 있어 이 구멍이 없다). 리뷰에서 지적된 뒤
+    // use:focusOnMount로 제목·설명 입력은 마운트 시 스스로 포커스를
+    // 얻도록 고쳤지만, 이미 포커스된 요소에 focus()를 다시 불러도
+    // 아무 부작용이 없으므로 아래 줄은 그대로 남긴다 — 이 테스트가 보는
+    // 것(Enter가 저장으로 이어진다)은 포커스가 자동으로 왔는지 수동으로
+    // 왔는지와 무관하다. "입력을 건드리지 않고 완료만 누르는" 경로는
+    // 이 describe 마지막의 별도 테스트가 pin한다.
+    input.focus();
+    input.value = '고친 설명';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+    await vi.waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/recordings',
+        expect.objectContaining({
+          body: expect.stringContaining('고친 설명')
+        })
+      )
+    );
+  });
+
+  it('조합 중인 Enter로는 저장하지 않는다', async () => {
+    // TagInput이 이미 같은 함정에 빠진 적이 있다 — "정준일"을 치고
+    // Enter를 누르면 조합 중 keydown과 확정 후 keydown이 둘 다 들어와
+    // 값이 갈라졌다.
+    const fetchMock = stubFetch();
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', description: '빗소리' })]) });
+
+    await browserPage.getByText('빗소리').dblClick();
+    const input = editInput('설명 수정');
+    input.focus();
+    input.value = '정준일';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true } as KeyboardEventInit)
+    );
+
+    expect(patchCalls(fetchMock)).toHaveLength(0);
+  });
+
+  it('설명 편집의 완료 버튼을 누르면 저장된다', async () => {
+    const fetchMock = stubFetch();
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', description: '빗소리' })]) });
+
+    await browserPage.getByText('빗소리').dblClick();
+    const input = editInput('설명 수정');
+    input.focus();
+    input.value = '고친 설명';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    await browserPage.getByRole('button', { name: '설명 편집 완료' }).click();
+
+    await vi.waitFor(() => expect(patchCalls(fetchMock)).toHaveLength(1));
+  });
+
+  it('완료 버튼을 눌러도 저장 요청은 한 번만 나간다', async () => {
+    // 완료 버튼은 blur를 일으키기만 하고, 저장은 onblur 한 곳에서만
+    // 한다 — 버튼이 따로 저장하면 blur 저장과 겹쳐 두 번 나간다.
+    const fetchMock = stubFetch();
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', description: '빗소리' })]) });
+
+    await browserPage.getByText('빗소리').dblClick();
+    const input = editInput('설명 수정');
+    input.focus();
+    input.value = '고친 설명';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    await browserPage.getByRole('button', { name: '설명 편집 완료' }).click();
+
+    await vi.waitFor(() => expect(patchCalls(fetchMock)).toHaveLength(1));
+    expect(patchCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it('제목 편집에도 Enter와 완료 버튼이 있다', async () => {
+    const fetchMock = stubFetch();
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    await browserPage.getByRole('button', { name: '레인' }).dblClick();
+    const input = editInput('제목 수정');
+    input.focus();
+    input.value = '고친 제목';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+
+    await expect.element(browserPage.getByRole('button', { name: '제목 편집 완료' })).toBeInTheDocument();
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await vi.waitFor(() => expect(patchCalls(fetchMock)).toHaveLength(1));
+  });
+
+  // 위 테스트들은 모두 input.focus()를 직접 불러 "사용자가 입력창을 한 번
+  // 눌렀다"는 경로를 흉내낸다. 그런데 실제로는 더블클릭으로 편집을 열고
+  // 곧장 완료만 누르는 경로도 있다 — 리뷰에서 지적된 구멍이 정확히
+  // 이것이다. 완료 버튼에는 onclick이 없고 blur만으로 저장하므로,
+  // 입력창이 한 번도 포커스된 적이 없으면 완료를 눌러도 뺏을 포커스가
+  // 없어 blur가 안 나고 아무것도 저장되지 않는다. 아래 두 테스트는
+  // input.focus()를 절대 호출하지 않고 이 경로만으로 저장이 정확히 한
+  // 번 일어나는지 확인한다 — autofocus를 걷어내면 RED가 돼야 pin이
+  // 성립한다(task-4-report.md에 그 관찰을 남긴다).
+  it('설명 편집을 열고 입력창을 건드리지 않은 채 완료만 눌러도 저장 요청이 정확히 한 번 나간다', async () => {
+    const fetchMock = stubFetch();
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', description: '빗소리' })]) });
+
+    await browserPage.getByText('빗소리').dblClick();
+    editInput('설명 수정'); // 존재만 확인한다 — focus()를 부르지 않는다.
+
+    await browserPage.getByRole('button', { name: '설명 편집 완료' }).click();
+
+    await vi.waitFor(() => expect(patchCalls(fetchMock)).toHaveLength(1));
+    expect(patchCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it('제목 편집을 열고 입력창을 건드리지 않은 채 완료만 눌러도 저장 요청이 정확히 한 번 나간다', async () => {
+    const fetchMock = stubFetch();
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    await browserPage.getByRole('button', { name: '레인' }).dblClick();
+    editInput('제목 수정'); // 존재만 확인한다 — focus()를 부르지 않는다.
+
+    await browserPage.getByRole('button', { name: '제목 편집 완료' }).click();
+
+    await vi.waitFor(() => expect(patchCalls(fetchMock)).toHaveLength(1));
+    expect(patchCalls(fetchMock)).toHaveLength(1);
   });
 });

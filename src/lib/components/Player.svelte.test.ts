@@ -27,6 +27,23 @@ function bm(id: string, atSec: number, note = '', endSec: number | null = null):
   return { id, atSec, endSec, note };
 }
 
+/**
+ * Task 3부터 Player는 마운트만 해도(recording이 바뀌면) 자동재생을
+ * 건다(행 클릭 = 듣겠다는 뜻 — Player.svelte의 lastId 이펙트 참고).
+ * 이 파일 대부분의 테스트는 재생 자체와 무관한데(북마크 편집, 파형
+ * 마커, 파일 경로 등), 존재하지 않는 가짜 id(aaaa 등)의 진짜 play()를
+ * 그대로 두면 매번 처리되지 않은 프라미스 거부가 생긴다 — bind:paused
+ * (node_modules/svelte 내부 구현, 우리가 바꿀 수 없다)가 실패한 play()를
+ * 자기 쪽 상태만 되돌리고 나서 에러를 다시 던지기 때문이다(실측:
+ * task-3-report.md). vi.spyOn이 아니라 프로토타입 자체를 안전한
+ * 기본값으로 바꿔둔다 — 아래 afterEach의 vi.restoreAllMocks()는
+ * vi.spyOn으로 만든 목만 되돌리므로, 재생 자체를 검증하는 테스트가
+ * 자기 목(vi.spyOn(HTMLMediaElement.prototype, 'play')...)을 씌웠다가
+ * 정리돼도 이 안전한 기본값으로 돌아오지, 처리되지 않은 거부를 다시
+ * 일으키는 진짜 네이티브 play()로 돌아오지 않는다.
+ */
+HTMLMediaElement.prototype.play = () => Promise.resolve();
+
 afterEach(() => {
   vi.restoreAllMocks();
   document.querySelectorAll('input[data-test-loose]').forEach((el) => el.remove());
@@ -76,6 +93,14 @@ describe('Player.svelte — 입력 필드에 포커스가 있으면 단축키를
     const screen = render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3', 'wav'] });
     await screen;
 
+    // Task 3부터 마운트 자체가 자동재생을 건다(행 클릭 = 듣겠다는 뜻).
+    // 그 호출이 끝난 뒤를 기준선으로 잡아야, 이 테스트가 실제로 보려는
+    // "입력 필드에 포커스가 있으면 Space가 추가로 재생을 걸지 않는다"를
+    // 마운트의 자동재생과 구분해서 볼 수 있다(이 테스트의 관심사는
+    // 그 뒤 단축키 가드다 — task-3-report.md 참고).
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    playSpy.mockClear();
+
     // 목록 화면의 제목 입력창 같은 요소를 흉내낸다.
     const input = document.createElement('input');
     input.setAttribute('data-test-loose', '1');
@@ -112,6 +137,12 @@ describe('Player.svelte — 입력 필드에 포커스가 있으면 단축키를
     const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
 
     render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3', 'wav'] });
+
+    // Task 3부터 마운트 자체가 자동재생을 건다 — 그 호출을 기준선으로
+    // 흘려보낸 뒤에야 이 테스트가 보려는 "select에 포커스가 있으면
+    // 추가로 재생을 걸지 않는다"를 볼 수 있다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    playSpy.mockClear();
 
     const select = await page.getByRole('combobox').element();
     (select as HTMLSelectElement).focus();
@@ -182,6 +213,12 @@ describe('Player.svelte — A-B 구간 안전망 (Finding 3)', () => {
     const screen = render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3', 'wav'] });
     await screen;
 
+    // Task 3부터 마운트 자체가 자동재생을 건다 — 이 테스트의 관심사는
+    // onEnded가 A-B 구간에서 이어서 재생을 거는지이지 마운트 자동재생이
+    // 아니므로, 그 호출을 기준선으로 흘려보낸 뒤 지운다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    playSpy.mockClear();
+
     const audioEl = document.querySelector('audio') as HTMLAudioElement;
 
     // A 지정 → B 지정. currentTime은 로드 전이라 항상 0이므로, markLoop의
@@ -201,6 +238,12 @@ describe('Player.svelte — A-B 구간 안전망 (Finding 3)', () => {
     const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
     const screen = render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3', 'wav'] });
     await screen;
+
+    // Task 3부터 마운트 자체가 자동재생을 건다 — 이 테스트가 보려는
+    // "A-B 구간이 없으면 ended에서 다시 재생하지 않는다"와는 다른
+    // 호출이므로 기준선으로 흘려보낸 뒤 지운다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    playSpy.mockClear();
 
     const audioEl = document.querySelector('audio') as HTMLAudioElement;
     Object.defineProperty(audioEl, 'currentTime', { value: 20, writable: true, configurable: true });
@@ -795,6 +838,12 @@ describe('Player.svelte — 불러오는 중과 실패', () => {
     const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
     render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
 
+    // Task 3부터 마운트 자체가 자동재생을 건다 — 그 호출을 흘려보낸
+    // 뒤에야 이 테스트가 보려는 "로딩 중에는 Space가 추가로 재생을
+    // 걸지 않는다"를 볼 수 있다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    playSpy.mockClear();
+
     audioEl().dispatchEvent(new Event('loadstart'));
     await expect.element(page.getByRole('button', { name: '불러오는 중' })).toBeDisabled();
 
@@ -811,7 +860,12 @@ describe('Player.svelte — 불러오는 중과 실패', () => {
     ).rejects.toThrow();
   });
 
-  it('재생 가능해지면 재생 버튼으로 돌아온다', async () => {
+  it('재생 가능해지면(canplay) 자동재생이 반영되어 재생 상태가 된다', async () => {
+    // 이 테스트는 원래 "canplay가 오면 '재생' 버튼(멈춘 상태)으로
+    // 돌아온다"는, 뒤집힌 no-auto-play 계약을 그대로 단언했다(브리프
+    // Q3). Task 3부터 행을 선택하면 자동재생이 걸리므로, canplay
+    // 시점엔 '일시정지'(재생 중)여야 정직하다.
+    //
     // '재생' 라벨만으로는 ready와 error를 구분할 수 없다 — 버튼은
     // loadState==='loading'일 때만 다른 라벨('불러오는 중')을 쓰고, ready와
     // error는 둘 다 '재생'으로 렌더링된다(오류는 옆의 별도 문구로만
@@ -824,9 +878,19 @@ describe('Player.svelte — 불러오는 중과 실패', () => {
     // 그래서 여기서는 뜸을 들이지 않는다 — tick()으로 Svelte의 반응형
     // 플러시(마이크로태스크 한 번)만 정확히 기다린 뒤 바로 확인한다.
     // 진짜 네트워크 응답은 실제 IPC·네트워크 스택을 거치므로 마이크로
-    // 태스크보다 훨씬 느려 이 시점엔 아직 도착할 수 없다 — canplay를
-    // 처리하지 않았다면(뮤테이션) 이 시점에도 여전히 '불러오는 중'이고,
-    // 처리했다면 이미 '재생'이다.
+    // 태스크보다 훨씬 느려 이 시점엔 아직 도착할 수 없다.
+    //
+    // play()를 목으로 막되, 성공했다면 벌어질 일(네이티브 paused가
+    // 실제로 false가 되는 것, HTML 표준 play() 알고리즘 1단계)까지
+    // 함께 흉내낸다 — 그러지 않으면 canplay가 bind:paused 내부의
+    // "우리 쪽 상태 vs 네이티브 상태" 재동기화를 건드려 방금 자동재생이
+    // 켠 상태를 도로 꺼버린다(위 "녹음을 바꾸면 재생을 시작한다"
+    // describe와 task-3-report.md 참고).
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+      audioEl().dispatchEvent(new Event('play'));
+      return Promise.resolve();
+    });
     const button = () => document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
     render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
 
@@ -834,7 +898,7 @@ describe('Player.svelte — 불러오는 중과 실패', () => {
     audioEl().dispatchEvent(new Event('canplay'));
     await tick();
 
-    expect(button().textContent?.trim()).toBe('재생');
+    expect(button().textContent?.trim()).toBe('일시정지');
     expect(document.body.textContent).not.toContain('불러오지 못했습니다');
   });
 
@@ -898,6 +962,12 @@ describe('Player.svelte — 불러오는 중과 실패', () => {
     vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
     render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
 
+    // Task 3부터 마운트 자체가 자동재생을 건다 — 이 테스트가 보려는
+    // 것은 retry()가 "스스로" 재생을 걸지 않는다는 것이지 마운트
+    // 자동재생이 아니므로, 그 호출을 기준선으로 흘려보낸 뒤 지운다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    playSpy.mockClear();
+
     audioEl().dispatchEvent(new Event('loadstart'));
     audioEl().dispatchEvent(new Event('error'));
     await expect.element(page.getByRole('button', { name: '다시 시도' })).toBeInTheDocument();
@@ -911,16 +981,27 @@ describe('Player.svelte — 불러오는 중과 실패', () => {
     // load()를 no-op으로 막아 이 테스트가 진짜 네트워크 타이밍과 겨루지
     // 않게 한다 — 오직 합성 이벤트만으로 상태를 결정한다.
     vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+    // Task 3부터 마운트 자체가 자동재생을 건다 — 이 테스트는 원래
+    // canplay 직후를 "아직 재생을 누르지 않은 상태"로 가정하고 이어서
+    // 별도 합성 이벤트로 재생 중을 흉내냈지만(no-auto-play 계약),
+    // 이제는 canplay만으로 이미 재생 중이어야 정직하다(task-3-report.md
+    // Q3). play()를 목으로 막되 성공했다면 벌어질 일(네이티브 paused가
+    // 실제로 false가 되는 것, HTML 표준 play() 알고리즘 1단계)까지
+    // 함께 흉내낸다 — 그러지 않으면 canplay가 bind:paused 내부의
+    // 재동기화를 건드려 자동재생이 켠 상태를 도로 꺼버린다(위 "녹음을
+    // 바꾸면 재생을 시작한다" describe 참고).
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+      audioEl().dispatchEvent(new Event('play'));
+      return Promise.resolve();
+    });
     render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
 
     audioEl().dispatchEvent(new Event('loadstart'));
     audioEl().dispatchEvent(new Event('canplay'));
-    await expect.element(page.getByRole('button', { name: '재생' })).toBeInTheDocument();
-
-    // "재생 중"이었다고 가정한다 — 위 Finding 1 테스트와 같은 방식으로
-    // 읽기 전용 paused 게터를 스텁하고 play 이벤트를 흉내낸다.
-    Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
-    audioEl().dispatchEvent(new Event('play'));
+    // 자동재생 덕분에 이미 재생 중이다 — 여기가 이 테스트에서 no-auto-play
+    // 계약을 새 계약으로 바꾼 유일한 지점이고, 아래 나머지 흐름(재생 중
+    // 실패 → 다시 시도 → 박제되지 않고 실제 상태를 따라간다)은 그대로다.
     await expect.element(page.getByRole('button', { name: '일시정지' })).toBeInTheDocument();
 
     // 재생 중 실패한다.
@@ -948,5 +1029,136 @@ describe('Player.svelte — 불러오는 중과 실패', () => {
     await screen.rerender({ recording: rec({ id: 'bbbb', title: '정류장' }), formats: ['mp3'] });
 
     expect(document.body.textContent).not.toContain('불러오지 못했습니다');
+  });
+});
+
+describe('Player.svelte — 녹음을 바꾸면 재생을 시작한다', () => {
+  function audioEl(): HTMLAudioElement {
+    const el = document.querySelector('audio');
+    if (!el) throw new Error('audio 엘리먼트가 없다');
+    return el as HTMLAudioElement;
+  }
+
+  function button() {
+    return document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
+  }
+
+  /**
+   * 브리프가 준 원래 두 테스트는 이 파일의 다른 테스트와 달리 play()를
+   * 목으로 막지 않고 expect.element(...)/click() 같은 재시도형 API로
+   * 뜸을 들였다. 존재하지 않는 녹음 id(aaaa/bbbb)라 /api/media/.../mp3가
+   * 진짜 네트워크로 요청되고 곧 진짜 404가 도착해 loadState를 'error'로
+   * 덮어써 버튼이 '다시 시도'에 고정된다 — canplay를 아무리 흘려도
+   * 재시도형 assertion은 결국 그 실제 오류를 관찰하고 15초 타임아웃으로
+   * 실패한다(실측: task-3-report.md §4). 그래서 이 파일의 기존 관례대로
+   * play()를 목으로 막고, canplay 합성 이벤트 뒤 tick()으로 반응형
+   * 플러시 한 번만 정확히 기다린 뒤 즉시 확인한다.
+   *
+   * 다만 이 목은 단순히 성공만 흉내내면 안 된다 — bind:paused 내부
+   * effect는 media.play()가 진짜 성공하면 네이티브 media.paused(읽기
+   * 전용)가 실제로 false가 되는 것에 의존하는데(HTML 표준 play()
+   * 알고리즘 1단계), play()만 목으로 막고 네이티브 paused는 그대로
+   * 두면, 뒤이어 오는 canplay가 "우리 쪽 반응형 상태(false)와 실제
+   * media.paused(여전히 true)가 다르다"고 보고 방금 켠 재생 상태를
+   * 조용히 꺼버린다 — 구현이 맞아도 이 확인 방법 자체가 거짓 실패를
+   * 낸다(뮤테이션 없이도 재현됨). 그래서 위 "Finding 1" 테스트와 같은
+   * 기법(네이티브 paused 게터를 스텁하고 play 이벤트를 쏨)으로, play()가
+   * 실제로 성공했다면 벌어질 일을 각 단계마다 명시적으로 흉내낸다.
+   */
+  function simulateRealPlaySucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+    audioEl().dispatchEvent(new Event('play'));
+  }
+
+  /**
+   * 녹음을 바꾸면(src 재할당) 브라우저는 HTML 미디어 스펙의 로드
+   * 알고리즘 abort 단계에 따라 이벤트 없이 네이티브 paused를 다시
+   * true로 되돌린다(위 paused 선언부 주석, task-2-report.md Finding 1).
+   * 이 테스트 파일엔 실제 미디어가 없으니 그 되돌림도 같은 방식으로
+   * 직접 흉내낸다.
+   */
+  function simulateBrowserAbortsOnSrcChange() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => true, configurable: true });
+  }
+
+  it('다른 녹음으로 바뀌면 재생 상태로 들어간다', async () => {
+    // 행을 누르는 것은 듣겠다는 뜻이다. 예전에는 일부러 자동 재생을
+    // 하지 않았는데, 실사용에서 "눌렀는데 안 울려서 클릭이 씹힌 줄
+    // 알았다"로 드러나 뒤집은 결정이다.
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      simulateRealPlaySucceeds();
+      return Promise.resolve();
+    });
+    const screen = render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+    await screen;
+
+    await screen.rerender({ recording: rec({ id: 'bbbb', title: '정류장' }), formats: ['mp3'] });
+    audioEl().dispatchEvent(new Event('canplay'));
+    await tick();
+
+    expect(button().textContent?.trim()).toBe('일시정지');
+    expect(playSpy).toHaveBeenCalled();
+  });
+
+  it('이미 재생 중이던 행에서 다른 행으로 넘어가도 새 행이 재생을 시작한다', async () => {
+    // 가장 흔한 사용 패턴 — 목록을 훑으며 계속 듣는다. paused는 aaaa를
+    // 재생하는 동안 이미 false였다. src가 바뀌면 브라우저가 이벤트
+    // 없이 실제 재생을 멈추는데, 그 사이 우리 쪽 반응형 paused는
+    // 여전히 false(값이 그대로면 대입해도 Svelte가 변화로 보지
+    // 않는다)라, bind:paused의 내부 effect가 다시 돌지 않아 새 행이
+    // 재생을 다시 시작하지 못할 위험이 있다 — 이 테스트가 그 회귀를
+    // 잡는다(뮤테이션 확인: Player.svelte의
+    // `paused = true; paused = false;`를 `paused = false;` 하나로
+    // 되돌리면 이 테스트가 실패한다 — task-3-report.md 참고).
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      simulateRealPlaySucceeds();
+      return Promise.resolve();
+    });
+    const screen = render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+    await screen;
+    audioEl().dispatchEvent(new Event('canplay'));
+    await tick();
+    expect(button().textContent?.trim()).toBe('일시정지');
+
+    const callsBeforeSwitch = playSpy.mock.calls.length;
+    simulateBrowserAbortsOnSrcChange();
+    await screen.rerender({ recording: rec({ id: 'bbbb', title: '정류장' }), formats: ['mp3'] });
+    audioEl().dispatchEvent(new Event('canplay'));
+    await tick();
+
+    expect(button().textContent?.trim()).toBe('일시정지');
+    expect(playSpy.mock.calls.length).toBeGreaterThan(callsBeforeSwitch);
+  });
+
+  it('같은 녹음이 새 객체로 다시 들어와도(재클릭 포함) 재생을 새로 시작하지 않는다', async () => {
+    // 목록의 관련 없는 행을 patch하면 recordings 배열이 통째로 교체돼
+    // 같은 id의 새 객체가 내려온다 — 이미 재생 중인 행을 다시 클릭한
+    // 것과 반응형으로는 같은 모양이다(+page.svelte의 onclick은
+    // selectedId를 같은 값으로 다시 대입할 뿐이라 실제로는 이 이펙트
+    // 자체가 다시 돌지 않지만, "같은 id·새 참조"로 recording이 갱신되는
+    // 경로는 lastId 가드가 정확히 같은 방식으로 막아야 하는 경우다).
+    // 사용자는 반응이 없어 보이면 반복해서 누른다 — 그때마다 처음부터
+    // 다시 시작되면 원래 불만("눌렀는데 안 울려서 씹힌 줄 알았다")보다
+    // 더 나쁘다.
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      simulateRealPlaySucceeds();
+      return Promise.resolve();
+    });
+    const screen = render(Player, { recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+    await screen;
+    audioEl().dispatchEvent(new Event('canplay'));
+    await tick();
+    expect(button().textContent?.trim()).toBe('일시정지');
+
+    audioEl().currentTime = 30;
+    await screen.rerender({ recording: rec({ id: 'aaaa' }), formats: ['mp3'] });
+
+    // lastId 가드가 막지 못하면 이펙트가 다시 돌아 loadState를
+    // 'loading'으로 되돌린다 — canplay를 다시 보내지 않는 한 그 상태가
+    // 그대로 남으므로 버튼 라벨(일시정지 → 불러오는 중)로 바로 드러난다.
+    expect(button().textContent?.trim()).toBe('일시정지');
+    // 재생 위치도 리셋되지 않아야 한다(위 "녹음 전환 시에만 A-B/위치를
+    // 리셋한다" describe와 같은 lastId 가드를 겨냥한다).
+    expect(audioEl().currentTime).toBe(30);
   });
 });

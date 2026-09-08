@@ -75,6 +75,12 @@ function pageData(recordings: Recording[]) {
   return { recordings, tags: [], formats: ['mp3', 'wav'], mediaDir: '' };
 }
 
+// page.svelte.test.ts의 같은 조치와 동일하다(주석은 그쪽 참고) — Task 3부터
+// 행을 선택하면 Player 마운트만으로 자동재생이 걸리는데, 이 파일은 배치
+// 측정이 목적이라 재생 자체와 무관하다. 존재하지 않는 가짜 id의 진짜
+// play()를 그대로 두면 처리되지 않은 프라미스 거부가 생긴다.
+HTMLMediaElement.prototype.play = () => Promise.resolve();
+
 describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {
   /** 배지 개수가 서로 다른 세 행. 내용 의존 트랙이면 폭이 갈린다. */
   function rowsWithDifferentBadgeCounts() {
@@ -290,5 +296,57 @@ describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {
     // 레이아웃)로 둔다.
     const TOLERANCE_PX = 1;
     expect(rowRect.bottom).toBeLessThanOrEqual(playerRect.top + TOLERANCE_PX);
+  });
+});
+
+describe('+page.svelte — 편집 모드 진입 시 행 높이(실제 배치)', () => {
+  // 이 describe만의 로컬 helper다 — 위 describe의 rows()를 그대로 쓰고
+  // 싶지만 그쪽 스코프 안에 갇혀 있고, 이 파일의 다른 곳(rec()·pageData())도
+  // 이미 page.svelte.test.ts에서 그대로 옮겨 적힌 전례가 있다(위 주석
+  // 참고) — 같은 이유로 새로 옮겨 적는다.
+  function rows(): HTMLElement[] {
+    return Array.from(document.querySelectorAll('ul.space-y-1 > li')) as HTMLElement[];
+  }
+
+  it('제목 편집을 열어도 행 높이가 눈에 띄게 바뀌지 않는다', async () => {
+    // 스펙 요구사항: 편집 모드에 들어가도 행 높이가 눈에 보이게 바뀌면
+    // 안 된다. 지금 input에 붙은 `class="input py-1"`은 눈대중 값이고,
+    // 옆에 새로 붙는 완료 버튼(`btn btn-sm`)도 자기 높이를 들여온다 —
+    // 컴포넌트 테스트는 대부분 +layout.svelte 없이 마운트돼 Tailwind가
+    // 적용되지 않으므로 실측이 불가능하지만, 이 파일만은 app.css를 직접
+    // import해(파일 맨 위 주석 참고) 실제 배치를 잴 수 있다.
+    //
+    // 더블클릭으로 제목 편집을 열면 첫 클릭이 행을 선택해(Task 15) 하단
+    // Player가 뜨고 파형을 GET한다 — 이 테스트가 재는 건 그 행(li) 자체의
+    // 높이라 응답 내용과는 무관하므로 빈 배열이면 충분하다(이 파일의
+    // 다른 테스트와 같은 이유의 스텁).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(
+        async () =>
+          new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+      )
+    );
+
+    const { getByRole } = render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    const displayHeight = rows()[0].getBoundingClientRect().height;
+
+    await getByRole('button', { name: '레인' }).dblClick();
+
+    const editHeight = rows()[0].getBoundingClientRect().height;
+
+    // 실측(3회 반복 실행 모두 동일, 흔들림 없음): 표시 모드 72px, 편집
+    // 모드 74px, 차이 2px. 원인을 따로 재보면(디버그 실측, 이 자리엔
+    // 남기지 않음) input(`py-1`)의 실제 높이가 border 포함 26px로, 표시
+    // 모드 제목 버튼의 줄 높이 24px보다 2px 크다 — 완료 버튼(`btn btn-sm`,
+    // 26px)도 같은 높이라 추가로 키우지는 않는다. 행 전체 72px 대비 2px
+    // (약 2.8%)는 "눈에 띄게 바뀐다"고 보기 어려운 수준이라 py-1은 그대로
+    // 두고, 이 실측값 자체를 허용치로 못박는다 — 통과시키려고 거꾸로
+    // 끼워 맞춘 숫자가 아니라 지금 렌더링이 만드는 차이 그대로다. 허용치를
+    // 이보다 넉넉히 두면(예: 임의로 큰 값) input이나 버튼 높이를 키우는
+    // 회귀가 와도 못 잡아낸다.
+    const TOLERANCE_PX = 2;
+    expect(Math.abs(editHeight - displayHeight)).toBeLessThanOrEqual(TOLERANCE_PX);
   });
 });
