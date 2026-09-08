@@ -1097,13 +1097,15 @@ describe('+page.svelte — 제목·설명 인라인 편집', () => {
 
     await browserPage.getByText('빗소리').dblClick();
     const input = editInput('설명 수정');
-    // 더블클릭으로 편집 모드에 들어가도 이 입력창에 자동으로 포커스가
-    // 가지 않는다(태그 편집도 마찬가지 — 이 페이지 전체에 autofocus가
-    // 없다. Task 4가 새로 만드는 동작이 아니라 기존 상태다). 실제
-    // 사용자라면 여기서 입력창을 한 번 눌러 포커스를 옮긴 뒤 타이핑할
-    // 자리다. blur()는 실제로 포커스가 가 있는 요소에서만 네이티브
-    // blur 이벤트를 내므로, 그 클릭을 여기서 명시적으로 재현해야
-    // Enter·완료 버튼이 일으키는 blur가 onblur 저장으로 이어진다.
+    // 최종 브랜치 리뷰 전까지는 더블클릭으로 편집 모드에 들어가도 이
+    // 입력창에 자동으로 포커스가 가지 않았다(태그 편집은 지금도 그렇다 —
+    // 완료 버튼에 onclick이 있어 이 구멍이 없다). 리뷰에서 지적된 뒤
+    // use:focusOnMount로 제목·설명 입력은 마운트 시 스스로 포커스를
+    // 얻도록 고쳤지만, 이미 포커스된 요소에 focus()를 다시 불러도
+    // 아무 부작용이 없으므로 아래 줄은 그대로 남긴다 — 이 테스트가 보는
+    // 것(Enter가 저장으로 이어진다)은 포커스가 자동으로 왔는지 수동으로
+    // 왔는지와 무관하다. "입력을 건드리지 않고 완료만 누르는" 경로는
+    // 이 describe 마지막의 별도 테스트가 pin한다.
     input.focus();
     input.value = '고친 설명';
     input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1185,5 +1187,40 @@ describe('+page.svelte — 제목·설명 인라인 편집', () => {
 
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     await vi.waitFor(() => expect(patchCalls(fetchMock)).toHaveLength(1));
+  });
+
+  // 위 테스트들은 모두 input.focus()를 직접 불러 "사용자가 입력창을 한 번
+  // 눌렀다"는 경로를 흉내낸다. 그런데 실제로는 더블클릭으로 편집을 열고
+  // 곧장 완료만 누르는 경로도 있다 — 리뷰에서 지적된 구멍이 정확히
+  // 이것이다. 완료 버튼에는 onclick이 없고 blur만으로 저장하므로,
+  // 입력창이 한 번도 포커스된 적이 없으면 완료를 눌러도 뺏을 포커스가
+  // 없어 blur가 안 나고 아무것도 저장되지 않는다. 아래 두 테스트는
+  // input.focus()를 절대 호출하지 않고 이 경로만으로 저장이 정확히 한
+  // 번 일어나는지 확인한다 — autofocus를 걷어내면 RED가 돼야 pin이
+  // 성립한다(task-4-report.md에 그 관찰을 남긴다).
+  it('설명 편집을 열고 입력창을 건드리지 않은 채 완료만 눌러도 저장 요청이 정확히 한 번 나간다', async () => {
+    const fetchMock = stubFetch();
+    render(Page, { data: pageData([rec({ id: '1', title: '레인', description: '빗소리' })]) });
+
+    await browserPage.getByText('빗소리').dblClick();
+    editInput('설명 수정'); // 존재만 확인한다 — focus()를 부르지 않는다.
+
+    await browserPage.getByRole('button', { name: '설명 편집 완료' }).click();
+
+    await vi.waitFor(() => expect(patchCalls(fetchMock)).toHaveLength(1));
+    expect(patchCalls(fetchMock)).toHaveLength(1);
+  });
+
+  it('제목 편집을 열고 입력창을 건드리지 않은 채 완료만 눌러도 저장 요청이 정확히 한 번 나간다', async () => {
+    const fetchMock = stubFetch();
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    await browserPage.getByRole('button', { name: '레인' }).dblClick();
+    editInput('제목 수정'); // 존재만 확인한다 — focus()를 부르지 않는다.
+
+    await browserPage.getByRole('button', { name: '제목 편집 완료' }).click();
+
+    await vi.waitFor(() => expect(patchCalls(fetchMock)).toHaveLength(1));
+    expect(patchCalls(fetchMock)).toHaveLength(1);
   });
 });

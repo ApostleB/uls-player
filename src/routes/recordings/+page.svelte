@@ -235,6 +235,18 @@
     (e.currentTarget as HTMLInputElement).blur();
   }
 
+  /**
+   * 편집 모드가 열릴 때(= 이 input이 새로 생성될 때) 곧바로 포커스를
+   * 준다. 이게 없으면 더블클릭 후 완료 버튼을 바로 누르는 경로에서 input이
+   * 한 번도 포커스된 적이 없어 blur가 안 일어나고, 완료가 아무것도 저장하지
+   * 못한 채 편집 모드만 남는다. Svelte action은 엘리먼트가 마운트될 때 한
+   * 번만 실행돼 이 타이밍과 정확히 맞고, onblur 하나로 저장을 몰아둔 기존
+   * 구조를 그대로 둔 채(새 저장 경로를 추가하지 않고) 포커스만 옮긴다.
+   */
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+  }
+
   function toggle(id: string) {
     const s = new Set(selectedIds);
     s.has(id) ? s.delete(id) : s.add(id);
@@ -429,6 +441,7 @@
                     <!-- py-1로 줄인다 — 기본 높이 그대로면 편집을 시작할 때
                          행이 커져서 아래 행들이 밀린다. -->
                     <input class="input py-1" value={rec.title} aria-label="제목 수정"
+                      use:focusOnMount
                       onkeydown={commitOnEnter}
                       onblur={(e) => {
                         send({ op: 'patch', id: rec.id, title: e.currentTarget.value }).then(
@@ -456,6 +469,7 @@
                 {#if editingDescriptionId === rec.id}
                   <div class="flex items-center gap-2">
                     <input class="input py-1 text-sm" value={rec.description} aria-label="설명 수정"
+                      use:focusOnMount
                       onkeydown={commitOnEnter}
                       onblur={(e) => {
                         send({ op: 'patch', id: rec.id, description: e.currentTarget.value }).then(
