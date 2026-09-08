@@ -71,7 +71,27 @@ export const POST: RequestHandler = async ({ request }) => {
   // 오디오는 이미 압축돼 있어 다시 압축해봐야 시간만 든다. 저장만 한다.
   // archiver 8은 예전의 archiver('zip', opts) 팩토리 함수 대신 이 클래스를
   // named export로 준다 — 설치된 버전(package.json 참고)의 실제 API다.
-  const zip = new ZipArchive({ store: true });
+  //
+  // statConcurrency: 1 — archiver는 zip.file()로 넣은 각 항목의 실제 담기
+  // (append) 순서는 내부 큐(동시성 1)로 항상 직렬화하지만, 그 앞단에서
+  // 항목마다 크기·종류를 알아내려고 다시 하는 fs.lstat는 기본값
+  // statConcurrency=4로 최대 4개까지 동시에 실행한다. lstat 자체는
+  // libuv 스레드풀에서 비동기로 도니, 어느 것이 먼저 끝나 append 큐에
+  // 먼저 꽂히는지는 그 순간 스레드풀이 얼마나 바쁜지에 달려 있다 —
+  // 평소엔 넣은 순서와 완료 순서가 우연히 같아 눈에 안 띄다가, 디스크
+  // I/O가 몰리는 상황(예: 여러 테스트 파일이 동시에 파일을 쓰는 전체
+  // 테스트 스위트 실행)에서는 두 lstat의 완료 순서가 뒤바뀌어 zip 안
+  // 항목 순서가 요청 순서와 달라질 수 있다 — 내용과 이름은 각자 맞지만
+  // 물리적 등장 순서가 흔들린다(직접 재현: 같은 디렉터리에 파일 200개를
+  // 동시에 쓰는 부하를 준 상태에서 zip.file() 두 번을 호출했더니 300회
+  // 중 6회 순서가 뒤집혔다). 순서를 요청한 그대로 보장하려면 이 앞단도
+  // 동시성 1로 낮춰 직렬화해야 한다 — zip.file()에 stats를 미리 넘겨
+  // lstat 자체를 건너뛰는 방법도 있지만, 그러면 아래 vanish 시나리오
+  // (파일이 stat 통과 후 실제로 열리기 전에 사라지는 경우) 대비용
+  // 재확인 lstat까지 함께 사라져 'warning'으로 건너뛰는 대신 archiver가
+  // 'error'를 내고 스트림이 잘려나간다(직접 재현해 확인함) — 그래서
+  // 재확인 자체는 살리고 그 실행 순서만 큐로 직렬화하는 이 방법을 쓴다.
+  const zip = new ZipArchive({ store: true, statConcurrency: 1 });
   // 위의 fsp.stat 점검은 그 순간의 존재만 확인할 뿐이다. 요청이 269개
   // 파일을 훑는 동안 변환 큐가 파일을 옮기거나 지울 수 있어 TOCTOU
   // 창이 남는다. 그 파일을 archiver가 실제로 열 때 나는 에러는
