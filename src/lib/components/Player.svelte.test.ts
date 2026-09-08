@@ -792,6 +792,28 @@ describe('Player.svelte — 재생 중인 파일의 저장 경로', () => {
   });
 });
 
+describe('Player.svelte — 다운로드 링크 파일명', () => {
+  it('다운로드 링크의 파일명이 제목_녹음일자.확장자다', async () => {
+    // 예전에는 값 없는 download 속성이라 브라우저가 URL 마지막 조각을
+    // 파일명으로 써서 original.qta, mp3.mp3가 됐다.
+    render(Player, {
+      recording: rec({
+        id: 'a1b2',
+        title: '레인',
+        recordedAt: '2026-07-09T22:36:13+09:00',
+        files: { original: { ext: 'qta', bytes: 1 }, mp3: { bytes: 1 } }
+      }),
+      formats: ['original', 'mp3']
+    });
+
+    // 다운로드 앵커의 접근성 이름은 aria-label="{포맷} 다운로드"다(포맷
+    // 전환 버튼의 표시 텍스트 — original이면 '원본'이나 확장자 — 와는
+    // 다른 요소).
+    const original = page.getByRole('link', { name: 'original 다운로드' });
+    await expect.element(original).toHaveAttribute('download', '레인_2026-07-09.qta');
+  });
+});
+
 describe('Player.svelte — 파형 마커가 북마크 목록과 같은 데이터를 보여준다 (Task 16)', () => {
   it('북마크를 추가하면(props 갱신) 파형에도 같은 메모의 마커가 뜬다', async () => {
     // 처음엔 이 녹음에 북마크가 없다 — 마커도, 목록도 없어야 한다.

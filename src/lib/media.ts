@@ -29,3 +29,36 @@ export function mediaFilePath(
   const base = mediaDir.endsWith('/') ? mediaDir.slice(0, -1) : mediaDir;
   return `${base}/${format}/${recordingId}.${ext}`;
 }
+
+/**
+ * 제목에서 남길 최대 글자수. 뒤에 붙는 `_YYYY-MM-DD.ext`까지 합쳐도
+ * 대부분의 파일 시스템 한도(255바이트)에 여유가 있다.
+ */
+const MAX_TITLE_CHARS = 80;
+
+/**
+ * 다운로드 파일명을 만든다 — `제목_녹음일자.확장자`.
+ *
+ * 제목은 사용자가 자유롭게 적는 값이라 그대로 파일명에 넣을 수 없다.
+ * 경로 구분자와 OS가 거부하는 글자를 하이픈으로 바꾸고, 숨김 파일이
+ * 되거나(앞 마침표) 일부 OS가 잘라내는(뒤 마침표) 형태를 피한다.
+ *
+ * recordedAt은 UTC 오프셋이 붙은 문자열이라 앞 10글자가 이미 로컬
+ * 날짜다 — Date로 다시 파싱하면 오프셋만큼 어긋날 수 있어 문자열을
+ * 그대로 자른다.
+ */
+export function downloadFileName(title: string, recordedAt: string, ext: string): string {
+  const date = recordedAt.slice(0, 10);
+
+  const safe = title
+    // 제어문자와 파일명에 못 쓰는 글자. Windows가 거부하는 집합이 가장
+    // 넓어서 그것을 기준으로 잡는다.
+    .replace(/[\x00-\x1f<>:"/\\|?*]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^[.\s]+|[.\s]+$/g, '')
+    .slice(0, MAX_TITLE_CHARS)
+    .trim();
+
+  return safe ? `${safe}_${date}.${ext}` : `${date}.${ext}`;
+}

@@ -16,7 +16,7 @@
     formatTime as fmt
   } from '$lib/player';
   import type { LoopState } from '$lib/player';
-  import { mediaFilePath, mediaFileExt } from '$lib/media';
+  import { mediaFilePath, mediaFileExt, downloadFileName } from '$lib/media';
   import { middleEllipsis } from '$lib/pathDisplay';
 
   let {
@@ -470,7 +470,10 @@
                 onclick={() => switchFormat(f)}>
                 {f === 'original' ? (recording?.files.original.ext ?? '원본') : f}
               </button>
-              <a class="btn btn-sm preset-tonal" href="/api/media/{recording?.id}/{f}" download
+              <a class="btn btn-sm preset-tonal" href="/api/media/{recording?.id}/{f}"
+                download={recording
+                  ? downloadFileName(recording.title, recording.recordedAt, mediaFileExt(f, recording.files[f]))
+                  : undefined}
                 aria-label="{f} 다운로드">
                 ↓
               </a>
