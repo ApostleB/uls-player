@@ -1299,3 +1299,42 @@ describe('+page.svelte — 이미 고른 행을 다시 눌러도 재생 요청�
     await vi.waitFor(() => expect(audioEl().paused).toBe(false));
   });
 });
+
+describe('+page.svelte — 선택 항목을 zip으로 내려받기', () => {
+  it('선택이 없으면 다운로드 폼이 없다', async () => {
+    const { getByRole } = render(Page, { data: baseData() });
+    expect(getByRole('button', { name: /내려받기/ }).elements()).toHaveLength(0);
+  });
+
+  it('선택하면 고른 id들이 폼에 실린다', async () => {
+    // 폼 POST라 브라우저가 스트리밍으로 받아간다 — fetch로 받으면 zip
+    // 전체가 메모리에 올라간다.
+    //
+    // 체크박스는 접근 이름이 없다(이 파일의 다른 선택 테스트들도 전부
+    // getByRole('checkbox').first()/.nth(n)으로 위치로 고른다) — 그래서
+    // 여기서도 이름이 아니라 위치로 첫 행(레인, id '1')을 고른다.
+    const { getByRole, container } = render(Page, { data: baseData() });
+    await getByRole('checkbox').first().click();
+    await tick();
+
+    const form = container.querySelector('form[action="/api/download"]') as HTMLFormElement;
+    expect(form.method.toLowerCase()).toBe('post');
+    const ids = [...form.querySelectorAll('input[name="ids"]')].map((el) => (el as HTMLInputElement).value);
+    expect(ids).toEqual(['1']);
+  });
+
+  it('포맷을 바꾸면 폼에 실리는 값도 바뀐다', async () => {
+    const { getByRole, getByLabelText, container } = render(Page, { data: baseData() });
+    await getByRole('checkbox').first().click();
+    await tick();
+
+    const select = (await getByLabelText('내려받을 포맷').element()) as HTMLSelectElement;
+    select.value = 'wav';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await tick();
+
+    const form = container.querySelector('form[action="/api/download"]') as HTMLFormElement;
+    const format = form.querySelector('input[name="format"]') as HTMLInputElement;
+    expect(format.value).toBe('wav');
+  });
+});

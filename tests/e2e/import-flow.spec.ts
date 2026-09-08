@@ -260,6 +260,29 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.locator('li .badge', { hasText: 'qta' })).toHaveCount(1);
   });
 
+  test('여러 개를 골라 zip으로 한 번에 내려받는다', async ({ page }) => {
+    await page.goto('/recordings');
+
+    // 두 녹음을 모두 고른다. 체크박스는 접근 이름이 없어(다른 e2e
+    // 테스트들도 전부 같은 방식이다) 제목으로 찾은 행 안에서
+    // input[type="checkbox"]로 짚는다.
+    await rowFor(page, QTA_TITLE).locator('input[type="checkbox"]').check();
+    await rowFor(page, M4A_TITLE).locator('input[type="checkbox"]').check();
+
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: /내려받기/ }).click();
+    const file = await download;
+
+    expect(file.suggestedFilename()).toMatch(/^uls-player_mp3_\d{4}-\d{2}-\d{2}\.zip$/);
+    // 빈 zip이 아니라 실제로 두 파일이 들어 있는지 본다 — 빈 아카이브도
+    // 다운로드는 성공하므로 이름만 봐서는 알 수 없다.
+    const savedPath = await file.path();
+    if (!savedPath) throw new Error('내려받은 파일 경로가 없습니다');
+    const bytes = await fs.readFile(savedPath);
+    const entries = [...bytes.toString('latin1').matchAll(/PK\x03\x04/g)];
+    expect(entries).toHaveLength(2);
+  });
+
   // 이전 태스크가 /import의 "목록으로" 링크를 지운 건 메뉴바가 그 자리를
   // 대신하기 때문이었다 — 그사이 /import는 브라우저 뒤로가기 말고는 나갈
   // 방법이 없었다. 이 테스트가 그 간극이 실제로 메워졌는지를 확인하는

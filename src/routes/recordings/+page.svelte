@@ -33,6 +33,12 @@
   // 하나뿐이라 행별 편집(tagsDraft)과는 별개다.
   let bulkTags = $state<string[]>([]);
 
+  /**
+   * 일괄 내려받기에 담을 포맷. 용도가 갈리므로(원본 보관 vs mp3 공유)
+   * 고를 수 있어야 한다. 기본값은 가장 흔한 용도인 mp3다.
+   */
+  let downloadFormat = $state('mp3');
+
   // send() 실패를 화면에 보여줄 메시지. /import가 form.message를
   // preset-tonal-error 카드로 보여주는 것과 같은 패턴을 따른다.
   let errorMessage = $state<string | null>(null);
@@ -377,6 +383,29 @@
           태그 제거
         </button>
       </div>
+
+      <!-- fetch가 아니라 폼으로 보낸다 — 브라우저가 응답을 다운로드로
+           처리해 디스크로 흘려보내므로, 수 GB짜리 zip이 메모리에
+           올라가지 않는다(fetch+blob이면 응답 전체가 먼저 메모리에
+           쌓인다). 폼 POST는 URL 길이 제한도 비켜간다 — 252개 id는
+           쿼리스트링에 안 들어간다. -->
+      <form method="POST" action="/api/download" class="flex items-center gap-2">
+        {#each [...selectedIds] as id (id)}
+          <input type="hidden" name="ids" value={id} />
+        {/each}
+        <input type="hidden" name="format" value={downloadFormat} />
+        <label class="flex items-center gap-1 text-sm">
+          <span>포맷</span>
+          <select class="select select-sm" aria-label="내려받을 포맷" bind:value={downloadFormat}>
+            {#each ['original', ...data.formats] as f (f)}
+              <option value={f}>{f}</option>
+            {/each}
+          </select>
+        </label>
+        <button type="submit" class="btn btn-sm preset-tonal">
+          {selectedIds.size}개 내려받기
+        </button>
+      </form>
 
       <button type="button" class="btn btn-sm preset-tonal"
         onclick={() =>
