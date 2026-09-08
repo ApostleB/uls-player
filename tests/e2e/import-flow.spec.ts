@@ -390,32 +390,12 @@ test.describe.serial('스캔부터 재생까지', () => {
     await expect(page.getByRole('button', { name: QTA_TITLE, exact: true })).toBeVisible();
   });
 
-  // 이 행은 목록의 두 번째(마지막) 항목이라, 더블클릭의 첫 클릭이
-  // selectedId를 세팅해 하단 고정 Player를 띄우는 순간 행이 그 밑에
-  // 깔린다(실측: 클릭 전 버튼 rect top=527/bottom=547 — 뷰포트
-  // 720px 안에 이미 다 들어와 있어 Playwright의 자동 스크롤은 아무
-  // 일도 하지 않는다. 클릭 후 Player rect는 top=527/bottom=720이라
-  // 버튼과 정확히 겹치고, 그 중심 좌표에서 elementFromPoint는 Player
-  // 오버레이를 반환한다 — dblclick의 두 클릭 다 같은 좌표에 꽂히므로
-  // 두 번째 클릭이 Player에 막혀 브라우저가 진짜 dblclick 이벤트를
-  // 버튼에 못 보낸다. scrollIntoViewIfNeeded()는 "이미 뷰포트 안"이라
-  // 여전히 no-op이라 못 고친다 — 대신 네이티브 scrollIntoView로
-  // 강제로 뷰포트 중앙까지 끌어올려 Player가 뜬 뒤에도 안전한
-  // 위치를 확보한다). 단언은 그대로 두고 상호작용 대상만 옮긴다.
-  //
-  // 이건 테스트 전용 편법이 아니라 실사용자도 그대로 겪는 앱 버그다 — 두 번의
-  // 물리 클릭도 같은 좌표를 다시 겨냥하지 않고, Player 마운트는 사람의
-  // 더블클릭 간격보다 먼저 끝난다. scrollIntoView에는 이걸 대신할 사용자
-  // 조작이 없어 테스트가 이 경로 자체를 피해가는 것뿐이다 — 잊힌 편법이
-  // 아니라 추적 중인 결함이다. 자세한 내용과 후보 해결 방향은
-  // docs/known-issues.md 참고.
   test('설명 인라인 편집이 blur로 저장되고 새로고침 후에도 남는다', async ({ page }) => {
     await page.goto('/recordings');
     const row = rowFor(page, QTA_TITLE);
     const descriptionButton = row.getByRole('button', { name: '설명 없음' });
 
     await expect(descriptionButton).toBeVisible();
-    await descriptionButton.evaluate((el) => el.scrollIntoView({ block: 'center' }));
     await descriptionButton.dblclick();
     await row.getByLabel('설명 수정').fill('e2e 설명 수정');
     await row.getByLabel('설명 수정').blur();

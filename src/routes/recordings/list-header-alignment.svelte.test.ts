@@ -27,6 +27,7 @@ import '../../app.css';
 
 import { describe, it, expect, vi } from 'vitest';
 import { page as browserPage } from 'vitest/browser';
+import { tick } from 'svelte';
 import { SvelteURL } from 'svelte/reactivity';
 import { render } from 'vitest-browser-svelte';
 import type { Recording } from '$lib/types';
@@ -348,5 +349,40 @@ describe('+page.svelte — 편집 모드 진입 시 행 높이(실제 배치)', 
     // 회귀가 와도 못 잡아낸다.
     const TOLERANCE_PX = 2;
     expect(Math.abs(editHeight - displayHeight)).toBeLessThanOrEqual(TOLERANCE_PX);
+  });
+});
+
+describe('+page.svelte — 재생 바 높이(실제 배치)', () => {
+  it('빈 재생 바와 녹음을 고른 재생 바의 높이가 같다', async () => {
+    // 높이가 다르면 행을 고르는 순간 레이아웃이 움직이고, 그 프레임에
+    // 더블클릭의 두 번째 클릭이 바에 가로채인다. 같은 높이여야 그 경합
+    // 자체가 성립하지 않는다. 픽스처의 녹음에는 북마크가 없다 — 있으면
+    // 북마크 줄만큼 로드된 바가 더 높아져 이 비교가 애초에 성립하지
+    // 않는다(스펙 2.3절).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(
+        async () =>
+          new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+      )
+    );
+
+    // pageData()의 mediaDir: ''는 파일 경로 줄을 일부러 꺼 둔 값이다(위
+    // pageData 정의 옆 주석 참고) — 이 테스트는 경로 줄이 켜진 채로
+    // 높이를 재야 그 줄의 높이 기여를 검증할 수 있으므로 여기서만 채워
+    // 넣는다(세 번째 describe의 스크롤 테스트와 같은 이유).
+    const { getByRole, getByTestId } = render(Page, {
+      data: { ...pageData([rec({ id: '1', title: '레인' })]), mediaDir: '/media' }
+    });
+
+    const bar = () =>
+      (getByTestId('player-bar').element() as HTMLElement).getBoundingClientRect().height;
+    const empty = bar();
+
+    await getByRole('button', { name: '레인', exact: true }).click();
+    await tick();
+    const loaded = bar();
+
+    expect(loaded).toBe(empty);
   });
 });

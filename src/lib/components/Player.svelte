@@ -355,8 +355,9 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-{#if recording}
-  <div class="bg-surface-100-900 border-surface-200-800 fixed inset-x-0 bottom-0 border-t p-3">
+<div data-testid="player-bar"
+  class="bg-surface-100-900 border-surface-200-800 fixed inset-x-0 bottom-0 border-t p-3">
+  {#if recording}
     <audio
       bind:this={audio}
       {src}
@@ -370,10 +371,11 @@
       oncanplay={() => (loadState = 'ready')}
       onerror={() => (loadState = 'error')}
     ></audio>
+  {/if}
 
     <div class="mx-auto max-w-6xl space-y-2">
       <div class="flex items-baseline gap-3">
-        <strong class="truncate">{recording.title}</strong>
+        <strong class="truncate">{recording?.title ?? '목록에서 녹음을 고르세요'}</strong>
         <span class="text-surface-500 shrink-0 text-sm tabular-nums">
           {fmt(current)} / {fmt(duration)}
         </span>
@@ -388,8 +390,8 @@
         onseek={(r: number) => seek(r * duration)} />
 
       <div class="flex flex-wrap items-center gap-2">
-        <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(-10)}>−10초</button>
-        <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(-5)}>−5초</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={() => nudge(-10)}>−10초</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={() => nudge(-5)}>−5초</button>
         <!-- 상태를 재생 버튼 자리에 둔다 — 사용자가 이미 보고 있는 곳이고,
              "지금은 누를 수 없다"까지 같은 자리에서 전달된다. 오류
              상태에서는 라벨과 동작을 모두 "다시 시도"로 바꾼다 — 라벨이
@@ -397,20 +399,20 @@
              이미 실패한 리소스에 play()만 다시 시도할 뿐 다시 받아오지
              않는다)과 라벨이 약속하는 동작이 어긋난다. -->
         <button type="button" class="btn preset-filled-primary-500"
-          disabled={loadState === 'loading'}
+          disabled={!recording || loadState === 'loading'}
           onclick={loadState === 'error' ? retry : toggle}>
           {loadState === 'loading' ? '불러오는 중' : loadState === 'error' ? '다시 시도' : playing ? '일시정지' : '재생'}
         </button>
         {#if loadState === 'error'}
           <span class="text-error-500 text-sm">불러오지 못했습니다</span>
         {/if}
-        <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(5)}>+5초</button>
-        <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(10)}>+10초</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={() => nudge(5)}>+5초</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={() => nudge(10)}>+10초</button>
 
-        <button type="button" class="btn btn-sm preset-tonal" onclick={markLoop}>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={markLoop}>
           {loopA === null ? 'A 지정' : loopB === null ? 'B 지정' : '구간 해제'}
         </button>
-        <button type="button" class="btn btn-sm preset-tonal" onclick={addBookmark}>북마크</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={addBookmark}>북마크</button>
 
         <!-- 이 <label>은 원래 볼륨 슬라이더 하나만 감싸려던 것인데, 음소거
              버튼까지 같이 담고 있다. 둘 다 labelable 요소(<button>도
@@ -466,9 +468,9 @@
               <button type="button"
                 class="btn btn-sm {format === f ? 'preset-filled' : 'preset-tonal'}"
                 onclick={() => switchFormat(f)}>
-                {f === 'original' ? (recording.files.original.ext ?? '원본') : f}
+                {f === 'original' ? (recording?.files.original.ext ?? '원본') : f}
               </button>
-              <a class="btn btn-sm preset-tonal" href="/api/media/{recording.id}/{f}" download
+              <a class="btn btn-sm preset-tonal" href="/api/media/{recording?.id}/{f}" download
                 aria-label="{f} 다운로드">
                 ↓
               </a>
@@ -550,14 +552,15 @@
         </ul>
       {/if}
 
-      {#if filePath}
-        <!-- 전체 경로는 title에 둔다 — 줄인 문자열만 있으면 실제 위치를
-             알 방법이 없다. 60자는 재생기 폭에서 두 줄로 넘어가지 않는
-             선에서 잡았다. -->
-        <div class="text-surface-500 mt-1 text-right font-mono text-xs" title={filePath}>
-          {middleEllipsis(filePath, 60)}
-        </div>
-      {/if}
+      <!-- 전체 경로는 title에 둔다 — 줄인 문자열만 있으면 실제 위치를
+           알 방법이 없다. 60자는 재생기 폭에서 두 줄로 넘어가지 않는
+           선에서 잡았다.
+
+           녹음이 없을 때도 이 줄을 그린다 — 빼면 빈 바가 선택된 바보다
+           한 줄만큼 낮아져서, 고르는 순간 레이아웃이 움직이는 문제가
+           그대로 남는다. -->
+      <div class="text-surface-500 mt-1 text-right font-mono text-xs" title={filePath ?? undefined}>
+        {filePath ? middleEllipsis(filePath, 60) : ' '}
+      </div>
     </div>
   </div>
-{/if}
