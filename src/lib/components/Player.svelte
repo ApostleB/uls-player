@@ -559,7 +559,7 @@
            녹음이 없을 때도 이 줄을 그린다 — 빼면 빈 바가 선택된 바보다
            한 줄만큼 낮아져서, 고르는 순간 레이아웃이 움직이는 문제가
            그대로 남는다. -->
-      <div class="text-surface-500 mt-1 text-right font-mono text-xs" title={filePath ?? undefined}>
+      <div class="text-surface-500 mt-1 text-right font-mono text-xs" title={filePath}>
         {filePath ? middleEllipsis(filePath, 60) : ' '}
       </div>
     </div>

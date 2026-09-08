@@ -371,8 +371,30 @@ describe('+page.svelte — 재생 바 높이(실제 배치)', () => {
     // pageData 정의 옆 주석 참고) — 이 테스트는 경로 줄이 켜진 채로
     // 높이를 재야 그 줄의 높이 기여를 검증할 수 있으므로 여기서만 채워
     // 넣는다(세 번째 describe의 스크롤 테스트와 같은 이유).
+    //
+    // files는 original·mp3·wav를 모두 갖춘 실제 데이터 모양으로 둔다 —
+    // rec()의 기본값(original만)을 그대로 쓰면, +page.svelte가 Player에
+    // 넘기는 formats(`['original', ...data.formats]` = ['original','mp3',
+    // 'wav'])와 recording.files의 교집합이 'original' 하나뿐이라 포맷
+    // 버튼 줄(`{#each available as f}`, flex-wrap)이 1개짜리로만 그려져
+    // 실사용을 대표하지 못한다. 실제 저장소의 269개 녹음은 전부 이 세
+    // 파일을 갖고 있으므로, 선택된 바에는 항상 포맷 버튼 세 개(원본·
+    // mp3·wav)와 그 다운로드 링크가 뜬다 — 그 실제 모양으로 재야 한다.
     const { getByRole, getByTestId } = render(Page, {
-      data: { ...pageData([rec({ id: '1', title: '레인' })]), mediaDir: '/media' }
+      data: {
+        ...pageData([
+          rec({
+            id: '1',
+            title: '레인',
+            files: {
+              original: { ext: 'qta', bytes: 100 },
+              mp3: { ext: 'mp3', bytes: 200 },
+              wav: { ext: 'wav', bytes: 300 }
+            }
+          })
+        ]),
+        mediaDir: '/media'
+      }
     });
 
     const bar = () =>
@@ -383,6 +405,10 @@ describe('+page.svelte — 재생 바 높이(실제 배치)', () => {
     await tick();
     const loaded = bar();
 
+    // 실측(Fix Round 3, 이 픽스처로): 빈 바 193px, 포맷 버튼 3개(원본·mp3·
+    // wav)와 그 다운로드 링크까지 뜬 선택된 바도 193px — 정확히 일치한다.
+    // 포맷 버튼 줄(`ml-auto flex flex-wrap`)이 이 폭(1280px 뷰포트,
+    // max-w-6xl 안)에서는 둘째 줄로 넘어가지 않기 때문이다.
     expect(loaded).toBe(empty);
   });
 });
