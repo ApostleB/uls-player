@@ -10,13 +10,15 @@ const fakeRecordings: Recording[] = [
     id: 'rec-1', title: '레인', description: '', tags: ['데모'],
     recordedAt: '2026-07-09T22:36:13+09:00', durationSec: 274.2, sourceName: 's1.qta',
     appleAutoTitle: '화양동', files: { original: { ext: 'qta', bytes: 100 } }, bookmarks: [],
-    createdAt: '2026-08-31T20:35:00+09:00', updatedAt: '2026-08-31T20:35:00+09:00', deletedAt: null
+    createdAt: '2026-08-31T20:35:00+09:00', updatedAt: '2026-08-31T20:35:00+09:00',
+    favoritedAt: null, deletedAt: null
   },
   {
     id: 'rec-2', title: '정류장', description: '', tags: [],
     recordedAt: '2026-07-15T10:00:00+09:00', durationSec: 12, sourceName: 's2.qta',
     appleAutoTitle: null, files: {}, bookmarks: [],
-    createdAt: '2026-08-31T20:35:00+09:00', updatedAt: '2026-08-31T20:35:00+09:00', deletedAt: null
+    createdAt: '2026-08-31T20:35:00+09:00', updatedAt: '2026-08-31T20:35:00+09:00',
+    favoritedAt: null, deletedAt: null
   }
 ];
 const fakeTags = [{ tag: '데모', count: 1 }];

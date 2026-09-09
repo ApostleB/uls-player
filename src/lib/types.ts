@@ -26,6 +26,8 @@ export interface Recording {
   bookmarks: Bookmark[];
   createdAt: string;
   updatedAt: string;
+  /** 즐겨찾기로 지정한 시각. null이면 즐겨찾기가 아니다. */
+  favoritedAt: string | null;
   deletedAt: string | null;
 }
 

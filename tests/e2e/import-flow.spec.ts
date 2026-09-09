@@ -952,4 +952,24 @@ test.describe.serial('스캔부터 재생까지', () => {
     // 메뉴바의 로고 링크 하나만 남아야 한다.
     await expect(page.getByText('ULS Player', { exact: true })).toHaveCount(1);
   });
+
+  test('메인 카드에서 제목을 누르면 그 녹음이 재생된다', async ({ page }) => {
+    // 즐겨찾기를 하나 지정해 메인 카드에 뜨게 한다. PATCH가 끝나기 전에
+    // /로 이동하면 즐겨찾기 카드가 아직 없는 채로 렌더될 수 있어(같은
+    // 제목이 최근 추가 카드에도 있으므로 그때는 엉뚱한 카드를 클릭하고도
+    // 테스트가 통과해버린다), 응답을 명시적으로 기다린다.
+    await page.goto('/recordings');
+    const favoritePatch = waitForPatch(page);
+    await rowFor(page, QTA_TITLE).getByRole('button', { name: '즐겨찾기 지정' }).click();
+    await favoritePatch;
+
+    await page.goto('/');
+    // 두 카드(즐겨찾기·최근 추가) 모두 같은 제목의 링크를 가질 수 있으니,
+    // 즐겨찾기 카드로 범위를 좁혀야 실제로 그 카드를 검증하는 게 된다.
+    const favoritesCard = page.locator('section', { hasText: '즐겨찾기' });
+    await favoritesCard.getByRole('link', { name: QTA_TITLE }).click();
+
+    await expect(page).toHaveURL(/\/recordings/);
+    await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
+  });
 });

@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { RequestHandler } from './$types';
+import type { Recording } from '$lib/types';
 
 // config는 모듈이 처음 불릴 때 process.env로 만들어지는 싱글턴이라, 아무것도
 // 안 하면 개발자의 실제 data/를 가리킨다. 아래에서 listAll/allTags를 일부러
@@ -50,6 +53,11 @@ function req(body: unknown) {
       body: JSON.stringify(body)
     })
   } as unknown as Parameters<RequestHandler>[0];
+}
+
+/** PATCH를 호출해 Response를 돌려준다. 성공 시엔 resolve, 검증 실패(400) 시엔 reject한다 — 이 라우트의 badRequest가 실제로 throw하기 때문이다. */
+function patchRequest(body: unknown) {
+  return PATCH(req(body));
 }
 
 function othersUntouched(except: 'patch' | 'addTags' | 'removeTags' | 'softDelete') {
@@ -206,5 +214,114 @@ describe('PATCH /api/recordings 본문 형태 검증 (Finding 3, 4)', () => {
   it('본문에 op가 없으면 400이다', async () => {
     await expect(PATCH(req({ id: 'rec-1', title: 'x' }))).rejects.toMatchObject({ status: 400 });
     expect(patchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// patch/addTags/removeTags/softDelete와 달리 setFavorite은 스텁으로 바꾸지 않는다
+// (위 vi.mock 참고) — 클라이언트가 보낸 favoritedAt이 실제로 무시되는지는
+// 실제 저장소를 거쳐야만 확인할 수 있기 때문이다. 그래서 이 describe만
+// 실제 파일에 씨앗 데이터를 심고 각 테스트 뒤에 치운다.
+describe('favorite op', () => {
+  const seed: Recording = {
+    id: 'r1',
+    title: '녹음1',
+    description: '',
+    tags: [],
+    recordedAt: '2026-01-01T00:00:00+09:00',
+    durationSec: 10,
+    sourceName: 'r1.qta',
+    appleAutoTitle: null,
+    files: {},
+    bookmarks: [],
+    createdAt: '2026-01-01T00:00:00+09:00',
+    updatedAt: '2026-01-01T00:00:00+09:00',
+    favoritedAt: null,
+    deletedAt: null
+  };
+
+  beforeEach(async () => {
+    await store.addMany(config, [seed]);
+  });
+
+  afterEach(async () => {
+    await fs.rm(path.join(config.dataDir, 'recordings.json'), { force: true });
+  });
+
+  it('지정하면 favoritedAt에 시각이 들어간다', async () => {
+    const res = await patchRequest({ op: 'favorite', id: 'r1', favorite: true });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    const rec = body.recordings.find((r: Recording) => r.id === 'r1');
+    expect(rec.favoritedAt).not.toBe(null);
+  });
+
+  it('해제하면 null이 된다', async () => {
+    await patchRequest({ op: 'favorite', id: 'r1', favorite: true });
+
+    const res = await patchRequest({ op: 'favorite', id: 'r1', favorite: false });
+
+    const body = await res.json();
+    const rec = body.recordings.find((r: Recording) => r.id === 'r1');
+    expect(rec.favoritedAt).toBe(null);
+  });
+
+  it('클라이언트가 보낸 favoritedAt은 무시한다', async () => {
+    // 시각을 클라이언트가 정할 수 있으면 메인 카드의 "최근 5개" 순서를
+    // 조작할 수 있다. 보낸 값(2000년)이 아니라는 것만 확인하면, 서버가
+    // 다른 클라이언트 제공 값을 그대로 저장해도 통과해버린다 — 서버가
+    // 실제로 자기 시각을 찍었는지 확인하려면 "지금과 가깝다"까지 봐야
+    // 한다. nowIso()는 초 단위까지만 담으므로(밀리초 없음) before·after
+    // 둘 다 초 경계로 내림한다(recordings.test.ts의 같은 패턴 참고).
+    const before = Math.floor(Date.now() / 1000) * 1000;
+
+    const res = await patchRequest({
+      op: 'favorite',
+      id: 'r1',
+      favorite: true,
+      favoritedAt: '2000-01-01T00:00:00.000Z'
+    });
+
+    const after = Math.floor(Date.now() / 1000) * 1000;
+    const body = await res.json();
+    const rec = body.recordings.find((r: Recording) => r.id === 'r1');
+    expect(rec.favoritedAt).not.toBe(null);
+    const favoritedAtMs = Date.parse(rec.favoritedAt);
+    expect(favoritedAtMs).toBeGreaterThanOrEqual(before);
+    expect(favoritedAtMs).toBeLessThanOrEqual(after);
+  });
+
+  it('favorite이 불리언이 아니면 400', async () => {
+    // status만 보면 op을 못 알아본 기본 분기("알 수 없는 작업입니다")도 400을
+    // 돌려주므로 통과해버린다 — favorite 검증 분기가 실제로 이 입력을 잡았는지
+    // 확인하려면 그 분기가 내는 메시지까지 비교해야 한다.
+    await expect(
+      patchRequest({ op: 'favorite', id: 'r1', favorite: 'yes' })
+    ).rejects.toMatchObject({ status: 400, body: { message: 'favorite은 true/false여야 합니다' } });
+  });
+
+  it('id가 없으면 400', async () => {
+    await expect(patchRequest({ op: 'favorite', favorite: true })).rejects.toMatchObject({
+      status: 400,
+      body: { message: 'id가 필요합니다' }
+    });
+  });
+});
+
+describe('PATCH /api/recordings - patch op의 필드 화이트리스트 (carried Critical finding)', () => {
+  // Task 1이 Patchable에 favoritedAt을 더하면서, patch 핸들러가 body를 그대로
+  // 스프레드하던 기존 버릇이 exploitable해졌다: `{ op:'patch', id, favoritedAt }`을
+  // 보내면 클라이언트가 즐겨찾기 시각을 마음대로 정할 수 있었다(메인 카드
+  // "최근 5개" 순서 조작 가능). 이 테스트는 patch로 전달되는 changes에
+  // favoritedAt이 (다른 허용 필드가 섞여 있어도) 절대 포함되지 않음을 고정한다.
+  it("op: 'patch' 요청에 favoritedAt이 섞여 있어도 patch에 전달되는 changes에는 포함되지 않는다", async () => {
+    await patchRequest({
+      op: 'patch',
+      id: 'rec-1',
+      title: '제목',
+      favoritedAt: '2099-01-01T00:00:00+09:00'
+    });
+
+    expect(patchSpy).toHaveBeenCalledWith(config, 'rec-1', { title: '제목' });
   });
 });

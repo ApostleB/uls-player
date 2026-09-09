@@ -26,7 +26,15 @@ function nowIso(): string {
 }
 
 async function all(cfg: AppConfig): Promise<Recording[]> {
-  return (await readJson<RecordingsFile>(file(cfg), EMPTY)).recordings;
+  // 이 저장소는 스키마 버전을 올려 마이그레이션하는 대신, 읽는 쪽에서
+  // 기본값을 채운다. all()이 모든 읽기의 관문이라 여기 한 곳이면
+  // listAll·getById가 전부 새 필드를 보게 된다. patch()는 이 함수를 거치지
+  // 않고 updateJson 콜백 안에서 cur.recordings[i]를 원본 그대로 읽으므로
+  // 이 기본값 채움을 보지 않는다 — 문제가 되지 않는 건, 쓰기 경로가 필드를
+  // 명시적으로 지정하고(setFavorite 등) patch()의 반환값을 쓰는 호출부가
+  // 없어 이 기본값에 기대는 곳이 없기 때문이다.
+  const raw = (await readJson<RecordingsFile>(file(cfg), EMPTY)).recordings;
+  return raw.map((r) => ({ ...r, favoritedAt: r.favoritedAt ?? null }));
 }
 
 /** recordedAt를 실제 시각(epoch ms)으로 바꾼다. 빈 문자열이거나 파싱할 수 없으면 null. */
@@ -72,7 +80,9 @@ export async function addMany(cfg: AppConfig, recs: Recording[]): Promise<void> 
   );
 }
 
-type Patchable = Partial<Pick<Recording, 'title' | 'description' | 'tags' | 'files' | 'bookmarks'>>;
+type Patchable = Partial<
+  Pick<Recording, 'title' | 'description' | 'tags' | 'files' | 'bookmarks' | 'favoritedAt'>
+>;
 
 /**
  * patch()가 대상 id를 찾지 못했을 때 던지는 전용 타입.
@@ -110,6 +120,22 @@ export async function patch(cfg: AppConfig, id: string, changes: Patchable): Pro
     EMPTY
   );
   return out!;
+}
+
+/**
+ * 즐겨찾기를 지정하거나 해제한다.
+ *
+ * 시각을 여기서 찍는 것이 이 함수가 patch와 따로 있는 이유다. patch는
+ * 클라이언트가 준 값을 그대로 저장하는 경로라, 거기에 favoritedAt을
+ * 얹으면 아무 시각이나 보낼 수 있게 되고 메인 카드의 "최근 5개" 순서를
+ * 조작할 수 있다.
+ */
+export async function setFavorite(
+  cfg: AppConfig,
+  id: string,
+  favorite: boolean
+): Promise<Recording> {
+  return patch(cfg, id, { favoritedAt: favorite ? nowIso() : null });
 }
 
 function mapIds(

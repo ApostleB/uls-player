@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { tick } from 'svelte';
+import { tick, untrack } from 'svelte';
 import { SvelteURL } from 'svelte/reactivity';
 import { render } from 'vitest-browser-svelte';
 // 이 파일은 아래에서 '$app/state'의 page를 이미 page라는 이름으로 쓰고
@@ -59,8 +59,25 @@ page.url = mockUrl as unknown as typeof page.url;
 // 실제로 갱신한다 — 을 그대로 반영해야 이 모킹이 여전히 "실제보다 더 성실한
 // 가짜"가 되지 않는다. target은 '/recordings'나 '?q=...'처럼 상대 경로로
 // 오므로 현재 mockUrl을 기준으로 해석한다.
+//
+// 그 기준(mockUrl.href) 읽기는 untrack으로 감싼다 — 실제 SvelteKit의
+// goto()는 비동기 내비게이션이라 호출한 컴포넌트의 반응형 그래프와
+// 얽히지 않는데, 이 mock은 target을 현재 URL 기준으로 해석하려고 동기적으로
+// mockUrl.href를 읽는다. 그 읽기가 untrack 없이 일어나면, goto를 부른
+// 이펙트(필터 → URL 이펙트)가 (그 읽기 시점에 실행 중인 이펙트로 잡혀)
+// mockUrl에 스스로 의존하게 된다 — 그리고 바로 다음 줄이 mockUrl.href에
+// 쓰기까지 하므로, 그 이펙트는 자기 자신의 쓰기 때문에 다시 dirty로
+// 표시되어 한 번 더 돈다(같은 qs로 goto를 또 불러 호출 횟수가 ２배가
+// 됨을 실측). Task 5의 '?play=id 처리는 한 번만 반응한다' 테스트가 이
+// 경합을 처음 드러냈다 — play처럼 filter에 속하지 않는 파라미터는 항상
+// 다음 갱신에서 벗겨지는데(필터 → URL 이펙트 참고), 그 벗김 자체가 매번
+// 이 자기참조 재실행을 일으켜 goto 호출 수가 어긋났다. untrack은 이
+// 읽기만 반응형 추적에서 제외해, 실제 goto처럼 "URL을 남이 바꾸는 것"과
+// 똑같이 동작하게 만든다.
 const gotoMock = vi.mocked(goto).mockImplementation(async (target) => {
-  mockUrl.href = new URL(String(target), mockUrl.href).href;
+  untrack(() => {
+    mockUrl.href = new URL(String(target), mockUrl.href).href;
+  });
 });
 
 function setSearchParams(qs: string) {
@@ -94,6 +111,7 @@ function rec(over: Partial<Recording> & { id: string }): Recording {
     bookmarks: [],
     createdAt: '',
     updatedAt: '',
+    favoritedAt: null,
     deletedAt: null,
     ...over
   };
@@ -115,6 +133,28 @@ function pressEnter(el: HTMLElement | SVGElement) {
 // 그대로 지키려면 fetch 호출 전체가 아니라 PATCH 호출만 세야 한다.
 function patchCalls(fetchMock: ReturnType<typeof vi.fn<typeof fetch>>) {
   return fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH');
+}
+
+/**
+ * 이 파일은 fetch를 테스트마다 각자 모킹한다(파일 전역 모킹이 없다).
+ * typeof fetch로 시그니처를 못박는 것도 기존 테스트와 같은 이유다 —
+ * 안 하면 mock.calls의 각 항목이 빈 튜플이 되어 인자 접근이 컴파일
+ * 에러가 난다.
+ *
+ * 원래 '+page.svelte — 제목·설명 인라인 편집' describe 안에만 있었는데,
+ * Task 3의 즐겨찾기 별 테스트도 같은 스텁이 필요해 모듈 스코프로
+ * 끌어올렸다 — 동작은 그대로다.
+ */
+function stubFetch() {
+  const fetchMock = vi.fn<typeof fetch>(
+    async () =>
+      new Response(JSON.stringify({ recordings: [], tags: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
 }
 
 function baseData() {
@@ -159,12 +199,16 @@ function pageData(recordings: Recording[]) {
   return { recordings, tags: [], formats: ['mp3', 'wav'], mediaDir: '' };
 }
 
-// 각 행의 제목은 li 안의 첫 번째 button이다(체크박스는 input이라
-// 걸리지 않는다) — 설명도 button이지만 title 다음에 오므로 첫 번째만
-// 집으면 제목만 남는다.
+// 각 행의 제목은 "선택" 열(체크박스+즐겨찾기 별) 바로 다음 칸, 그 칸의
+// 첫 번째 button이다. Task 3부터 "선택" 열에도 즐겨찾기 별 button이
+// 들어와 li 안에서 가장 먼저 나오는 button이 더 이상 제목이 아니므로
+// (li.querySelector('button')만으로는 별 button이 잡힌다), 제목·설명이
+// 함께 들어 있는 칸(.flex.min-w-0.flex-col.gap-1)으로 좁혀서 그 안의
+// 첫 번째 button만 집는다 — 설명도 button이지만 title 다음에 오므로
+// 그걸로 충분하다.
 function titles(): string[] {
   return Array.from(document.querySelectorAll('ul.space-y-1 > li')).map(
-    (li) => li.querySelector('button')?.textContent?.trim() ?? ''
+    (li) => li.querySelector('.flex.min-w-0.flex-col.gap-1 button')?.textContent?.trim() ?? ''
   );
 }
 
@@ -1053,24 +1097,6 @@ describe('+page.svelte — 제목·설명 인라인 편집', () => {
     return el as HTMLInputElement;
   }
 
-  /**
-   * 이 파일은 fetch를 테스트마다 각자 모킹한다(파일 전역 모킹이 없다).
-   * typeof fetch로 시그니처를 못박는 것도 기존 테스트와 같은 이유다 —
-   * 안 하면 mock.calls의 각 항목이 빈 튜플이 되어 인자 접근이 컴파일
-   * 에러가 난다.
-   */
-  function stubFetch() {
-    const fetchMock = vi.fn<typeof fetch>(
-      async () =>
-        new Response(JSON.stringify({ recordings: [], tags: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' }
-        })
-    );
-    vi.stubGlobal('fetch', fetchMock);
-    return fetchMock;
-  }
-
   // task-4-brief.md의 원안은 이 describe의 여러 테스트에서 fetchMock
   // 자체의 호출 여부·횟수를 직접 단언했다. 그런데 이 파일에는 이미
   // 위쪽에 patchCalls()가 있고, 그 헬퍼의 주석이 설명하는 것과 정확히
@@ -1425,5 +1451,170 @@ describe('+page.svelte — 선택 항목을 zip으로 내려받기', () => {
     // 경우에서 막는다(파일이 로드 이후 사라지는 경합까지는 못 막는다
     // — 이 화면이 알 수 없는 범위라 out of scope).
     await expect.element(getByRole('button', { name: /내려받기/ })).toBeDisabled();
+  });
+});
+
+describe('+page.svelte — 목록 행의 별 버튼(Task 3)', () => {
+  it('별 버튼을 누르면 favorite op이 나간다', async () => {
+    const fetchMock = stubFetch();
+    const { getByRole } = render(Page, { data: baseData() });
+
+    await getByRole('button', { name: '즐겨찾기 지정' }).first().click();
+
+    await vi.waitFor(() => {
+      const body = JSON.parse(String(patchCalls(fetchMock)[0][1]!.body));
+      expect(body).toMatchObject({ op: 'favorite', favorite: true });
+    });
+  });
+
+  it('이미 즐겨찾기면 해제로 동작한다', async () => {
+    const fetchMock = stubFetch();
+    const data = pageData([rec({ id: '1', title: '레인', favoritedAt: '2026-09-01T00:00:00+09:00' })]);
+    const { getByRole } = render(Page, { data });
+
+    await getByRole('button', { name: '즐겨찾기 해제' }).first().click();
+
+    await vi.waitFor(() => {
+      const body = JSON.parse(String(patchCalls(fetchMock)[0][1]!.body));
+      expect(body).toMatchObject({ op: 'favorite', favorite: false });
+    });
+  });
+
+  it('별 버튼은 행 선택을 일으키지 않는다', async () => {
+    // 즐겨찾기는 재생 의사와 무관한 조작이다. 여기서 행이 선택되면
+    // 즐겨찾기를 누를 때마다 재생이 시작된다.
+    //
+    // 빈 재생 바의 안내 문구('목록에서 녹음을 고르세요')는 Player.svelte가
+    // `recording?.title ?? '목록에서 녹음을 고르세요'`로 항상 렌더하는
+    // <strong>의 내용이라(재생 바 자체는 조건 없이 항상 떠 있다), 아무
+    // 행도 선택되지 않았을 때만 이 문구가 그 자리에 남는다 — 선택이
+    // 일어났다면 recording이 채워져 이 문구는 사라지고 그 행의
+    // 제목으로 바뀐다. 그래서 이 문구가 (여전히) 정확히 하나 있다는
+    // 것이 "아무것도 선택되지 않았다"는 증거로 쓸 수 있다.
+    const { getByRole, getByText } = render(Page, { data: baseData() });
+
+    await getByRole('button', { name: '즐겨찾기 지정' }).first().click();
+
+    expect(getByText('목록에서 녹음을 고르세요').elements()).toHaveLength(1);
+  });
+});
+
+describe('+page.svelte — 메인 카드에서 ?play=<id>로 들어오면 재생한다(Task 5)', () => {
+  it('?play=<id>로 들어오면 그 녹음이 재생 대상이 된다', async () => {
+    setSearchParams('?play=2');
+    const { getByText } = render(Page, {
+      data: pageData([rec({ id: '1', title: '레인' }), rec({ id: '2', title: '정류장' })])
+    });
+    await tick();
+
+    // 빈 재생 바의 안내 문구가 사라지고 그 녹음의 제목이 재생기에 뜬다.
+    expect(getByText('목록에서 녹음을 고르세요').elements()).toHaveLength(0);
+  });
+
+  it('없는 id면 아무 일도 일어나지 않는다', async () => {
+    // 링크가 오래됐거나 그 사이 삭제된 것뿐이다. 오류를 띄우지 않는다.
+    setSearchParams('?play=no-such-id');
+    const { getByText } = render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+    await tick();
+
+    await expect.element(getByText('목록에서 녹음을 고르세요')).toBeInTheDocument();
+  });
+
+  it('처리한 뒤 URL에서 play가 사라진다', async () => {
+    // 남겨두면 새로고침이나 뒤로 가기에서 재생이 다시 걸린다. 지우는
+    // 주체는 필터 -> URL 이펙트다 — filterToParams(filter)로 쿼리스트링을
+    // 처음부터 다시 만들기 때문에 필터에 없는 play는 자연히 빠진다.
+    // 이 테스트가 지키는 것은 그 성질에 실제로 기대도 되는가이다.
+    setSearchParams('?play=1');
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    await vi.waitFor(() => expect(page.url.searchParams.get('play')).toBe(null));
+  });
+
+  it('play 파라미터는 한 번만 반응한다', async () => {
+    // 같은 URL이 다시 읽혀도(다른 이유로 이펙트가 재실행돼도) 재생이
+    // 다시 걸리면, 듣다가 멈춘 것이 제멋대로 다시 시작된다.
+    setSearchParams('?play=1');
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+    await tick();
+
+    const before = gotoMock.mock.calls.length;
+    setSearchParams('?play=1');
+    await tick();
+
+    expect(gotoMock.mock.calls.length).toBe(before);
+  });
+});
+
+describe('+page.svelte — playHandled 가드가 실제로 재생 재개를 막는다(Task 5)', () => {
+  // 이 describe 안에서만 play()/pause()를 실제처럼 흉내낸다 — 파일 전역
+  // afterEach는 vi.unstubAllGlobals()만 하지 vi.restoreAllMocks()는 안
+  // 하므로, 다른 describe에 새어 나가지 않게 여기서 직접 되돌린다(위
+  // '이미 고른 행을 다시 눌러도...' describe와 같은 이유·같은 헬퍼).
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function audioEl(): HTMLAudioElement {
+    const el = document.querySelector('audio');
+    if (!el) throw new Error('audio 엘리먼트가 없다');
+    return el as HTMLAudioElement;
+  }
+
+  function toggleButton(): HTMLButtonElement {
+    return document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
+  }
+
+  function simulateRealPlaySucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+    audioEl().dispatchEvent(new Event('play'));
+  }
+
+  function simulateRealPauseSucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => true, configurable: true });
+    audioEl().dispatchEvent(new Event('pause'));
+  }
+
+  it('한 번 처리된 뒤 다른 이유로 URL이 다시 읽혀도 일시정지한 재생을 재개하지 않는다', async () => {
+    // '한 번만 반응한다' 테스트는 goto 호출 횟수만 셌는데, selectRow는
+    // goto를 부르지 않으므로(selectedId·playRequest만 건드린다) 그
+    // 단언은 가드를 지우고 실행해도 깨지지 않는다(리뷰에서 실측
+    // 확인). 실제로 가드가 막는 건 "재생이 제멋대로 재개되는 것"이다 —
+    // Player.svelte의 lastId 이펙트는 idChanged가 false여도 playRequest만
+    // 오르면 paused를 무조건 false로 되돌린다(그 파일의 "이미 고른
+    // 행을 다시 눌렀다..." 주석 참고). 그러니 play=1이 URL에 남은 채로
+    // (필터 → URL 이펙트가 아직 걷어내기 전) 다른 이유로 page.url이
+    // 다시 읽히기만 해도, 가드가 없으면 같은 id를 다시 selectRow에
+    // 넘겨 방금 멈춘 재생이 다시 시작된다.
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      simulateRealPlaySucceeds();
+      return Promise.resolve();
+    });
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
+      simulateRealPauseSucceeds();
+    });
+
+    setSearchParams('?play=1');
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    // ?play=1이 selectRow를 걸어 Player가 자동재생을 시도한다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    // canplay가 와야 loadState가 'loading'을 벗어나 토글 버튼이 활성화된다.
+    audioEl().dispatchEvent(new Event('canplay'));
+    await tick();
+
+    // 사용자가 일시정지한다.
+    toggleButton().click();
+    await tick();
+    expect(audioEl().paused).toBe(true);
+
+    // play=1은 그대로 두고, 다른 쿼리 파라미터가 붙는 것처럼 다른 이유로
+    // page.url이 다시 바뀐다. 이 화면의 ?play 이펙트는 page.url을 읽으므로
+    // (그 이펙트 주석 참고) URL이 바뀔 때마다 다시 도는데, playHandled
+    // 가드가 바로 이 재실행에서 재생 재개를 막아야 한다.
+    setSearchParams('?play=1&resync=1');
+    await tick();
+
+    expect(audioEl().paused).toBe(true);
   });
 });

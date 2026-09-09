@@ -96,7 +96,7 @@ describe('scanFolder', () => {
       id: newId(), title: 'x', description: '', tags: [],
       recordedAt: '2026-07-11T18:15:30+09:00', durationSec: 2.2767,
       sourceName: QTA_NAME, appleAutoTitle: null,
-      files: {}, bookmarks: [], createdAt: '', updatedAt: '', deletedAt: null
+      files: {}, bookmarks: [], createdAt: '', updatedAt: '', favoritedAt: null, deletedAt: null
     };
     await addMany(cfg, [existing]);
     const items = await scanFolder(cfg, src);
