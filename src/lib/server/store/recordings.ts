@@ -28,7 +28,11 @@ function nowIso(): string {
 async function all(cfg: AppConfig): Promise<Recording[]> {
   // 이 저장소는 스키마 버전을 올려 마이그레이션하는 대신, 읽는 쪽에서
   // 기본값을 채운다. all()이 모든 읽기의 관문이라 여기 한 곳이면
-  // listAll·getById·patch가 전부 새 필드를 보게 된다.
+  // listAll·getById가 전부 새 필드를 보게 된다. patch()는 이 함수를 거치지
+  // 않고 updateJson 콜백 안에서 cur.recordings[i]를 원본 그대로 읽으므로
+  // 이 기본값 채움을 보지 않는다 — 문제가 되지 않는 건, 쓰기 경로가 필드를
+  // 명시적으로 지정하고(setFavorite 등) patch()의 반환값을 쓰는 호출부가
+  // 없어 이 기본값에 기대는 곳이 없기 때문이다.
   const raw = (await readJson<RecordingsFile>(file(cfg), EMPTY)).recordings;
   return raw.map((r) => ({ ...r, favoritedAt: r.favoritedAt ?? null }));
 }

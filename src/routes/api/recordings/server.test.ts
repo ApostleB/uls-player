@@ -268,7 +268,13 @@ describe('favorite op', () => {
 
   it('클라이언트가 보낸 favoritedAt은 무시한다', async () => {
     // 시각을 클라이언트가 정할 수 있으면 메인 카드의 "최근 5개" 순서를
-    // 조작할 수 있다.
+    // 조작할 수 있다. 보낸 값(2000년)이 아니라는 것만 확인하면, 서버가
+    // 다른 클라이언트 제공 값을 그대로 저장해도 통과해버린다 — 서버가
+    // 실제로 자기 시각을 찍었는지 확인하려면 "지금과 가깝다"까지 봐야
+    // 한다. nowIso()는 초 단위까지만 담으므로(밀리초 없음) before·after
+    // 둘 다 초 경계로 내림한다(recordings.test.ts의 같은 패턴 참고).
+    const before = Math.floor(Date.now() / 1000) * 1000;
+
     const res = await patchRequest({
       op: 'favorite',
       id: 'r1',
@@ -276,9 +282,13 @@ describe('favorite op', () => {
       favoritedAt: '2000-01-01T00:00:00.000Z'
     });
 
+    const after = Math.floor(Date.now() / 1000) * 1000;
     const body = await res.json();
     const rec = body.recordings.find((r: Recording) => r.id === 'r1');
-    expect(rec.favoritedAt).not.toBe('2000-01-01T00:00:00.000Z');
+    expect(rec.favoritedAt).not.toBe(null);
+    const favoritedAtMs = Date.parse(rec.favoritedAt);
+    expect(favoritedAtMs).toBeGreaterThanOrEqual(before);
+    expect(favoritedAtMs).toBeLessThanOrEqual(after);
   });
 
   it('favorite이 불리언이 아니면 400', async () => {

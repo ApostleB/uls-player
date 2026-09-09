@@ -1545,3 +1545,76 @@ describe('+page.svelte — 메인 카드에서 ?play=<id>로 들어오면 재생
     expect(gotoMock.mock.calls.length).toBe(before);
   });
 });
+
+describe('+page.svelte — playHandled 가드가 실제로 재생 재개를 막는다(Task 5)', () => {
+  // 이 describe 안에서만 play()/pause()를 실제처럼 흉내낸다 — 파일 전역
+  // afterEach는 vi.unstubAllGlobals()만 하지 vi.restoreAllMocks()는 안
+  // 하므로, 다른 describe에 새어 나가지 않게 여기서 직접 되돌린다(위
+  // '이미 고른 행을 다시 눌러도...' describe와 같은 이유·같은 헬퍼).
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function audioEl(): HTMLAudioElement {
+    const el = document.querySelector('audio');
+    if (!el) throw new Error('audio 엘리먼트가 없다');
+    return el as HTMLAudioElement;
+  }
+
+  function toggleButton(): HTMLButtonElement {
+    return document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
+  }
+
+  function simulateRealPlaySucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+    audioEl().dispatchEvent(new Event('play'));
+  }
+
+  function simulateRealPauseSucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => true, configurable: true });
+    audioEl().dispatchEvent(new Event('pause'));
+  }
+
+  it('한 번 처리된 뒤 다른 이유로 URL이 다시 읽혀도 일시정지한 재생을 재개하지 않는다', async () => {
+    // '한 번만 반응한다' 테스트는 goto 호출 횟수만 셌는데, selectRow는
+    // goto를 부르지 않으므로(selectedId·playRequest만 건드린다) 그
+    // 단언은 가드를 지우고 실행해도 깨지지 않는다(리뷰에서 실측
+    // 확인). 실제로 가드가 막는 건 "재생이 제멋대로 재개되는 것"이다 —
+    // Player.svelte의 lastId 이펙트는 idChanged가 false여도 playRequest만
+    // 오르면 paused를 무조건 false로 되돌린다(그 파일의 "이미 고른
+    // 행을 다시 눌렀다..." 주석 참고). 그러니 play=1이 URL에 남은 채로
+    // (필터 → URL 이펙트가 아직 걷어내기 전) 다른 이유로 page.url이
+    // 다시 읽히기만 해도, 가드가 없으면 같은 id를 다시 selectRow에
+    // 넘겨 방금 멈춘 재생이 다시 시작된다.
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      simulateRealPlaySucceeds();
+      return Promise.resolve();
+    });
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
+      simulateRealPauseSucceeds();
+    });
+
+    setSearchParams('?play=1');
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    // ?play=1이 selectRow를 걸어 Player가 자동재생을 시도한다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    // canplay가 와야 loadState가 'loading'을 벗어나 토글 버튼이 활성화된다.
+    audioEl().dispatchEvent(new Event('canplay'));
+    await tick();
+
+    // 사용자가 일시정지한다.
+    toggleButton().click();
+    await tick();
+    expect(audioEl().paused).toBe(true);
+
+    // play=1은 그대로 두고, 다른 쿼리 파라미터가 붙는 것처럼 다른 이유로
+    // page.url이 다시 바뀐다. 이 화면의 ?play 이펙트는 page.url을 읽으므로
+    // (그 이펙트 주석 참고) URL이 바뀔 때마다 다시 도는데, playHandled
+    // 가드가 바로 이 재실행에서 재생 재개를 막아야 한다.
+    setSearchParams('?play=1&resync=1');
+    await tick();
+
+    expect(audioEl().paused).toBe(true);
+  });
+});
