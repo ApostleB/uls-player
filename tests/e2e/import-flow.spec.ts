@@ -201,7 +201,7 @@ test.describe.serial('스캔부터 재생까지', () => {
 
   test('가져오기 스캔: DB 사용자 제목이 파일 메타데이터보다 우선한다', async ({ page }) => {
     await page.goto('/import');
-    await page.getByPlaceholder('/Volumes/Storage/voice').fill(srcDir);
+    await page.getByLabel('스캔할 서버 폴더 경로').fill(srcDir);
     await page.getByRole('button', { name: '스캔' }).click();
 
     await expect(page.locator('tbody tr')).toHaveCount(2);
@@ -226,7 +226,7 @@ test.describe.serial('스캔부터 재생까지', () => {
 
   test('설명·태그를 입력하고 저장하면 두 파일 모두 변환이 끝난다', async ({ page }) => {
     await page.goto('/import');
-    await page.getByPlaceholder('/Volumes/Storage/voice').fill(srcDir);
+    await page.getByLabel('스캔할 서버 폴더 경로').fill(srcDir);
     await page.getByRole('button', { name: '스캔' }).click();
     await expect(page.locator('tbody tr')).toHaveCount(2);
 

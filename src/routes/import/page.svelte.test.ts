@@ -222,3 +222,64 @@ describe('+page.svelte — 재시도 (Must Fix 3)', () => {
     await expect.element(page.getByText(/재시도 요청을 보낼 수 없습니다/)).toBeInTheDocument();
   });
 });
+
+/**
+ * 업로드 폼은 파일을 고르는 순간 자동 제출된다(input의 onchange가
+ * requestSubmit을 부른다). 그런데 진행 표시가 없어서, 원본 수백 개를
+ * 올리는 동안 화면이 통째로 멈춘 것처럼 보였다 — 실사용에서 사용자가
+ * "다음 동작 진행 불가"로 판단했고, 그렇게 다시 누르면 같은 전송이 두 번
+ * 나간다. 재생 버튼에 로딩 표시가 없어 겪었던 것과 같은 부류다.
+ *
+ * 위 Must Fix 2 테스트와 같은 방법을 쓴다: 절대 resolve하지 않는 fetch로
+ * "응답을 기다리는 중" 상태를 고정한다. enhance의 제출 콜백은 fetch보다
+ * 먼저 동기적으로 실행되므로 이 시점이 결정론적으로 잡힌다.
+ */
+describe('+page.svelte — 업로드 진행 표시', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {}))); // 절대 resolve하지 않는다
+  });
+
+  /** 파일 input에 실제 File을 넣고 change를 발생시킨다 — 이게 자동 제출을 태운다. */
+  function pickFile(input: HTMLInputElement): void {
+    const dt = new DataTransfer();
+    dt.items.add(new File(['x'], 'a.qta', { type: 'audio/mp4' }));
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  it('파일을 고르면 올리는 중이라는 표시가 나온다', async () => {
+    render(Page, { data: { tags: [], formats: ['mp3'] }, form: null });
+    const input = (await page.getByLabelText(/끌어다 놓거나/).element()) as HTMLInputElement;
+
+    pickFile(input);
+
+    await expect.element(page.getByRole('status')).toBeInTheDocument();
+  });
+
+  it('올리는 동안 파일 입력이 비활성화된다', async () => {
+    // 다시 고를 수 있으면 같은 전송이 두 번 나간다.
+    render(Page, { data: { tags: [], formats: ['mp3'] }, form: null });
+    const input = (await page.getByLabelText(/끌어다 놓거나/).element()) as HTMLInputElement;
+
+    pickFile(input);
+
+    await vi.waitFor(() => expect(input.disabled).toBe(true));
+  });
+
+  it('업로드를 시작하면 직전 응답의 오류 메시지를 감춘다', async () => {
+    // 스캔이 실패한 채로 파일을 고르면, 남아 있던 그 오류가 방금 시작한
+    // 업로드의 결과처럼 읽힌다 — 실사용에서 실제로 그렇게 오해했다.
+    render(Page, {
+      data: { tags: [], formats: ['mp3'] },
+      form: { message: '폴더를 읽을 수 없습니다: ENOENT' }
+    });
+    await expect.element(page.getByText(/폴더를 읽을 수 없습니다/)).toBeInTheDocument();
+
+    const input = (await page.getByLabelText(/끌어다 놓거나/).element()) as HTMLInputElement;
+    pickFile(input);
+
+    await vi.waitFor(() =>
+      expect(page.getByText(/폴더를 읽을 수 없습니다/).elements()).toHaveLength(0)
+    );
+  });
+});
