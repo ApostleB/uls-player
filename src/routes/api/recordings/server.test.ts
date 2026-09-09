@@ -33,7 +33,6 @@ vi.mock('$lib/server/store/recordings', async (importOriginal) => {
 import { PATCH } from './+server';
 import { config } from '$lib/server/config';
 import * as store from '$lib/server/store/recordings';
-import { addMany } from '$lib/server/store/recordings';
 
 const patchSpy = vi.mocked(store.patch);
 const addTagsSpy = vi.mocked(store.addTags);
@@ -241,7 +240,7 @@ describe('favorite op', () => {
   };
 
   beforeEach(async () => {
-    await addMany(config, [seed]);
+    await store.addMany(config, [seed]);
   });
 
   afterEach(async () => {
@@ -283,14 +282,18 @@ describe('favorite op', () => {
   });
 
   it('favorite이 불리언이 아니면 400', async () => {
+    // status만 보면 op을 못 알아본 기본 분기("알 수 없는 작업입니다")도 400을
+    // 돌려주므로 통과해버린다 — favorite 검증 분기가 실제로 이 입력을 잡았는지
+    // 확인하려면 그 분기가 내는 메시지까지 비교해야 한다.
     await expect(
       patchRequest({ op: 'favorite', id: 'r1', favorite: 'yes' })
-    ).rejects.toMatchObject({ status: 400 });
+    ).rejects.toMatchObject({ status: 400, body: { message: 'favorite은 true/false여야 합니다' } });
   });
 
   it('id가 없으면 400', async () => {
     await expect(patchRequest({ op: 'favorite', favorite: true })).rejects.toMatchObject({
-      status: 400
+      status: 400,
+      body: { message: 'id가 필요합니다' }
     });
   });
 });
