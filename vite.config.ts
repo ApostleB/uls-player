@@ -2,7 +2,7 @@ import path from 'node:path';
 import { defineConfig } from 'vitest/config';
 import { playwright } from '@vitest/browser-playwright';
 import tailwindcss from '@tailwindcss/vite';
-import adapter from '@sveltejs/adapter-auto';
+import adapter from '@sveltejs/adapter-node';
 import { sveltekit } from '@sveltejs/kit/vite';
 
 // 프로젝트 루트. `**/data/**`처럼 앞에 `**/`를 붙인 glob은 경로 어디에
@@ -58,9 +58,17 @@ export default defineConfig({
 				runes: ({ filename }) => filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
 
-			// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
-			// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
-			// See https://svelte.dev/docs/kit/adapters for more information about adapters.
+			// adapter-node로 빌드한다 — 이 앱은 자기 서버에서 `node build`로
+			// 돈다. 기본값이던 adapter-auto는 Vercel·Netlify 같은 플랫폼을
+			// 자동 감지하는 용도라, 그런 플랫폼이 아닌 곳에서는 실행 가능한
+			// build/index.js를 아예 만들지 않는다.
+			//
+			// 리버스 프록시(nginx) 뒤에 둘 때는 ORIGIN 환경변수를 실제 접속
+			// 주소로 반드시 지정해야 한다. SvelteKit은 form POST에 CSRF 검사를
+			// 걸어 origin 헤더를 서버가 아는 자기 주소와 비교하는데, 프록시
+			// 뒤에서는 그 주소를 스스로 알아낼 방법이 없어서 전부 403이 된다 —
+			// 이 앱에서는 가져오기 저장과 일괄 내려받기(/api/download)가
+			// 그 경로다.
 			adapter: adapter()
 		})
 	],
