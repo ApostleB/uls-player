@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { tick } from 'svelte';
+import { tick, untrack } from 'svelte';
 import { SvelteURL } from 'svelte/reactivity';
 import { render } from 'vitest-browser-svelte';
 // 이 파일은 아래에서 '$app/state'의 page를 이미 page라는 이름으로 쓰고
@@ -59,8 +59,25 @@ page.url = mockUrl as unknown as typeof page.url;
 // 실제로 갱신한다 — 을 그대로 반영해야 이 모킹이 여전히 "실제보다 더 성실한
 // 가짜"가 되지 않는다. target은 '/recordings'나 '?q=...'처럼 상대 경로로
 // 오므로 현재 mockUrl을 기준으로 해석한다.
+//
+// 그 기준(mockUrl.href) 읽기는 untrack으로 감싼다 — 실제 SvelteKit의
+// goto()는 비동기 내비게이션이라 호출한 컴포넌트의 반응형 그래프와
+// 얽히지 않는데, 이 mock은 target을 현재 URL 기준으로 해석하려고 동기적으로
+// mockUrl.href를 읽는다. 그 읽기가 untrack 없이 일어나면, goto를 부른
+// 이펙트(필터 → URL 이펙트)가 (그 읽기 시점에 실행 중인 이펙트로 잡혀)
+// mockUrl에 스스로 의존하게 된다 — 그리고 바로 다음 줄이 mockUrl.href에
+// 쓰기까지 하므로, 그 이펙트는 자기 자신의 쓰기 때문에 다시 dirty로
+// 표시되어 한 번 더 돈다(같은 qs로 goto를 또 불러 호출 횟수가 ２배가
+// 됨을 실측). Task 5의 '?play=id 처리는 한 번만 반응한다' 테스트가 이
+// 경합을 처음 드러냈다 — play처럼 filter에 속하지 않는 파라미터는 항상
+// 다음 갱신에서 벗겨지는데(필터 → URL 이펙트 참고), 그 벗김 자체가 매번
+// 이 자기참조 재실행을 일으켜 goto 호출 수가 어긋났다. untrack은 이
+// 읽기만 반응형 추적에서 제외해, 실제 goto처럼 "URL을 남이 바꾸는 것"과
+// 똑같이 동작하게 만든다.
 const gotoMock = vi.mocked(goto).mockImplementation(async (target) => {
-  mockUrl.href = new URL(String(target), mockUrl.href).href;
+  untrack(() => {
+    mockUrl.href = new URL(String(target), mockUrl.href).href;
+  });
 });
 
 function setSearchParams(qs: string) {
@@ -1479,5 +1496,52 @@ describe('+page.svelte — 목록 행의 별 버튼(Task 3)', () => {
     await getByRole('button', { name: '즐겨찾기 지정' }).first().click();
 
     expect(getByText('목록에서 녹음을 고르세요').elements()).toHaveLength(1);
+  });
+});
+
+describe('+page.svelte — 메인 카드에서 ?play=<id>로 들어오면 재생한다(Task 5)', () => {
+  it('?play=<id>로 들어오면 그 녹음이 재생 대상이 된다', async () => {
+    setSearchParams('?play=2');
+    const { getByText } = render(Page, {
+      data: pageData([rec({ id: '1', title: '레인' }), rec({ id: '2', title: '정류장' })])
+    });
+    await tick();
+
+    // 빈 재생 바의 안내 문구가 사라지고 그 녹음의 제목이 재생기에 뜬다.
+    expect(getByText('목록에서 녹음을 고르세요').elements()).toHaveLength(0);
+  });
+
+  it('없는 id면 아무 일도 일어나지 않는다', async () => {
+    // 링크가 오래됐거나 그 사이 삭제된 것뿐이다. 오류를 띄우지 않는다.
+    setSearchParams('?play=no-such-id');
+    const { getByText } = render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+    await tick();
+
+    await expect.element(getByText('목록에서 녹음을 고르세요')).toBeInTheDocument();
+  });
+
+  it('처리한 뒤 URL에서 play가 사라진다', async () => {
+    // 남겨두면 새로고침이나 뒤로 가기에서 재생이 다시 걸린다. 지우는
+    // 주체는 필터 -> URL 이펙트다 — filterToParams(filter)로 쿼리스트링을
+    // 처음부터 다시 만들기 때문에 필터에 없는 play는 자연히 빠진다.
+    // 이 테스트가 지키는 것은 그 성질에 실제로 기대도 되는가이다.
+    setSearchParams('?play=1');
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+
+    await vi.waitFor(() => expect(page.url.searchParams.get('play')).toBe(null));
+  });
+
+  it('play 파라미터는 한 번만 반응한다', async () => {
+    // 같은 URL이 다시 읽혀도(다른 이유로 이펙트가 재실행돼도) 재생이
+    // 다시 걸리면, 듣다가 멈춘 것이 제멋대로 다시 시작된다.
+    setSearchParams('?play=1');
+    render(Page, { data: pageData([rec({ id: '1', title: '레인' })]) });
+    await tick();
+
+    const before = gotoMock.mock.calls.length;
+    setSearchParams('?play=1');
+    await tick();
+
+    expect(gotoMock.mock.calls.length).toBe(before);
   });
 });

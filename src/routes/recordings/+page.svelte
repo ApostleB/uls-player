@@ -60,6 +60,27 @@
     playRequest += 1;
   }
 
+  /**
+   * 메인 페이지 카드에서 `/recordings?play=<id>`로 들어온 경우를 처리한다.
+   *
+   * 한 번만 반응해야 한다 — 이 이펙트는 page.url을 읽으므로 URL이 바뀔
+   * 때마다 다시 도는데, 그때마다 재생을 다시 걸면 듣다가 멈춘 것이
+   * 제멋대로 다시 시작된다.
+   *
+   * 파라미터를 지우려고 goto를 새로 부르지 않는다. 아래 필터 → URL
+   * 이펙트가 filterToParams(filter)로 쿼리스트링을 처음부터 다시 만들기
+   * 때문에, 필터에 없는 play는 그 다음 갱신에서 자연히 빠진다. 이 화면에서
+   * URL을 쓰는 goto가 하나뿐이라는 규칙을 지키기 위해서다.
+   */
+  let playHandled = false;
+  $effect(() => {
+    const id = page.url.searchParams.get('play');
+    if (!id || playHandled) return;
+    playHandled = true;
+    // 없는 id면 아무 일도 하지 않는다 — 링크가 오래됐거나 삭제된 것뿐이다.
+    if (untrack(() => recordings).some((r) => r.id === id)) selectRow(id);
+  });
+
   const selected = $derived(recordings.find((r) => r.id === selectedId) ?? null);
 
   // data는 SvelteKit이 load를 다시 실행할 때마다(예: /import에서 돌아오는

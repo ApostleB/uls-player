@@ -952,4 +952,16 @@ test.describe.serial('스캔부터 재생까지', () => {
     // 메뉴바의 로고 링크 하나만 남아야 한다.
     await expect(page.getByText('ULS Player', { exact: true })).toHaveCount(1);
   });
+
+  test('메인 카드에서 제목을 누르면 그 녹음이 재생된다', async ({ page }) => {
+    // 즐겨찾기를 하나 지정해 메인 카드에 뜨게 한다.
+    await page.goto('/recordings');
+    await rowFor(page, QTA_TITLE).getByRole('button', { name: '즐겨찾기 지정' }).click();
+
+    await page.goto('/');
+    await page.getByRole('link', { name: QTA_TITLE }).click();
+
+    await expect(page).toHaveURL(/\/recordings/);
+    await expect(page.getByRole('button', { name: '일시정지' })).toBeVisible();
+  });
 });
