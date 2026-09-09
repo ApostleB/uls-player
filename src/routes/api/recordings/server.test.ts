@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import type { RequestHandler } from './$types';
+import type { Recording } from '$lib/types';
 
 // config는 모듈이 처음 불릴 때 process.env로 만들어지는 싱글턴이라, 아무것도
 // 안 하면 개발자의 실제 data/를 가리킨다. 아래에서 listAll/allTags를 일부러
@@ -30,6 +33,7 @@ vi.mock('$lib/server/store/recordings', async (importOriginal) => {
 import { PATCH } from './+server';
 import { config } from '$lib/server/config';
 import * as store from '$lib/server/store/recordings';
+import { addMany } from '$lib/server/store/recordings';
 
 const patchSpy = vi.mocked(store.patch);
 const addTagsSpy = vi.mocked(store.addTags);
@@ -50,6 +54,11 @@ function req(body: unknown) {
       body: JSON.stringify(body)
     })
   } as unknown as Parameters<RequestHandler>[0];
+}
+
+/** PATCH를 호출해 Response를 돌려준다. 성공 시엔 resolve, 검증 실패(400) 시엔 reject한다 — 이 라우트의 badRequest가 실제로 throw하기 때문이다. */
+function patchRequest(body: unknown) {
+  return PATCH(req(body));
 }
 
 function othersUntouched(except: 'patch' | 'addTags' | 'removeTags' | 'softDelete') {
@@ -206,5 +215,100 @@ describe('PATCH /api/recordings 본문 형태 검증 (Finding 3, 4)', () => {
   it('본문에 op가 없으면 400이다', async () => {
     await expect(PATCH(req({ id: 'rec-1', title: 'x' }))).rejects.toMatchObject({ status: 400 });
     expect(patchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// patch/addTags/removeTags/softDelete와 달리 setFavorite은 스텁으로 바꾸지 않는다
+// (위 vi.mock 참고) — 클라이언트가 보낸 favoritedAt이 실제로 무시되는지는
+// 실제 저장소를 거쳐야만 확인할 수 있기 때문이다. 그래서 이 describe만
+// 실제 파일에 씨앗 데이터를 심고 각 테스트 뒤에 치운다.
+describe('favorite op', () => {
+  const seed: Recording = {
+    id: 'r1',
+    title: '녹음1',
+    description: '',
+    tags: [],
+    recordedAt: '2026-01-01T00:00:00+09:00',
+    durationSec: 10,
+    sourceName: 'r1.qta',
+    appleAutoTitle: null,
+    files: {},
+    bookmarks: [],
+    createdAt: '2026-01-01T00:00:00+09:00',
+    updatedAt: '2026-01-01T00:00:00+09:00',
+    favoritedAt: null,
+    deletedAt: null
+  };
+
+  beforeEach(async () => {
+    await addMany(config, [seed]);
+  });
+
+  afterEach(async () => {
+    await fs.rm(path.join(config.dataDir, 'recordings.json'), { force: true });
+  });
+
+  it('지정하면 favoritedAt에 시각이 들어간다', async () => {
+    const res = await patchRequest({ op: 'favorite', id: 'r1', favorite: true });
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    const rec = body.recordings.find((r: Recording) => r.id === 'r1');
+    expect(rec.favoritedAt).not.toBe(null);
+  });
+
+  it('해제하면 null이 된다', async () => {
+    await patchRequest({ op: 'favorite', id: 'r1', favorite: true });
+
+    const res = await patchRequest({ op: 'favorite', id: 'r1', favorite: false });
+
+    const body = await res.json();
+    const rec = body.recordings.find((r: Recording) => r.id === 'r1');
+    expect(rec.favoritedAt).toBe(null);
+  });
+
+  it('클라이언트가 보낸 favoritedAt은 무시한다', async () => {
+    // 시각을 클라이언트가 정할 수 있으면 메인 카드의 "최근 5개" 순서를
+    // 조작할 수 있다.
+    const res = await patchRequest({
+      op: 'favorite',
+      id: 'r1',
+      favorite: true,
+      favoritedAt: '2000-01-01T00:00:00.000Z'
+    });
+
+    const body = await res.json();
+    const rec = body.recordings.find((r: Recording) => r.id === 'r1');
+    expect(rec.favoritedAt).not.toBe('2000-01-01T00:00:00.000Z');
+  });
+
+  it('favorite이 불리언이 아니면 400', async () => {
+    await expect(
+      patchRequest({ op: 'favorite', id: 'r1', favorite: 'yes' })
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it('id가 없으면 400', async () => {
+    await expect(patchRequest({ op: 'favorite', favorite: true })).rejects.toMatchObject({
+      status: 400
+    });
+  });
+});
+
+describe('PATCH /api/recordings - patch op의 필드 화이트리스트 (carried Critical finding)', () => {
+  // Task 1이 Patchable에 favoritedAt을 더하면서, patch 핸들러가 body를 그대로
+  // 스프레드하던 기존 버릇이 exploitable해졌다: `{ op:'patch', id, favoritedAt }`을
+  // 보내면 클라이언트가 즐겨찾기 시각을 마음대로 정할 수 있었다(메인 카드
+  // "최근 5개" 순서 조작 가능). 이 테스트는 patch로 전달되는 changes에
+  // favoritedAt이 (다른 허용 필드가 섞여 있어도) 절대 포함되지 않음을 고정한다.
+  it("op: 'patch' 요청에 favoritedAt이 섞여 있어도 patch에 전달되는 changes에는 포함되지 않는다", async () => {
+    await patchRequest({
+      op: 'patch',
+      id: 'rec-1',
+      title: '제목',
+      favoritedAt: '2099-01-01T00:00:00+09:00'
+    });
+
+    expect(patchSpy).toHaveBeenCalledWith(config, 'rec-1', { title: '제목' });
   });
 });

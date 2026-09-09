@@ -2,12 +2,21 @@ import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { Bookmark } from '$lib/types';
 import { config } from '$lib/server/config';
-import { patch, addTags, removeTags, softDelete, listAll, allTags } from '$lib/server/store/recordings';
+import {
+  patch,
+  addTags,
+  removeTags,
+  setFavorite,
+  softDelete,
+  listAll,
+  allTags
+} from '$lib/server/store/recordings';
 
 type Body =
   | { op: 'patch'; id: string; title?: string; description?: string; tags?: string[]; bookmarks?: Bookmark[] }
   | { op: 'addTags'; ids: string[]; tags: string[] }
   | { op: 'removeTags'; ids: string[]; tags: string[] }
+  | { op: 'favorite'; id: string; favorite: boolean }
   | { op: 'delete'; ids: string[] };
 
 function isNonEmptyString(v: unknown): v is string {
@@ -70,6 +79,10 @@ function validate(body: Body): void {
       if (!isStringArray(body.ids)) badRequest('ids는 비어 있지 않은 문자열의 배열이어야 합니다');
       if (!isStringArray(body.tags)) badRequest('tags는 비어 있지 않은 문자열의 배열이어야 합니다');
       return;
+    case 'favorite':
+      if (!isNonEmptyString(body.id)) badRequest('id가 필요합니다');
+      if (typeof body.favorite !== 'boolean') badRequest('favorite은 true/false여야 합니다');
+      return;
     case 'delete':
       if (!isStringArray(body.ids)) badRequest('ids는 비어 있지 않은 문자열의 배열이어야 합니다');
       return;
@@ -89,8 +102,21 @@ export const PATCH: RequestHandler = async ({ request }) => {
 
   switch (body.op) {
     case 'patch': {
-      const { op, id, ...changes } = body;
-      await patch(config, id, changes);
+      // body는 검증된 타입이 아니라 파싱된 런타임 객체(raw as Body)라, 여기서
+      // `...changes`로 스프레드하면 Body에 없는 필드까지(예: favoritedAt) 그대로
+      // 통과한다. validate()는 알려진 필드만 검사할 뿐 모르는 키를 거부하지
+      // 않으므로, patch가 실제로 받는 필드를 명시적으로 하나씩 골라 넘긴다.
+      const changes: {
+        title?: string;
+        description?: string;
+        tags?: string[];
+        bookmarks?: Bookmark[];
+      } = {};
+      if (body.title !== undefined) changes.title = body.title;
+      if (body.description !== undefined) changes.description = body.description;
+      if (body.tags !== undefined) changes.tags = body.tags;
+      if (body.bookmarks !== undefined) changes.bookmarks = body.bookmarks;
+      await patch(config, body.id, changes);
       break;
     }
     case 'addTags':
@@ -98,6 +124,11 @@ export const PATCH: RequestHandler = async ({ request }) => {
       break;
     case 'removeTags':
       await removeTags(config, body.ids, body.tags);
+      break;
+    case 'favorite':
+      // 시각은 여기서 받지 않는다 — setFavorite이 서버 시각을 찍는다.
+      // patch를 거치지 않고 setFavorite을 직접 부르는 것도 같은 이유다.
+      await setFavorite(config, body.id, body.favorite);
       break;
     case 'delete':
       await softDelete(config, body.ids);
