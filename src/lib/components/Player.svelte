@@ -16,13 +16,19 @@
     formatTime as fmt
   } from '$lib/player';
   import type { LoopState } from '$lib/player';
-  import { mediaFilePath, mediaFileExt } from '$lib/media';
+  import { mediaFilePath, mediaFileExt, downloadFileName } from '$lib/media';
   import { middleEllipsis } from '$lib/pathDisplay';
 
   let {
     recording = null as Recording | null,
     formats = [] as string[],
     mediaDir = '',
+    /**
+     * 행을 누를 때마다 오르는 카운터. selectedId만으로는 "이미 고른 행을
+     * 다시 눌렀다"를 전할 수 없다 — 같은 값 재대입은 Svelte 수준에서
+     * 무변화라 이펙트가 돌지 않는다.
+     */
+    playRequest = 0,
     onbookmark = (_: Omit<Bookmark, 'id'>) => {},
     // 성공하면 true(또는 true로 resolve하는 Promise)를 돌려줘야 한다 —
     // 실패(false)를 받으면 아래 목록이 낙관적으로 반영해둔 편집을
@@ -137,10 +143,29 @@
    * 안 울려서 클릭이 씹힌 줄 알았다"로 드러나, 그 판단을 뒤집는다.
    */
   let lastId: string | null = null;
+  let lastPlayRequest = 0;
   $effect(() => {
     const id = recording?.id ?? null;
-    if (id === lastId) return;
+    const req = playRequest;
+
+    const idChanged = id !== lastId;
+    const requested = req !== lastPlayRequest;
     lastId = id;
+    lastPlayRequest = req;
+
+    // 참조만 바뀐 경우다(목록 갱신). 아무것도 건드리지 않는다.
+    if (!idChanged && !requested) return;
+
+    if (!idChanged) {
+      // 이미 고른 행을 다시 눌렀다. 리셋하지 않는다 — 위치도 A-B 구간도
+      // 그대로 두고, 멈춰 있었다면 이어서 재생만 한다.
+      //
+      // 여기서는 id가 바뀔 때와 달리 이중 쓰기가 필요 없다. 재생 중이면
+      // paused가 이미 false고, 거기에 false를 넣는 것이 무변화라는 사실이
+      // 정확히 원하는 "아무 일 없음"이다.
+      paused = false;
+      return;
+    }
 
     if (!id) {
       peaks = [];
@@ -330,8 +355,9 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-{#if recording}
-  <div class="bg-surface-100-900 border-surface-200-800 fixed inset-x-0 bottom-0 border-t p-3">
+<div data-testid="player-bar"
+  class="bg-surface-100-900 border-surface-200-800 fixed inset-x-0 bottom-0 border-t p-3">
+  {#if recording}
     <audio
       bind:this={audio}
       {src}
@@ -345,10 +371,11 @@
       oncanplay={() => (loadState = 'ready')}
       onerror={() => (loadState = 'error')}
     ></audio>
+  {/if}
 
     <div class="mx-auto max-w-6xl space-y-2">
       <div class="flex items-baseline gap-3">
-        <strong class="truncate">{recording.title}</strong>
+        <strong class="truncate">{recording?.title ?? '목록에서 녹음을 고르세요'}</strong>
         <span class="text-surface-500 shrink-0 text-sm tabular-nums">
           {fmt(current)} / {fmt(duration)}
         </span>
@@ -363,8 +390,8 @@
         onseek={(r: number) => seek(r * duration)} />
 
       <div class="flex flex-wrap items-center gap-2">
-        <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(-10)}>−10초</button>
-        <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(-5)}>−5초</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={() => nudge(-10)}>−10초</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={() => nudge(-5)}>−5초</button>
         <!-- 상태를 재생 버튼 자리에 둔다 — 사용자가 이미 보고 있는 곳이고,
              "지금은 누를 수 없다"까지 같은 자리에서 전달된다. 오류
              상태에서는 라벨과 동작을 모두 "다시 시도"로 바꾼다 — 라벨이
@@ -372,20 +399,20 @@
              이미 실패한 리소스에 play()만 다시 시도할 뿐 다시 받아오지
              않는다)과 라벨이 약속하는 동작이 어긋난다. -->
         <button type="button" class="btn preset-filled-primary-500"
-          disabled={loadState === 'loading'}
+          disabled={!recording || loadState === 'loading'}
           onclick={loadState === 'error' ? retry : toggle}>
           {loadState === 'loading' ? '불러오는 중' : loadState === 'error' ? '다시 시도' : playing ? '일시정지' : '재생'}
         </button>
         {#if loadState === 'error'}
           <span class="text-error-500 text-sm">불러오지 못했습니다</span>
         {/if}
-        <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(5)}>+5초</button>
-        <button type="button" class="btn btn-sm preset-tonal" onclick={() => nudge(10)}>+10초</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={() => nudge(5)}>+5초</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={() => nudge(10)}>+10초</button>
 
-        <button type="button" class="btn btn-sm preset-tonal" onclick={markLoop}>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={markLoop}>
           {loopA === null ? 'A 지정' : loopB === null ? 'B 지정' : '구간 해제'}
         </button>
-        <button type="button" class="btn btn-sm preset-tonal" onclick={addBookmark}>북마크</button>
+        <button type="button" class="btn btn-sm preset-tonal" disabled={!recording} onclick={addBookmark}>북마크</button>
 
         <!-- 이 <label>은 원래 볼륨 슬라이더 하나만 감싸려던 것인데, 음소거
              버튼까지 같이 담고 있다. 둘 다 labelable 요소(<button>도
@@ -441,9 +468,12 @@
               <button type="button"
                 class="btn btn-sm {format === f ? 'preset-filled' : 'preset-tonal'}"
                 onclick={() => switchFormat(f)}>
-                {f === 'original' ? (recording.files.original.ext ?? '원본') : f}
+                {f === 'original' ? (recording?.files.original.ext ?? '원본') : f}
               </button>
-              <a class="btn btn-sm preset-tonal" href="/api/media/{recording.id}/{f}" download
+              <a class="btn btn-sm preset-tonal" href="/api/media/{recording?.id}/{f}"
+                download={recording
+                  ? downloadFileName(recording.title, recording.recordedAt, mediaFileExt(f, recording.files[f]))
+                  : undefined}
                 aria-label="{f} 다운로드">
                 ↓
               </a>
@@ -525,14 +555,15 @@
         </ul>
       {/if}
 
-      {#if filePath}
-        <!-- 전체 경로는 title에 둔다 — 줄인 문자열만 있으면 실제 위치를
-             알 방법이 없다. 60자는 재생기 폭에서 두 줄로 넘어가지 않는
-             선에서 잡았다. -->
-        <div class="text-surface-500 mt-1 text-right font-mono text-xs" title={filePath}>
-          {middleEllipsis(filePath, 60)}
-        </div>
-      {/if}
+      <!-- 전체 경로는 title에 둔다 — 줄인 문자열만 있으면 실제 위치를
+           알 방법이 없다. 60자는 재생기 폭에서 두 줄로 넘어가지 않는
+           선에서 잡았다.
+
+           녹음이 없을 때도 이 줄을 그린다 — 빼면 빈 바가 선택된 바보다
+           한 줄만큼 낮아져서, 고르는 순간 레이아웃이 움직이는 문제가
+           그대로 남는다. -->
+      <div class="text-surface-500 mt-1 text-right font-mono text-xs" title={filePath}>
+        {filePath ? middleEllipsis(filePath, 60) : ' '}
+      </div>
     </div>
   </div>
-{/if}

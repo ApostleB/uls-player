@@ -33,6 +33,12 @@
   // 하나뿐이라 행별 편집(tagsDraft)과는 별개다.
   let bulkTags = $state<string[]>([]);
 
+  /**
+   * 일괄 내려받기에 담을 포맷. 용도가 갈리므로(원본 보관 vs mp3 공유)
+   * 고를 수 있어야 한다. 기본값은 가장 흔한 용도인 mp3다.
+   */
+  let downloadFormat = $state('mp3');
+
   // send() 실패를 화면에 보여줄 메시지. /import가 form.message를
   // preset-tonal-error 카드로 보여주는 것과 같은 패턴을 따른다.
   let errorMessage = $state<string | null>(null);
@@ -41,6 +47,19 @@
   // 목록 접힘도 없다. Task 15가 이 값을 읽어 하단 고정 플레이어에 녹음을
   // 로드한다.
   let selectedId = $state<string | null>(null);
+  /**
+   * 행을 누르는 것은 듣겠다는 뜻이다. selectedId만으로는 그 뜻을 전할 수
+   * 없다 — 이미 고른 행을 다시 누르면 같은 값 재대입이라 Svelte 수준에서
+   * 무변화라서, 재생기가 그 클릭을 볼 방법이 없다. 누를 때마다 오르는
+   * 카운터를 함께 보낸다.
+   */
+  let playRequest = $state(0);
+
+  function selectRow(id: string) {
+    selectedId = id;
+    playRequest += 1;
+  }
+
   const selected = $derived(recordings.find((r) => r.id === selectedId) ?? null);
 
   // data는 SvelteKit이 load를 다시 실행할 때마다(예: /import에서 돌아오는
@@ -73,6 +92,20 @@
   // 툴바에서 알려준다.
   const hiddenSelectedCount = $derived(
     [...selectedIds].filter((id) => !shown.some((r) => r.id === id)).length
+  );
+
+  // 서버(routes/api/download/+server.ts)는 고른 포맷의 파일이 없는
+  // 녹음을 조용히 건너뛰고, 하나도 못 담으면 404를 던진다. 이 화면은
+  // 폼 POST로 보낸다(위 다운로드 폼 주석 참고 — 수 GB짜리 zip을 fetch로
+  // 받으면 메모리에 통째로 올라간다) — 그래서 그 404는 fetch 에러가
+  // 아니라 탭 전체 내비게이션이 되고, 이 프로젝트엔 +error.svelte가
+  // 없어 사용자는 SvelteKit 기본 에러 페이지에 떨어져 선택·스크롤
+  // 위치를 잃는다. data.recordings(→ recordings)가 이미 각 녹음의
+  // files 맵을 들고 있으니, 제출 전에 실제로 몇 개가 담길지 여기서
+  // 미리 센다 — 버튼 라벨과 비활성화 여부가 둘 다 이 값을 쓴다.
+  const downloadableCount = $derived(
+    [...selectedIds].filter((id) => recordings.some((r) => r.id === id && r.files[downloadFormat]))
+      .length
   );
 
   // SvelteKit 클라이언트 라우터는 하이드레이션이 끝난 뒤에야 goto 같은
@@ -365,6 +398,38 @@
         </button>
       </div>
 
+      <!-- fetch가 아니라 폼으로 보낸다 — 브라우저가 응답을 다운로드로
+           처리해 디스크로 흘려보내므로, 수 GB짜리 zip이 메모리에
+           올라가지 않는다(fetch+blob이면 응답 전체가 먼저 메모리에
+           쌓인다). 폼 POST는 URL 길이 제한도 비켜간다 — 252개 id는
+           쿼리스트링에 안 들어간다. -->
+      <form method="POST" action="/api/download" class="flex items-center gap-2">
+        {#each [...selectedIds] as id (id)}
+          <input type="hidden" name="ids" value={id} />
+        {/each}
+        <input type="hidden" name="format" value={downloadFormat} />
+        <label class="flex items-center gap-1 text-sm">
+          <span>포맷</span>
+          <select class="select select-sm" aria-label="내려받을 포맷" bind:value={downloadFormat}>
+            {#each ['original', ...data.formats] as f (f)}
+              <option value={f}>{f}</option>
+            {/each}
+          </select>
+        </label>
+        <!-- 라벨은 selectedIds.size가 아니라 downloadableCount를 쓴다 —
+             서버가 이 포맷 파일이 없는 녹음을 조용히 건너뛰므로, 선택
+             개수를 그대로 보여주면 실제로 담기는 것보다 많다고 약속하는
+             셈이다. 두 수가 같으면("2개") 굳이 분수로 안 보여도 정직하고,
+             다르면("1/2개") 선택한 것 중 몇 개만 실제로 담긴다는 걸
+             바로 알 수 있게 한다. 하나도 못 담으면(downloadableCount가
+             0) 버튼을 비활성화해 그 404 자체를 흔한 경우에서 막는다 —
+             파일이 로드 이후 사라지는 경합은 여전히 남지만(이 화면이
+             막을 수 있는 범위 밖), 그 경우는 드물다. -->
+        <button type="submit" class="btn btn-sm preset-tonal" disabled={!downloadableCount}>
+          {downloadableCount}{downloadableCount === selectedIds.size ? '' : `/${selectedIds.size}`}개 내려받기
+        </button>
+      </form>
+
       <button type="button" class="btn btn-sm preset-tonal"
         onclick={() =>
           send({ op: 'delete', ids: [...selectedIds] }).then((ok) => {
@@ -422,7 +487,7 @@
             <li class="card hover:preset-tonal grid items-center gap-3 p-3"
               style="grid-template-columns: var(--row-cols);"
               class:preset-tonal-primary={selectedId === rec.id}
-              onclick={() => (selectedId = rec.id)}>
+              onclick={() => selectRow(rec.id)}>
               <input type="checkbox" class="checkbox"
                 checked={selectedIds.has(rec.id)}
                 onchange={() => toggle(rec.id)}
@@ -460,7 +525,7 @@
                        버튼에 둔다 — 이미 포커스·키보드 조작이 되는 실제 버튼이라
                        li 자체를 인위적으로 상호작용 요소로 만들 필요가 없다. -->
                   <button type="button" class="text-left"
-                    onclick={() => (selectedId = rec.id)}
+                    onclick={() => selectRow(rec.id)}
                     ondblclick={() => (editingId = rec.id)}>
                     {rec.title}
                   </button>
@@ -487,7 +552,7 @@
                        아무 일도 일어나지 않는다. 더블클릭 편집은 그대로다:
                        첫 클릭이 행을 고르고 두 번째 클릭에서 편집이 열린다. -->
                   <button type="button" class="text-surface-500 text-left text-sm"
-                    onclick={() => (selectedId = rec.id)}
+                    onclick={() => selectRow(rec.id)}
                     ondblclick={() => (editingDescriptionId = rec.id)}>
                     {rec.description || '설명 없음'}
                   </button>
@@ -511,7 +576,7 @@
                        차지해서, 여기가 죽어 있으면 행에서 가장 누르기 쉬운
                        자리가 반응하지 않는다. -->
                   <button type="button" class="flex flex-wrap gap-1 text-left"
-                    onclick={() => (selectedId = rec.id)}
+                    onclick={() => selectRow(rec.id)}
                     ondblclick={() => startEditTags(rec)}>
                     {#each rec.tags as t (t)}<span class="chip preset-tonal">{t}</span>{/each}
                     {#if !rec.tags.length}<span class="text-surface-500 text-sm">태그 없음</span>{/if}
@@ -549,6 +614,7 @@
 
 <Player
   recording={selected}
+  {playRequest}
   formats={['original', ...data.formats]}
   mediaDir={data.mediaDir}
   onbookmark={addBookmark}

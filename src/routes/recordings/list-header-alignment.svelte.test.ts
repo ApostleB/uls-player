@@ -27,6 +27,7 @@ import '../../app.css';
 
 import { describe, it, expect, vi } from 'vitest';
 import { page as browserPage } from 'vitest/browser';
+import { tick } from 'svelte';
 import { SvelteURL } from 'svelte/reactivity';
 import { render } from 'vitest-browser-svelte';
 import type { Recording } from '$lib/types';
@@ -348,5 +349,70 @@ describe('+page.svelte — 편집 모드 진입 시 행 높이(실제 배치)', 
     // 회귀가 와도 못 잡아낸다.
     const TOLERANCE_PX = 2;
     expect(Math.abs(editHeight - displayHeight)).toBeLessThanOrEqual(TOLERANCE_PX);
+  });
+});
+
+describe('+page.svelte — 재생 바 높이(실제 배치)', () => {
+  it('빈 재생 바와 녹음을 고른 재생 바의 높이가 같다', async () => {
+    // 높이가 다르면 행을 고르는 순간 레이아웃이 움직이고, 그 프레임에
+    // 더블클릭의 두 번째 클릭이 바에 가로채인다. 같은 높이여야 그 경합
+    // 자체가 성립하지 않는다. 픽스처의 녹음에는 북마크가 없다 — 있으면
+    // 북마크 줄만큼 로드된 바가 더 높아져 이 비교가 애초에 성립하지
+    // 않는다(스펙 2.3절).
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>(
+        async () =>
+          new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })
+      )
+    );
+
+    // pageData()의 mediaDir: ''는 파일 경로 줄을 일부러 꺼 둔 값이다(위
+    // pageData 정의 옆 주석 참고) — 이 테스트는 경로 줄이 켜진 채로
+    // 높이를 재야 그 줄의 높이 기여를 검증할 수 있으므로 여기서만 채워
+    // 넣는다(세 번째 describe의 스크롤 테스트와 같은 이유).
+    //
+    // files는 original·mp3·wav를 모두 갖춘 실제 데이터 모양으로 둔다 —
+    // rec()의 기본값(original만)을 그대로 쓰면, +page.svelte가 Player에
+    // 넘기는 formats(`['original', ...data.formats]` = ['original','mp3',
+    // 'wav'])와 recording.files의 교집합이 'original' 하나뿐이라 포맷
+    // 버튼 줄(`{#each available as f}`, flex-wrap)이 1개짜리로만 그려져
+    // 실사용을 대표하지 못한다. 실제 저장소의 269개 녹음은 전부 이 세
+    // 파일을 갖고 있으므로, 선택된 바에는 항상 포맷 버튼 세 개(원본·
+    // mp3·wav)와 그 다운로드 링크가 뜬다 — 그 실제 모양으로 재야 한다.
+    const { getByRole, getByTestId, getByText } = render(Page, {
+      data: {
+        ...pageData([
+          rec({
+            id: '1',
+            title: '레인',
+            files: {
+              original: { ext: 'qta', bytes: 100 },
+              mp3: { ext: 'mp3', bytes: 200 },
+              wav: { ext: 'wav', bytes: 300 }
+            }
+          })
+        ]),
+        mediaDir: '/media'
+      }
+    });
+
+    const bar = () =>
+      (getByTestId('player-bar').element() as HTMLElement).getBoundingClientRect().height;
+    const empty = bar();
+
+    // spec §2.2: 아무것도 고르지 않은 빈 바의 제목 자리는 정확히 이
+    // 문구여야 한다 — 지금까지는 높이만 쟀고 문구 자체는 테스트가 없었다.
+    expect(getByText('목록에서 녹음을 고르세요').element()).toBeTruthy();
+
+    await getByRole('button', { name: '레인', exact: true }).click();
+    await tick();
+    const loaded = bar();
+
+    // 실측(Fix Round 3, 이 픽스처로): 빈 바 193px, 포맷 버튼 3개(원본·mp3·
+    // wav)와 그 다운로드 링크까지 뜬 선택된 바도 193px — 정확히 일치한다.
+    // 포맷 버튼 줄(`ml-auto flex flex-wrap`)이 이 폭(1280px 뷰포트,
+    // max-w-6xl 안)에서는 둘째 줄로 넘어가지 않기 때문이다.
+    expect(loaded).toBe(empty);
   });
 });

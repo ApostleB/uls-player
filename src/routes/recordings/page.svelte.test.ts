@@ -1224,3 +1224,206 @@ describe('+page.svelte — 제목·설명 인라인 편집', () => {
     expect(patchCalls(fetchMock)).toHaveLength(1);
   });
 });
+
+describe('+page.svelte — 이미 고른 행을 다시 눌러도 재생 요청이 올라간다(Task 1)', () => {
+  // 이 describe 안에서만 play()/pause()를 목으로 감싼다 — 파일 전역
+  // afterEach는 vi.unstubAllGlobals()만 하지 vi.restoreAllMocks()는
+  // 안 하므로, 다른 describe에 새어 나가지 않게 여기서 직접 되돌린다.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function audioEl(): HTMLAudioElement {
+    const el = document.querySelector('audio');
+    if (!el) throw new Error('audio 엘리먼트가 없다');
+    return el as HTMLAudioElement;
+  }
+
+  function toggleButton(): HTMLButtonElement {
+    return document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
+  }
+
+  /**
+   * Player.svelte.test.ts와 같은 이유로, 실제 미디어가 없는 이 환경에서
+   * play()/pause()가 "성공했다면" 벌어질 일(네이티브 paused가 실제로
+   * 바뀌는 것과 그에 따른 이벤트)까지 함께 흉내낸다.
+   */
+  function simulateRealPlaySucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+    audioEl().dispatchEvent(new Event('play'));
+  }
+
+  function simulateRealPauseSucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => true, configurable: true });
+    audioEl().dispatchEvent(new Event('pause'));
+  }
+
+  it('이미 고른 행을 다시 눌러도 재생 요청이 올라가 이어서 재생한다', async () => {
+    // 재생 의사는 selectedId가 아니라 playRequest 카운터가 나른다. 같은
+    // 행을 다시 누르면 selectedId는 같은 값 재대입이라 그 자체로는 아무
+    // 신호도 안 나간다 — playerPlayRequest() 같은 내부 값은 화면에서
+    // 직접 읽을 수 없으므로, 관찰 가능한 결과로 확인한다: 일시정지해 둔
+    // 뒤 같은 행을 다시 누르면 이어서 재생되는지를 본다.
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      simulateRealPlaySucceeds();
+      return Promise.resolve();
+    });
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
+      simulateRealPauseSucceeds();
+    });
+
+    const { getByRole } = render(Page, { data: baseData() });
+    const row = getByRole('button', { name: '레인', exact: true });
+
+    await row.click();
+    // 행을 처음 고르면 Player의 lastId 이펙트가 자동재생을 건다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+    // canplay가 와야 loadState가 'loading'에서 벗어나 토글 버튼의
+    // disabled가 풀린다 — 이걸 빼먹으면 아래 클릭이 조용히 씹힌다.
+    audioEl().dispatchEvent(new Event('canplay'));
+    await tick();
+
+    // 일시정지한다 — document.querySelector로 얻은 참조를 즉시
+    // 동기적으로 클릭한다(재시도형 로케이터로 라벨을 기다리면, 그 사이
+    // 실제 네트워크가 /api/media 요청에 진짜 404로 응답해 loadState가
+    // 'error'로 바뀌어 라벨이 "다시 시도"에 영영 고정될 수 있다 —
+    // Player.svelte.test.ts의 같은 함정 참고).
+    toggleButton().click();
+    await tick();
+    expect(audioEl().paused).toBe(true);
+
+    // 이미 고른 행을 다시 누른다. selectedId는 같은 값 재대입이라
+    // 무변화지만, playRequest 카운터는 올라가야 하고 그래서 이어서
+    // 재생돼야 한다.
+    await row.click();
+    await vi.waitFor(() => expect(audioEl().paused).toBe(false));
+  });
+});
+
+describe('+page.svelte — 선택 항목을 zip으로 내려받기', () => {
+  it('선택이 없으면 다운로드 폼이 없다', async () => {
+    const { getByRole } = render(Page, { data: baseData() });
+    expect(getByRole('button', { name: /내려받기/ }).elements()).toHaveLength(0);
+  });
+
+  it('선택하면 고른 id들이 폼에 실린다', async () => {
+    // 폼 POST라 브라우저가 스트리밍으로 받아간다 — fetch로 받으면 zip
+    // 전체가 메모리에 올라간다.
+    //
+    // 체크박스는 접근 이름이 없다(이 파일의 다른 선택 테스트들도 전부
+    // getByRole('checkbox').first()/.nth(n)으로 위치로 고른다) — 그래서
+    // 여기서도 이름이 아니라 위치로 첫 행(레인, id '1')을 고른다.
+    const { getByRole, container } = render(Page, { data: baseData() });
+    await getByRole('checkbox').first().click();
+    await tick();
+
+    const form = container.querySelector('form[action="/api/download"]') as HTMLFormElement;
+    expect(form.method.toLowerCase()).toBe('post');
+    const ids = [...form.querySelectorAll('input[name="ids"]')].map((el) => (el as HTMLInputElement).value);
+    expect(ids).toEqual(['1']);
+  });
+
+  it('포맷을 바꾸면 폼에 실리는 값도 바뀐다', async () => {
+    const { getByRole, getByLabelText, container } = render(Page, { data: baseData() });
+    await getByRole('checkbox').first().click();
+    await tick();
+
+    const select = (await getByLabelText('내려받을 포맷').element()) as HTMLSelectElement;
+    select.value = 'wav';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await tick();
+
+    const form = container.querySelector('form[action="/api/download"]') as HTMLFormElement;
+    const format = form.querySelector('input[name="format"]') as HTMLInputElement;
+    expect(format.value).toBe('wav');
+  });
+
+  // 서버(routes/api/download/+server.ts)는 고른 포맷의 파일이 없는
+  // 녹음을 조용히 건너뛰고, 하나도 못 담으면 404를 던진다 — 폼 POST라
+  // 이 프로젝트에 없는 SvelteKit 기본 에러 페이지로 탭 전체가 튕긴다.
+  // 아래 세 테스트는 그 gap을 메우는 파생값(downloadableCount)을
+  // 못박는다: 라벨은 선택 개수가 아니라 실제로 담길 개수를 보여줘야
+  // 하고, 하나도 안 담기면 버튼 자체가 막혀야 한다.
+  it('고른 녹음이 모두 고른 포맷을 가지면 그 개수로 라벨을 단다', async () => {
+    const { getByRole, getByText } = render(Page, {
+      data: pageData([
+        rec({
+          id: '1',
+          title: '레인',
+          files: { original: { ext: 'qta', bytes: 100 }, mp3: { ext: 'mp3', bytes: 50 } }
+        }),
+        rec({
+          id: '2',
+          title: '정류장',
+          files: { original: { ext: 'qta', bytes: 100 }, mp3: { ext: 'mp3', bytes: 60 } }
+        })
+      ])
+    });
+
+    // 체크박스는 접근 이름이 없다(위 테스트들과 같은 이유) — 위치로
+    // 두 행을 모두 고른다.
+    const checkboxes = getByRole('checkbox');
+    await checkboxes.nth(0).click();
+    await checkboxes.nth(1).click();
+
+    // 기본 포맷은 mp3고(+page.svelte 주석 참고) 두 행 다 mp3 파일을
+    // 갖고 있으니, 선택 개수 그대로("2개")가 정직한 라벨이다 — 분수로
+    // 안 나타난다.
+    await expect.element(getByText('2개 내려받기')).toBeInTheDocument();
+  });
+
+  it('일부만 가진 포맷으로 바꾸면 라벨의 개수도 그만큼 줄어든다', async () => {
+    const { getByRole, getByLabelText, getByText } = render(Page, {
+      data: pageData([
+        rec({
+          id: '1',
+          title: '레인',
+          files: {
+            original: { ext: 'qta', bytes: 100 },
+            mp3: { ext: 'mp3', bytes: 50 },
+            wav: { ext: 'wav', bytes: 500 }
+          }
+        }),
+        rec({
+          id: '2',
+          title: '정류장',
+          files: { original: { ext: 'qta', bytes: 100 }, mp3: { ext: 'mp3', bytes: 60 } }
+        })
+      ])
+    });
+
+    const checkboxes = getByRole('checkbox');
+    await checkboxes.nth(0).click();
+    await checkboxes.nth(1).click();
+    await expect.element(getByText('2개 내려받기')).toBeInTheDocument();
+
+    const select = (await getByLabelText('내려받을 포맷').element()) as HTMLSelectElement;
+    select.value = 'wav';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await tick();
+
+    // '정류장'은 wav 파일이 없다 — 서버가 그 행을 조용히 건너뛰므로
+    // 실제로 담기는 건 1개뿐이다. "2/2"가 아니라 "1/2"라야 정직하다.
+    await expect.element(getByText('1/2개 내려받기')).toBeInTheDocument();
+  });
+
+  it('고른 녹음 중 아무도 그 포맷을 갖지 않으면 버튼이 비활성화된다', async () => {
+    const { getByRole } = render(Page, {
+      data: pageData([
+        rec({ id: '1', title: '레인', files: { original: { ext: 'qta', bytes: 100 } } }),
+        rec({ id: '2', title: '정류장', files: { original: { ext: 'qta', bytes: 100 } } })
+      ])
+    });
+
+    const checkboxes = getByRole('checkbox');
+    await checkboxes.nth(0).click();
+    await checkboxes.nth(1).click();
+
+    // 기본 포맷 mp3를 둘 다 갖고 있지 않다 — 그대로 제출하면 서버가
+    // 404를 던지고, 폼 POST라 브라우저 탭 전체가 이 프로젝트에 없는
+    // 기본 에러 페이지로 튕긴다. 그 경로를 버튼 비활성화로 흔한
+    // 경우에서 막는다(파일이 로드 이후 사라지는 경합까지는 못 막는다
+    // — 이 화면이 알 수 없는 범위라 out of scope).
+    await expect.element(getByRole('button', { name: /내려받기/ })).toBeDisabled();
+  });
+});

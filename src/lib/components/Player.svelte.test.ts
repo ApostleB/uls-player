@@ -792,6 +792,28 @@ describe('Player.svelte — 재생 중인 파일의 저장 경로', () => {
   });
 });
 
+describe('Player.svelte — 다운로드 링크 파일명', () => {
+  it('다운로드 링크의 파일명이 제목_녹음일자.확장자다', async () => {
+    // 예전에는 값 없는 download 속성이라 브라우저가 URL 마지막 조각을
+    // 파일명으로 써서 original.qta, mp3.mp3가 됐다.
+    render(Player, {
+      recording: rec({
+        id: 'a1b2',
+        title: '레인',
+        recordedAt: '2026-07-09T22:36:13+09:00',
+        files: { original: { ext: 'qta', bytes: 1 }, mp3: { bytes: 1 } }
+      }),
+      formats: ['original', 'mp3']
+    });
+
+    // 다운로드 앵커의 접근성 이름은 aria-label="{포맷} 다운로드"다(포맷
+    // 전환 버튼의 표시 텍스트 — original이면 '원본'이나 확장자 — 와는
+    // 다른 요소).
+    const original = page.getByRole('link', { name: 'original 다운로드' });
+    await expect.element(original).toHaveAttribute('download', '레인_2026-07-09.qta');
+  });
+});
+
 describe('Player.svelte — 파형 마커가 북마크 목록과 같은 데이터를 보여준다 (Task 16)', () => {
   it('북마크를 추가하면(props 갱신) 파형에도 같은 메모의 마커가 뜬다', async () => {
     // 처음엔 이 녹음에 북마크가 없다 — 마커도, 목록도 없어야 한다.
@@ -1160,5 +1182,165 @@ describe('Player.svelte — 녹음을 바꾸면 재생을 시작한다', () => {
     // 재생 위치도 리셋되지 않아야 한다(위 "녹음 전환 시에만 A-B/위치를
     // 리셋한다" describe와 같은 lastId 가드를 겨냥한다).
     expect(audioEl().currentTime).toBe(30);
+  });
+});
+
+describe('Player.svelte — playRequest로 재클릭 재생 의사를 받는다 (Task 1)', () => {
+  function audioEl(): HTMLAudioElement {
+    const el = document.querySelector('audio');
+    if (!el) throw new Error('audio 엘리먼트가 없다');
+    return el as HTMLAudioElement;
+  }
+
+  function simulateRealPlaySucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => false, configurable: true });
+    audioEl().dispatchEvent(new Event('play'));
+  }
+
+  function simulateRealPauseSucceeds() {
+    Object.defineProperty(audioEl(), 'paused', { get: () => true, configurable: true });
+    audioEl().dispatchEvent(new Event('pause'));
+  }
+
+  /**
+   * recording을 재생 중인 상태로 마운트한다. 위 여러 describe와 같은
+   * 이유로 play()/pause() 둘 다 목으로 막되, 성공했다면 벌어질 일
+   * (네이티브 paused가 실제로 바뀌는 것과 그에 따른 이벤트)까지 함께
+   * 흉내낸다 — 그러지 않으면 이 파일에 실제 미디어가 없어 네이티브
+   * 상태가 저절로 안 바뀐다.
+   */
+  async function setupPlaying() {
+    const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => {
+      simulateRealPlaySucceeds();
+      return Promise.resolve();
+    });
+    const pauseSpy = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {
+      simulateRealPauseSucceeds();
+    });
+
+    const recording = rec({ id: 'aaaa' });
+    const screen = render(Player, { recording, formats: ['mp3'] });
+    await screen;
+    audioEl().dispatchEvent(new Event('canplay'));
+    // 마운트 자체가 자동재생을 건다(lastId 이펙트) — 그 비동기 play()
+    // 호출이 실제로 반영될 때까지 기다린 뒤에야 "이미 재생 중"인
+    // 상태에서 테스트를 시작할 수 있다.
+    await vi.waitFor(() => expect(playSpy).toHaveBeenCalledTimes(1));
+
+    // screen 자체를 그대로 퍼뜨리면(스프레드) 안 된다 — render()가 돌려주는
+    // 객체는 `await screen`이 되도록 열거 가능한 then 메서드를 갖고 있고,
+    // 그 then까지 함께 복사되면 이 반환 객체 자체가 "thenable"이 되어버려
+    // async 함수가 이 객체를 그대로 resolve하지 않고 그 then()을 다시
+    // 호출해 언래핑한다 — 그 then()은 render()가 만들 때 캡처해 둔 원래
+    // 결과(audio·recording을 더하기 전)로 resolve하므로, 여기서 추가한
+    // 필드가 조용히 사라진다(실측: 처음 시도했을 때 audio가 undefined로
+    // 나왔다). 그래서 필요한 필드만 명시적으로 골라 담는다.
+    return { rerender: screen.rerender, audio: audioEl(), recording, playSpy, pauseSpy };
+  }
+
+  function toggleButton(): HTMLButtonElement {
+    return document.querySelector('.preset-filled-primary-500') as HTMLButtonElement;
+  }
+
+  /**
+   * 재생/일시정지 토글 버튼을 눌러 멈춘다 — 스페이스로 멈추는 것과
+   * 동등하다(둘 다 toggle()). 이 파일의 다른 describe들과 같은 이유로
+   * `page.getByRole(...).click()` 같은 재시도형 로케이터가 아니라
+   * document.querySelector로 얻은 참조를 즉시 동기적으로 클릭한다 —
+   * 라벨을 기준으로 기다리면(재시도형 API), 그 사이 실제 네트워크가
+   * /api/media/aaaa/mp3에 대해 진짜 404로 응답해 loadState가 'error'로
+   * 바뀌어 버튼 라벨이 "다시 시도"로 영영 고정될 수 있다(이 파일 여러
+   * 곳의 실측 주석과 같은 함정 — task-2/3-report.md 참고). 즉시
+   * 클릭하면 그 실제 응답이 도착하기 전에(마이크로태스크보다 느리다)
+   * 끝난다.
+   */
+  async function pause() {
+    toggleButton().click();
+    await tick();
+  }
+
+  it('일시정지된 녹음에 재생 요청이 오면 이어서 재생한다', async () => {
+    const { rerender, audio } = await setupPlaying();
+    audio.currentTime = 12;
+    await pause();
+    expect(audio.paused).toBe(true);
+
+    await rerender({ playRequest: 1 });
+    await vi.waitFor(() => expect(audio.paused).toBe(false));
+    // 이어서 재생이지 다시 시작이 아니다.
+    expect(audio.currentTime).toBeGreaterThan(11);
+  });
+
+  it('재생 중에 재생 요청이 와도 위치가 0으로 돌아가지 않는다', async () => {
+    const { rerender, audio } = await setupPlaying();
+    audio.currentTime = 12;
+
+    await rerender({ playRequest: 1 });
+    await tick();
+    expect(audio.currentTime).toBeGreaterThan(11);
+    expect(audio.paused).toBe(false);
+  });
+
+  it('같은 녹음의 새 객체로 바뀌어도(목록 갱신) 위치가 유지된다', async () => {
+    // send()가 PATCH 응답으로 목록을 덮어쓰면 같은 id의 새 객체가 온다.
+    // playRequest는 그대로이므로 아무 일도 일어나면 안 된다.
+    //
+    // 참조만 바뀌었을 뿐이라는 것을 currentTime만으로는 증명하지 못한다
+    // — lastPlayRequest 메모를 없애 requested가 항상 true가 되게 해도
+    // idChanged가 false라 "이어서 재생" 분기(paused = false)로 빠지는데,
+    // 그 분기는 위치를 건드리지 않으므로 currentTime 단언은 그대로
+    // 통과한다. 그래서 재생을 미리 멈춰 두고, 참조 교체 뒤에도 여전히
+    // 멈춰 있는지(=아무 일도 일어나지 않았는지)를 함께 확인한다 —
+    // lastPlayRequest 메모가 없으면 이 분기가 paused를 false로 되돌려
+    // 재생이 다시 시작되므로 여기서 RED가 된다.
+    const { rerender, audio, recording } = await setupPlaying();
+    audio.currentTime = 12;
+    await pause();
+    expect(audio.paused).toBe(true);
+
+    await rerender({ recording: { ...recording, description: '고침' } });
+    await tick();
+    expect(audio.currentTime).toBeGreaterThan(11);
+    expect(audio.paused).toBe(true);
+  });
+
+  it('spec §3.3 — 이어서 재생은 단일 쓰기라 네이티브·반응형이 어긋나 있어도 그대로 둔다', async () => {
+    // §3.3: "재생 중이라면 paused가 이미 false이고, 거기에 false를
+    // 넣는 것이 무변화라는 사실이 정확히 원하는 '아무 일 없음'이다.
+    // 그러므로 이 경로는 paused = false 한 번으로 끝낸다."
+    //
+    // 반응형 paused와 실제 네이티브 상태가 둘 다 재생 중으로 맞는
+    // 보통의 경우에는 단일 쓰기·이중 쓰기가 관측 가능한 차이를 전혀
+    // 만들지 않는다(직접 검증: 이미 재생 중인 상태에서 playRequest만
+    // 올려도 두 구현 모두 play/pause 스파이가 추가로 불리지 않는다) —
+    // 그 경우만 놓고 보면 §3.3은 정말 스타일 선호로 보일 수 있다.
+    //
+    // 차이는 이 파일의 `simulateBrowserAbortsOnSrcChange`가 흉내내는
+    // 것과 같은 메커니즘(브라우저의 로드 알고리즘이 이벤트 없이 네이티브
+    // paused를 되돌리는 것)이 **같은 id에서** 일어난 경우에 드러난다.
+    // 이 경로는 id가 바뀌지 않으므로 lastId 가드가 이중 쓰기를 강제하는
+    // 그 분기를 타지 않는다 — 오직 이 `!idChanged` 분기만 지나간다.
+    // 단일 쓰기 `paused = false`는 반응형 값이 이미 false이므로 무변화
+    // — bind:paused 내부 이펙트가 다시 스케줄되지 않아 어긋남을 고치지
+    // 않고 play()도 다시 부르지 않는다(아래 단언이 그 "그대로 둠"을
+    // 고정한다). `paused = true; paused = false;` 이중 쓰기로 바꾸면
+    // 첫 대입이 실제 변화라 이펙트가 다시 스케줄되고, 최종값(false)과
+    // 실제 네이티브(true)가 어긋나 있어 play()를 한 번 더 불러 이
+    // 테스트를 깨뜨린다(직접 뮤테이션 검증: RED).
+    //
+    // 이 어긋남 자체는 지금 코드에서 도달하지 않는다 — 같은 id로 src가
+    // 바뀌는 유일한 경로(switchFormat)는 이 이펙트가 아니라
+    // restorePlaybackPosition()으로 스스로 복구한다(player.ts 참고).
+    // 그래도 §3.3이 명시적으로 트레이드오프하는 지점(네이티브 어긋남을
+    // 스스로 고치지 않는 대가로 이미 맞는 상태에서는 아무 일도 안
+    // 만든다)을 코드로 못박아 둔다.
+    const { rerender, audio, playSpy } = await setupPlaying();
+    const playCallsBefore = playSpy.mock.calls.length;
+
+    Object.defineProperty(audio, 'paused', { get: () => true, configurable: true });
+    await rerender({ playRequest: 1 });
+    await tick();
+
+    expect(playSpy.mock.calls.length).toBe(playCallsBefore);
   });
 });
