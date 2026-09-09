@@ -39,6 +39,7 @@ beforeAll(async () => {
       bookmarks: [],
       createdAt: '2026-08-31T20:35:00+09:00',
       updatedAt: '2026-08-31T20:35:00+09:00',
+      favoritedAt: null,
       deletedAt: null,
       ...over
     };

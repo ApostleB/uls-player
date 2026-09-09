@@ -7,7 +7,7 @@ function rec(over: Partial<Recording>): Recording {
     id: over.id ?? 'x', title: '레인', description: '', tags: [],
     recordedAt: '2026-07-09T22:36:13+09:00', durationSec: 1, sourceName: 's.qta',
     appleAutoTitle: '화양동', files: {}, bookmarks: [],
-    createdAt: '', updatedAt: '', deletedAt: null, ...over
+    createdAt: '', updatedAt: '', favoritedAt: null, deletedAt: null, ...over
   };
 }
 

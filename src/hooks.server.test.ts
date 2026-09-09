@@ -83,6 +83,7 @@ describe('hooks.server init — 서버 시작 시 재시작 복구', () => {
         bookmarks: [],
         createdAt: '2026-08-31T00:00:00+09:00',
         updatedAt: '2026-08-31T00:00:00+09:00',
+        favoritedAt: null,
         deletedAt: null
       }
     ]);

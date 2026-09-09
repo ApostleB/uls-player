@@ -57,6 +57,7 @@ export function buildJobs(
       bookmarks: [],
       createdAt: at,
       updatedAt: at,
+      favoritedAt: null,
       deletedAt: null
     });
 

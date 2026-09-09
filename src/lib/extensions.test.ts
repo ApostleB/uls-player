@@ -7,7 +7,7 @@ function rec(id: string, files: Recording['files']): Recording {
     id, title: 't', description: '', tags: [],
     recordedAt: '2026-07-09T22:36:13+09:00', durationSec: 1, sourceName: 's',
     appleAutoTitle: null, files, bookmarks: [],
-    createdAt: '', updatedAt: '', deletedAt: null
+    createdAt: '', updatedAt: '', favoritedAt: null, deletedAt: null
   };
 }
 

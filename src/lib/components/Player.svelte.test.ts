@@ -18,6 +18,7 @@ function rec(over: Partial<Recording> & { id: string }): Recording {
     bookmarks: [],
     createdAt: '',
     updatedAt: '',
+    favoritedAt: null,
     deletedAt: null,
     ...over
   };
