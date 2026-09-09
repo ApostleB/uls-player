@@ -27,6 +27,12 @@
   {/if}
 
   <section class="card preset-tonal space-y-2 p-4">
+    <!--
+      제목과 달리 "언제 추가됐는가" 하나만으로 정렬되지 않는다: 배치
+      임포트로 들어온 녹음은 전부 같은 createdAt을 가지므로, 동률일 때는
+      recordedAt이 더 최근인 쪽이 앞선다(+page.server.ts의 byTimeDesc).
+      자세한 내용은 docs/known-issues.md 참고.
+    -->
     <h2 class="h3">최근 추가된 음악</h2>
     <ul class="space-y-1">
       {#each data.recent as r (r.id)}

@@ -3,12 +3,15 @@ import type { Recording } from '$lib/types';
 
 // listAll을 스텁으로 바꿔서, load가 "그 결과를 어떻게 골라 담는지"만
 // 검증한다. listAll 자체의 정렬(recordedAt 내림차순)은 recordings.test.ts에서
-// 이미 검증됨 — 여기서는 그 정렬 계약을 그대로 흉내내려면 테스트가 직접
-// recordedAt 내림차순으로 입력을 준다. 다만 deletedAt 필터만은 이 스텁도
-// 실제 listAll처럼 적용한다: load()는 deletedAt을 다시 걷어내지 않고
-// listAll의 필터링에 기대므로, 스텁이 그 필터링까지 흉내내지 않으면
-// "삭제된 녹음은 어느 쪽에도 없다" 테스트가 load()에게 스스로 걸러내라고
-// 요구하는 셈이 되어 버려 그 의존을 못박지 못한다.
+// 이미 검증됨 — 대부분의 테스트는 그 정렬 계약을 그대로 흉내내 입력을
+// recordedAt 내림차순으로 준다. 다만 동률(같은 초) 테스트 두 개만은 일부러
+// 그 순서를 어긴 입력을 준다 — load()의 동률 폴백이 listAll의 정렬 계약이
+// 아니라 자기 자신의 규칙으로 성립하는지 확인하기 위해서다(해당 테스트의
+// 주석 참고). deletedAt 필터만은 이 스텁도 실제 listAll처럼 적용한다:
+// load()는 deletedAt을 다시 걷어내지 않고 listAll의 필터링에 기대므로,
+// 스텁이 그 필터링까지 흉내내지 않으면 "삭제된 녹음은 어느 쪽에도 없다"
+// 테스트가 load()에게 스스로 걸러내라고 요구하는 셈이 되어 버려 그 의존을
+// 못박지 못한다.
 let fakeRecordings: Recording[] = [];
 
 vi.mock('$lib/server/store/recordings', async (importOriginal) => {
@@ -119,26 +122,33 @@ describe('메인 페이지 load', () => {
   // 동률은 오히려 일상적으로 생긴다. 두 경우 다 "동률을 무엇으로 가르는가"가
   // 명시돼야 한다.
   //
-  // 여기서 고른 규칙: 추가 비교자를 만들지 않는다. Array.prototype.sort는
-  // ES2019+ 명세상 안정 정렬이고, listAll은 이미 recordedAt 내림차순으로
-  // 정렬해 돌려준다(compareByRecordedAtDesc). load()는 그 배열을 filter/
-  // slice로만 통과시킨 뒤 favoritedAt·createdAt으로 다시 정렬하므로, 1차
-  // 키가 같은 항목들은 안정 정렬 덕분에 listAll이 준 순서 — 즉 recordedAt
-  // 내림차순 — 를 그대로 유지한다. 그래서 "동률이면 더 최근에 녹음된 쪽이
-  // 앞"이라는, 임의가 아닌 규칙이 코드 한 줄 추가 없이 성립한다.
+  // 규칙: +page.server.ts의 byTimeDesc가 동률(또는 둘 다 파싱 불가)일 때
+  // recordedAt 내림차순(compareByRecordedAtDesc 재사용)으로 명시적으로
+  // 가른다 — 안정 정렬이나 listAll의 정렬 순서에 기대지 않는다.
   //
-  // 이 테스트는 그 사실이 아니라 그 "규칙"을 못박는다: listAll의 실제
-  // 계약대로 이미 recordedAt 내림차순인 입력을 주고, 그 순서가 동률
-  // 구간에서도 그대로 보존되는지 4개 항목으로 확인한다(2개짜리면 우연히
-  // 맞을 확률이 50%라 약하다).
+  // 그 규칙을 실제로 못박으려면 입력을 일부러 "이미 정답 순서"로 주면 안
+  // 된다 — 그러면 비교자를 `return 0`으로 바꿔도(즉 아무 규칙이 없어도)
+  // 안정 정렬이 입력 순서를 그대로 통과시켜 우연히 테스트를 통과시킨다.
+  // 그래서 아래 두 테스트는 recordedAt 내림차순이 *아닌*(뒤섞은) 순서로
+  // 입력을 주고, load()가 스스로 recordedAt 기준으로 재정렬해 옳은 순서를
+  // 만들어내는지를 확인한다.
+  //
+  // 뮤테이션 검증: byTimeDesc의 동률 폴백을 `compareByRecordedAtDesc(a, b)`
+  // 대신 `0`으로 바꾼 뒤 이 두 테스트를 돌리면, 안정 정렬이 아래의 뒤섞인
+  // 입력 순서를 그대로 통과시켜 기대값과 달라져 RED가 됨을 확인했다(다른
+  // 5개 테스트는 그대로 GREEN). 확인 후 원래 구현으로 되돌렸다 — 자세한
+  // 관찰은 task-4-report.md 참고.
   it('즐겨찾기 시각이 같으면 recordedAt이 더 최근인 쪽을 앞에 둔다', async () => {
     const tie = '2026-09-08T10:00:00+09:00';
-    // listAll 계약대로 recordedAt 내림차순으로 이미 정렬해 준다.
+    // 일부러 recordedAt 내림차순이 아닌(뒤섞인) 순서로 준다 — listAll의
+    // 정렬 계약에 기대지 않고도 load()가 스스로 옳은 순서를 만드는지
+    // 확인하기 위해서다. 입력이 이미 정답 순서면 `return 0`짜리 가짜
+    // 비교자도 통과해 버려 이 테스트가 아무것도 증명하지 못한다.
     const recs = [
-      rec({ id: 'r4', recordedAt: '2026-09-07T00:00:00+09:00', favoritedAt: tie }),
-      rec({ id: 'r3', recordedAt: '2026-09-05T00:00:00+09:00', favoritedAt: tie }),
       rec({ id: 'r2', recordedAt: '2026-09-03T00:00:00+09:00', favoritedAt: tie }),
-      rec({ id: 'r1', recordedAt: '2026-09-01T00:00:00+09:00', favoritedAt: tie })
+      rec({ id: 'r4', recordedAt: '2026-09-07T00:00:00+09:00', favoritedAt: tie }),
+      rec({ id: 'r1', recordedAt: '2026-09-01T00:00:00+09:00', favoritedAt: tie }),
+      rec({ id: 'r3', recordedAt: '2026-09-05T00:00:00+09:00', favoritedAt: tie })
     ];
     const out = await loadWith(recs);
 
@@ -147,11 +157,12 @@ describe('메인 페이지 load', () => {
 
   it('생성 시각이 같으면(배치 임포트) recordedAt이 더 최근인 쪽을 앞에 둔다', async () => {
     const tie = '2026-09-08T10:00:00+09:00';
+    // 위와 마찬가지로 recordedAt 내림차순이 아닌 순서로 준다.
     const recs = [
-      rec({ id: 'c4', recordedAt: '2026-09-07T00:00:00+09:00', createdAt: tie }),
+      rec({ id: 'c1', recordedAt: '2026-09-01T00:00:00+09:00', createdAt: tie }),
       rec({ id: 'c3', recordedAt: '2026-09-05T00:00:00+09:00', createdAt: tie }),
-      rec({ id: 'c2', recordedAt: '2026-09-03T00:00:00+09:00', createdAt: tie }),
-      rec({ id: 'c1', recordedAt: '2026-09-01T00:00:00+09:00', createdAt: tie })
+      rec({ id: 'c4', recordedAt: '2026-09-07T00:00:00+09:00', createdAt: tie }),
+      rec({ id: 'c2', recordedAt: '2026-09-03T00:00:00+09:00', createdAt: tie })
     ];
     const out = await loadWith(recs);
 
