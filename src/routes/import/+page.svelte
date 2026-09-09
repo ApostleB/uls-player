@@ -30,6 +30,17 @@
   // 액션이 아니라 순수 fetch라 SvelteKit의 form 결과에 실리지 않는다.
   let retryError = $state<string | null>(null);
 
+  /**
+   * 파일 업로드가 서버 응답을 기다리는 중인지. 이게 없으면 화면이 멈춘
+   * 것처럼 보인다 — 업로드 폼은 파일을 고르는 순간 자동 제출되는데(아래
+   * input의 onchange), 원본 수백 개를 올리면 응답까지 수 분이 걸리는
+   * 동안 어떤 표시도 나오지 않았다. 실사용에서 사용자가 "다음 동작
+   * 진행 불가"로 판단하고 다시 누르는 일이 실제로 벌어졌고, 그러면 같은
+   * 전송이 두 번 나간다 — 재생 버튼에 로딩 표시가 없어서 겪었던 것과
+   * 같은 부류의 문제다.
+   */
+  let uploading = $state(false);
+
   // 업로드 드롭 영역. dragging은 순전히 시각 효과(테두리 강조)용이고,
   // 실제 제출은 fileInput.files를 채운 뒤 requestSubmit으로 한다 —
   // input[type=file] 자체가 드롭 대상이어도 되지만, 클릭 영역과 드롭
@@ -203,10 +214,15 @@
   </header>
 
   <form method="POST" action="?/scan" use:enhance class="flex gap-2">
+    <!-- 이 스캔은 서버가 자기 파일시스템의 폴더를 읽는다. placeholder에
+         macOS 경로(/Volumes/…)를 박아두면, 서버에 배포해 쓸 때 사용자가
+         자기 노트북 경로를 넣고 ENOENT를 보게 된다 — 실제로 그렇게
+         헤맸다. 브라우저에서 올릴 때는 아래 업로드 영역을 쓴다. -->
     <input
       name="folder"
       class="input"
-      placeholder="/Volumes/Storage/voice"
+      aria-label="스캔할 서버 폴더 경로"
+      placeholder="서버에 있는 폴더 경로 (내 컴퓨터의 파일은 아래에서 올립니다)"
       required
     />
     <button type="submit" class="btn preset-filled">스캔</button>
@@ -216,7 +232,13 @@
     method="POST"
     action="?/upload"
     enctype="multipart/form-data"
-    use:enhance
+    use:enhance={() => {
+      uploading = true;
+      return async ({ update }) => {
+        await update();
+        uploading = false;
+      };
+    }}
     class="card preset-tonal p-4 border-2 border-dashed transition-colors"
     class:border-primary-500={dragging}
     ondragover={(e) => {
@@ -241,13 +263,27 @@
         name="files"
         class="input"
         multiple
+        disabled={uploading}
         accept="audio/*,.qta,.m4a,.caf,.db,.db-wal,.db-shm"
         onchange={(e) => e.currentTarget.form?.requestSubmit()}
       />
+
+      <!-- 전송이 끝날 때까지 이 줄이 자리를 지킨다. 브라우저의 네이티브
+           폼 전송이라 진행률(몇 %)까지는 알 수 없지만, "지금 올라가는
+           중"이라는 사실만이라도 보이면 사용자가 멈춘 줄 알고 다시
+           누르는 일은 막을 수 있다 — 다시 누르면 같은 전송이 두 번 간다. -->
+      {#if uploading}
+        <span class="text-surface-500 text-sm" role="status">
+          올리는 중입니다. 파일이 크면 몇 분 걸릴 수 있으니 이 화면을 닫지 마세요.
+        </span>
+      {/if}
     </label>
   </form>
 
-  {#if form && 'message' in form}
+  <!-- 업로드가 진행 중이면 지난 응답의 메시지를 감춘다. 그러지 않으면
+       직전 스캔 실패 같은 옛 오류가 화면에 남아, 방금 시작한 업로드가
+       실패한 것처럼 읽힌다(실사용에서 실제로 그렇게 오해했다). -->
+  {#if form && 'message' in form && !uploading}
     <aside class="card preset-tonal-error p-4">{form.message}</aside>
   {/if}
 
