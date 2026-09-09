@@ -488,10 +488,27 @@
               style="grid-template-columns: var(--row-cols);"
               class:preset-tonal-primary={selectedId === rec.id}
               onclick={() => selectRow(rec.id)}>
-              <input type="checkbox" class="checkbox"
-                checked={selectedIds.has(rec.id)}
-                onchange={() => toggle(rec.id)}
-                onclick={(e) => e.stopPropagation()} />
+              <!-- 체크박스와 즐겨찾기 별을 한 그리드 칸(선택 열)에 함께
+                   담는다 — 각자 li의 직접 자식으로 따로 두면 그리드 칸이
+                   7개가 되어 헤더(6칸)와 어긋난다
+                   (list-header-alignment.svelte.test.ts). -->
+              <div class="flex items-center gap-1">
+                <input type="checkbox" class="checkbox"
+                  checked={selectedIds.has(rec.id)}
+                  onchange={() => toggle(rec.id)}
+                  onclick={(e) => e.stopPropagation()} />
+
+                <!-- 즐겨찾기는 재생 의사와 무관하므로 행 클릭이 번지지 않게
+                     끊는다 — 그러지 않으면 별을 누를 때마다 재생이 시작된다. -->
+                <button type="button" class="btn-icon btn-sm preset-tonal"
+                  aria-label={rec.favoritedAt ? '즐겨찾기 해제' : '즐겨찾기 지정'}
+                  onclick={(e) => {
+                    e.stopPropagation();
+                    send({ op: 'favorite', id: rec.id, favorite: rec.favoritedAt === null });
+                  }}>
+                  {rec.favoritedAt ? '★' : '☆'}
+                </button>
+              </div>
 
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <!-- 이 컬럼 안의 클릭은 행 선택으로 안 번진다 — 제목은 자기

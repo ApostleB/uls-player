@@ -118,6 +118,28 @@ function patchCalls(fetchMock: ReturnType<typeof vi.fn<typeof fetch>>) {
   return fetchMock.mock.calls.filter(([, init]) => init?.method === 'PATCH');
 }
 
+/**
+ * 이 파일은 fetch를 테스트마다 각자 모킹한다(파일 전역 모킹이 없다).
+ * typeof fetch로 시그니처를 못박는 것도 기존 테스트와 같은 이유다 —
+ * 안 하면 mock.calls의 각 항목이 빈 튜플이 되어 인자 접근이 컴파일
+ * 에러가 난다.
+ *
+ * 원래 '+page.svelte — 제목·설명 인라인 편집' describe 안에만 있었는데,
+ * Task 3의 즐겨찾기 별 테스트도 같은 스텁이 필요해 모듈 스코프로
+ * 끌어올렸다 — 동작은 그대로다.
+ */
+function stubFetch() {
+  const fetchMock = vi.fn<typeof fetch>(
+    async () =>
+      new Response(JSON.stringify({ recordings: [], tags: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
 function baseData() {
   return {
     recordings: [
@@ -160,12 +182,16 @@ function pageData(recordings: Recording[]) {
   return { recordings, tags: [], formats: ['mp3', 'wav'], mediaDir: '' };
 }
 
-// 각 행의 제목은 li 안의 첫 번째 button이다(체크박스는 input이라
-// 걸리지 않는다) — 설명도 button이지만 title 다음에 오므로 첫 번째만
-// 집으면 제목만 남는다.
+// 각 행의 제목은 "선택" 열(체크박스+즐겨찾기 별) 바로 다음 칸, 그 칸의
+// 첫 번째 button이다. Task 3부터 "선택" 열에도 즐겨찾기 별 button이
+// 들어와 li 안에서 가장 먼저 나오는 button이 더 이상 제목이 아니므로
+// (li.querySelector('button')만으로는 별 button이 잡힌다), 제목·설명이
+// 함께 들어 있는 칸(.flex.min-w-0.flex-col.gap-1)으로 좁혀서 그 안의
+// 첫 번째 button만 집는다 — 설명도 button이지만 title 다음에 오므로
+// 그걸로 충분하다.
 function titles(): string[] {
   return Array.from(document.querySelectorAll('ul.space-y-1 > li')).map(
-    (li) => li.querySelector('button')?.textContent?.trim() ?? ''
+    (li) => li.querySelector('.flex.min-w-0.flex-col.gap-1 button')?.textContent?.trim() ?? ''
   );
 }
 
@@ -1054,24 +1080,6 @@ describe('+page.svelte — 제목·설명 인라인 편집', () => {
     return el as HTMLInputElement;
   }
 
-  /**
-   * 이 파일은 fetch를 테스트마다 각자 모킹한다(파일 전역 모킹이 없다).
-   * typeof fetch로 시그니처를 못박는 것도 기존 테스트와 같은 이유다 —
-   * 안 하면 mock.calls의 각 항목이 빈 튜플이 되어 인자 접근이 컴파일
-   * 에러가 난다.
-   */
-  function stubFetch() {
-    const fetchMock = vi.fn<typeof fetch>(
-      async () =>
-        new Response(JSON.stringify({ recordings: [], tags: [] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' }
-        })
-    );
-    vi.stubGlobal('fetch', fetchMock);
-    return fetchMock;
-  }
-
   // task-4-brief.md의 원안은 이 describe의 여러 테스트에서 fetchMock
   // 자체의 호출 여부·횟수를 직접 단언했다. 그런데 이 파일에는 이미
   // 위쪽에 patchCalls()가 있고, 그 헬퍼의 주석이 설명하는 것과 정확히
@@ -1426,5 +1434,50 @@ describe('+page.svelte — 선택 항목을 zip으로 내려받기', () => {
     // 경우에서 막는다(파일이 로드 이후 사라지는 경합까지는 못 막는다
     // — 이 화면이 알 수 없는 범위라 out of scope).
     await expect.element(getByRole('button', { name: /내려받기/ })).toBeDisabled();
+  });
+});
+
+describe('+page.svelte — 목록 행의 별 버튼(Task 3)', () => {
+  it('별 버튼을 누르면 favorite op이 나간다', async () => {
+    const fetchMock = stubFetch();
+    const { getByRole } = render(Page, { data: baseData() });
+
+    await getByRole('button', { name: '즐겨찾기 지정' }).first().click();
+
+    await vi.waitFor(() => {
+      const body = JSON.parse(String(patchCalls(fetchMock)[0][1]!.body));
+      expect(body).toMatchObject({ op: 'favorite', favorite: true });
+    });
+  });
+
+  it('이미 즐겨찾기면 해제로 동작한다', async () => {
+    const fetchMock = stubFetch();
+    const data = pageData([rec({ id: '1', title: '레인', favoritedAt: '2026-09-01T00:00:00+09:00' })]);
+    const { getByRole } = render(Page, { data });
+
+    await getByRole('button', { name: '즐겨찾기 해제' }).first().click();
+
+    await vi.waitFor(() => {
+      const body = JSON.parse(String(patchCalls(fetchMock)[0][1]!.body));
+      expect(body).toMatchObject({ op: 'favorite', favorite: false });
+    });
+  });
+
+  it('별 버튼은 행 선택을 일으키지 않는다', async () => {
+    // 즐겨찾기는 재생 의사와 무관한 조작이다. 여기서 행이 선택되면
+    // 즐겨찾기를 누를 때마다 재생이 시작된다.
+    //
+    // 빈 재생 바의 안내 문구('목록에서 녹음을 고르세요')는 Player.svelte가
+    // `recording?.title ?? '목록에서 녹음을 고르세요'`로 항상 렌더하는
+    // <strong>의 내용이라(재생 바 자체는 조건 없이 항상 떠 있다), 아무
+    // 행도 선택되지 않았을 때만 이 문구가 그 자리에 남는다 — 선택이
+    // 일어났다면 recording이 채워져 이 문구는 사라지고 그 행의
+    // 제목으로 바뀐다. 그래서 이 문구가 (여전히) 정확히 하나 있다는
+    // 것이 "아무것도 선택되지 않았다"는 증거로 쓸 수 있다.
+    const { getByRole, getByText } = render(Page, { data: baseData() });
+
+    await getByRole('button', { name: '즐겨찾기 지정' }).first().click();
+
+    expect(getByText('목록에서 녹음을 고르세요').elements()).toHaveLength(1);
   });
 });
