@@ -171,6 +171,38 @@ describe('+page.svelte — 목록 테이블 헤더(실제 배치)', () => {
     }
   });
 
+  it('0번째 열(체크박스+즐겨찾기 별)의 내용이 자기 트랙 폭을 넘지 않는다', async () => {
+    // 위 테스트가 놓치는 결함을 잡는다: WIDTH_NOT_COMPARABLE이 0번째
+    // 열의 "폭"은 비교하지 않으므로(체크박스가 자기 칸을 안 채우는
+    // 정상 렌더링과 구별이 안 돼서), 그 칸 안에서 내용물이 트랙 밖으로
+    // 새어나가는 내부 오버플로는 그 테스트로는 절대 못 잡는다 — 그리드
+    // 트랙 위치는 내부 오버플로로 움직이지 않기 때문이다.
+    //
+    // Task 3가 체크박스 옆에 즐겨찾기 별 버튼(btn-icon btn-sm)을 같은
+    // 칸에 넣으면서 실제로 이 결함이 났었다(Fix Round): 체크박스(네이티브
+    // 폼 컨트롤이라 자기 고유 크기로 렌더됨, 실측 13px) + gap-1(4px) +
+    // 별(btn-icon이 폭을 명시로 고정, 26px) = 43px가 당시 트랙 2rem
+    // (32px)보다 넓어, 별의 오른쪽 끝이 제목 칸 시작 지점 1px
+    // 안쪽까지 붙어 사실상 여유가 없었다. 그래서 그 칸(0번째 그리드
+    // 자식) 자신의 오른쪽 경계와, 그 칸의 마지막 자식(별 버튼)의 오른쪽
+    // 경계를 직접 비교한다 — 이웃 열과 무관하게 이 칸 자체의 내용물이
+    // 이 칸 자체의 박스 안에 들어가는지만 잰다.
+    render(Page, { data: rowsWithDifferentBadgeCounts() });
+
+    const TOLERANCE_PX = 1;
+
+    for (const row of rows()) {
+      const cell = row.children[0] as HTMLElement;
+      const cellChildren = Array.from(cell.children) as HTMLElement[];
+      const lastChild = cellChildren[cellChildren.length - 1];
+
+      const cellRect = cell.getBoundingClientRect();
+      const lastChildRect = lastChild.getBoundingClientRect();
+
+      expect(lastChildRect.right).toBeLessThanOrEqual(cellRect.right + TOLERANCE_PX);
+    }
+  });
+
   it('빈 상태 카드는 좁은 화면에서도 화면 안에 보인다', async () => {
     // Final Review Fix — 빈 상태 카드가 열 정의(overflow-x-auto/
     // min-w-[56rem]) 래퍼 밖에 있는지를 실제 배치로 잰다. 이 래퍼 안에

@@ -454,7 +454,16 @@
          빈 상태 카드까지 56rem 밑으로 못 내려가게 가둬서, 좁은 화면에서
          "전체 폭을 쓴다"(스펙 6절)는 카드가 오히려 옆으로 스크롤해야
          보이는 회귀가 생긴다. -->
-    <div class="overflow-x-auto" style="--row-cols: 2rem minmax(0,3fr) minmax(0,2fr) 11rem 5rem 9rem;">
+    <!-- 첫 트랙(선택 열)은 원래 체크박스 하나만 담던 2rem(32px)이었다.
+         Task 3에서 그 옆에 즐겨찾기 별 버튼이 붙어 실측 필요 폭이
+         43px(체크박스 13px + gap-1 4px + btn-icon btn-sm 별 26px,
+         headless Chromium 실측)로 늘었는데 트랙은 그대로였다 — 별의
+         오른쪽 끝이 제목 칸 시작 지점에서 1px 안쪽까지 붙어 사실상
+         여유가 없었다(Fix Round). 두 자식 다 줄어들 수 없다(체크박스는
+         네이티브 폼 컨트롤 고유 크기, btn-icon은 폭을 명시로 고정)로
+         트랙을 넓히는 쪽을 택했다. 3rem(48px)이면 43px 내용이 트랙
+         안에 5px 여유를 두고 들어간다. -->
+    <div class="overflow-x-auto" style="--row-cols: 3rem minmax(0,3fr) minmax(0,2fr) 11rem 5rem 9rem;">
       <div class="min-w-[56rem]">
         <!-- 이 목록은 table이 아니라 ul/li라 이 줄은 셀과 의미적으로
              연결되지 않는다. 각 셀은 이미 자기 내용을 읽을 수 있게
