@@ -1,6 +1,5 @@
 <script lang="ts">
-  // 스펙 4절: 지금은 자리만 잡는다. 무엇을 담을지는 따로 정하기로 했으므로
-  // 여기에 임의의 내용을 넣지 않는다 — 넣으면 실제 요구가 왔을 때 걷어내야 한다.
+  let { data } = $props();
 </script>
 
 <div class="mx-auto max-w-3xl space-y-6 p-8">
@@ -15,4 +14,24 @@
     <a href="/recordings" class="btn preset-filled-primary-500">녹음 목록</a>
     <a href="/import" class="btn preset-tonal">가져오기</a>
   </div>
+
+  {#if data.favorites.length}
+    <section class="card preset-tonal space-y-2 p-4">
+      <h2 class="h3">즐겨찾기</h2>
+      <ul class="space-y-1">
+        {#each data.favorites as r (r.id)}
+          <li><a class="anchor" href="/recordings?play={r.id}">{r.title}</a></li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
+  <section class="card preset-tonal space-y-2 p-4">
+    <h2 class="h3">최근 추가된 음악</h2>
+    <ul class="space-y-1">
+      {#each data.recent as r (r.id)}
+        <li><a class="anchor" href="/recordings?play={r.id}">{r.title}</a></li>
+      {/each}
+    </ul>
+  </section>
 </div>
