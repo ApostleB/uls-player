@@ -22,9 +22,19 @@
     hasDesktopPicker = typeof window !== 'undefined' && window.ulsDesktop !== undefined;
   });
 
+  // 보이는 입력 칸을 직접 가리킨다. 상태로 묶지 않는 이유는 아래 folder와
+  // 섞이면 안 되기 때문이다 — folder는 "지금 rows를 만들어낸 폴더"를
+  // 기억하는 값이라(위 $effect 주석 참고) 입력 칸을 고쳐도 바뀌면 안 된다.
+  // 별도 $state를 두는 길도 있지만, use:enhance가 스캔 성공 시 form.reset()을
+  // 부르면서 DOM만 비우고 상태는 그대로 남아, 같은 폴더를 다시 골랐을 때
+  // 값이 안 바뀌어 화면이 갱신되지 않는다.
+  let folderInput: HTMLInputElement | null = null;
+
   async function pickFolder() {
     const picked = await window.ulsDesktop?.pickFolder();
-    if (picked !== null && picked !== undefined) folder = picked;
+    if (picked !== null && picked !== undefined && folderInput) {
+      folderInput.value = picked;
+    }
   }
   let bulkTags = $state<string[]>([]);
   let jobs = $state<JobItem[]>([]);
@@ -234,7 +244,7 @@
          채우는 보조 수단이지 대체물이 아니다. -->
     <input
       name="folder"
-      bind:value={folder}
+      bind:this={folderInput}
       class="input"
       aria-label="스캔할 서버 폴더 경로"
       placeholder="서버에 있는 폴더 경로 (내 컴퓨터의 파일은 아래에서 올립니다)"

@@ -42,16 +42,28 @@ test('찾아보기로 고른 폴더가 경로 칸에 들어간다', async () => 
   await expect(page.getByLabel('스캔할 서버 폴더 경로')).toHaveValue(pickedDir);
 });
 
-test('취소하면 경로 칸이 비어 있는 채로 남는다', async () => {
+test('취소하면 null을 돌려주고 이미 고른 경로를 덮어쓰지 않는다', async () => {
   const page = await app.firstWindow();
   await expect(page.getByRole('heading', { name: 'ULS Player' })).toBeVisible();
+  await page.goto(page.url().replace(/\/$/, '') + '/import');
 
+  // 먼저 성공적으로 하나 고른다 — 취소가 "덮어쓰지 않는다"를 확인하려면
+  // 덮어써질 값이 먼저 있어야 한다.
+  await app.evaluate(({ dialog }, target) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [target] });
+  }, pickedDir);
+  await page.getByRole('button', { name: '찾아보기' }).click();
+  await expect(page.getByLabel('스캔할 서버 폴더 경로')).toHaveValue(pickedDir);
+
+  // 이제 취소.
   await app.evaluate(({ dialog }) => {
     dialog.showOpenDialog = async () => ({ canceled: true, filePaths: [] });
   });
 
-  await page.goto(page.url().replace(/\/$/, '') + '/import');
-  await page.getByRole('button', { name: '찾아보기' }).click();
+  // main의 취소 분기를 지우면 undefined가 와서 이 단언이 깨진다.
+  const returned = await page.evaluate(() => window.ulsDesktop!.pickFolder());
+  expect(returned).toBeNull();
 
-  await expect(page.getByLabel('스캔할 서버 폴더 경로')).toHaveValue('');
+  // 그리고 먼저 고른 값이 그대로 남아 있어야 한다.
+  await expect(page.getByLabel('스캔할 서버 폴더 경로')).toHaveValue(pickedDir);
 });
