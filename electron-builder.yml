@@ -34,9 +34,16 @@ extraResources:
       - '**/*'
       - '!{deps,src,build}/**'
       - '!prebuilds/{darwin-arm64,darwin-x64,linux-arm64,linux-x64,linuxmusl-arm64,linuxmusl-x64,win32-arm64}.node'
-  # 동봉 ffmpeg. 실행 가능해야 하므로 asar 밖이어야 한다.
+  # 동봉 ffmpeg. 실행 가능해야 하므로 asar 밖이어야 한다. 로컬 소스 폴더명은
+  # (에셋을 내려받을 때부터 써 온) ffmpeg/win 그대로 두고, 패키지 안 배치
+  # 경로만 process.platform 값인 win32로 맞춘다 — electron/main.ts의
+  # binariesDir()가 `ffmpeg/${process.platform}`로 폴더를 찾는다(Task 6:
+  # 'win' 고정이면 mac 빌드를 열어둔 설계와 env.test.ts의 darwin 케이스가
+  # 죽은 코드가 되고, 반대로 여기를 'win'으로 두고 main.ts만 고치면 실제
+  # Windows 패키지에서 존재 확인(existsSync)에 걸려 동봉 ffmpeg를 영영 못
+  # 찾는다). 둘을 process.platform 기준으로 맞춰야 실제로 이어진다.
   - from: ffmpeg/win
-    to: ffmpeg/win
+    to: ffmpeg/win32
 
 # N-API 바이너리라 Electron용으로 다시 빌드하지 않는다.
 npmRebuild: false
@@ -52,3 +59,38 @@ win:
 
 portable:
   artifactName: ULS-Player-${version}-portable.${ext}
+  # 실측: release/win-unpacked가 580MB. portable.nsi 템플릿은 실행할 때마다
+  # $INSTDIR(=$TEMP\<UNPACK_DIR_NAME>)를 RMDir /r로 먼저 지우고 통째로
+  # 다시 푼 뒤 실행하고, 종료 시 다시 지운다(node_modules/app-builder-lib/
+  # templates/nsis/portable.nsi 확인). 문제는 UNPACK_DIR_NAME이 "빌드 한
+  # 번"에 고정된다는 것 — 같은 exe를 두 번 실행하면 두 인스턴스가 같은
+  # 폴더를 공유해, 뒤에 뜬 스텁의 RMDir /r이 앞선 인스턴스가 아직 쓰고
+  # 있는 resources/build/**를 지워버릴 수 있다(설계 검토 시나리오: 580MB
+  # 해제+119MB avcodec-63.dll 백신 검사로 무반응 → 사용자가 다시 더블클릭).
+  #
+  # electron-builder 26.15.3의 실제 동작(NsisTarget.js:243-248, scheme.json의
+  # unpackDirName 설명과 다르다는 것까지 직접 읽어 확인):
+  #   if (typeof unpackDirName === "string" || !unpackDirName) {
+  #     defines.UNPACK_DIR_NAME = unpackDirName || generateKsuid();
+  #   }
+  # - 생략(undefined) 또는 false: 두 경우 다 조건이 참이 되고, `unpackDirName
+  #   || generateKsuid()`에서 falsy이므로 매번 새 ksuid를 만든다 — 그런데
+  #   이 값은 "빌드 시" 한 번 계산돼 defines에 박히는 값이지 실행마다
+  #   다시 계산되는 게 아니다. 즉 false를 줘도 문서(scheme.json: "실행마다
+  #   $PLUGINSDIR을 쓴다")와 달리 default와 완전히 같게 동작한다 — 이
+  #   실측이 바로 위에서 설명한 재추출 충돌 시나리오의 원인이다.
+  # - true(불리언): typeof는 string이 아니고 !true는 false라 조건 전체가
+  #   거짓이 되어 UNPACK_DIR_NAME 자체가 정의되지 않는다. portable.nsi의
+  #   `!ifdef UNPACK_DIR_NAME` 분기를 타지 않아 $INSTDIR이 기본값인
+  #   "$PLUGINSDIR\app"로 남는다 — $PLUGINSDIR은 NSIS가 InitPluginsDir에서
+  #   실행마다 새로 만드는 고유 임시 폴더라, 여기서만 실행할 때마다 실제로
+  #   달라진다. 문서가 false에 기대하는 동작을 실제로는 true가 낸다
+  #   (electron-builder 소스의 // https://github.com/electron-userland/
+  #   electron-builder/issues/5764 주석이 이 지점을 가리킨다).
+  # 그래서 문서 문구가 아니라 코드를 근거로 true를 쓴다. 부수효과: 이제
+  # $INSTDIR 경로 자체가 실행마다 달라지므로, 두 인스턴스가 같은 폴더를
+  # RMDir /r로 서로 밟는 손상 시나리오가 구조적으로 사라진다(단, 이
+  # macOS 크로스 빌드 환경에서는 실제 Windows 이중 실행으로 검증할 수는
+  # 없었다 — docs/desktop-packaging.md에 "다시 누르지 말 것" 경고를 남겨
+  # 이중 방어한다).
+  unpackDirName: true

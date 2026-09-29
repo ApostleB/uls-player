@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { execFile, fork, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { buildServerEnv } from '../src/lib/desktop/env';
 import { findFreePort } from '../src/lib/desktop/port';
@@ -8,6 +9,25 @@ import { shutdownCommand } from '../src/lib/desktop/shutdown';
 /** 서버가 응답할 때까지 기다리는 최대 시간. */
 const STARTUP_TIMEOUT_MS = 15_000;
 const POLL_INTERVAL_MS = 200;
+
+/**
+ * 자식 stderr의 마지막 조각을 담아 두는 링 버퍼.
+ *
+ * 패키징된 Windows GUI 앱에는 콘솔이 없어 process.stderr가 아무 곳으로도
+ * 이어지지 않는 핸들이다 — child.stderr를 거기로 그대로 흘려보내는 것은
+ * 로그를 만드는 게 아니라 버리는 것과 같다. 그 결과 사용자가 실패 대화상자에서
+ * 보는 건 "종료 코드 1, 신호 null"뿐이라, 동봉 ffmpeg·네이티브 prebuild·
+ * taskkill처럼 macOS에서 검증할 수 없는 표면에서 뭔가 깨져도 원인을 알
+ * 방법이 없다. 최근 내용만 메모리에 들고 있다가 fail()의 detail에 붙여
+ * 대화상자 자체에 실어 보낸다 — 사용자가 스크린샷만 찍어 보내도 원인 파악이
+ * 가능해진다.
+ */
+const STDERR_TAIL_LIMIT = 2000; // 대략 마지막 2KB. 원인 파악에 필요한 몇 줄이면 충분하다.
+let stderrTail = '';
+
+function appendStderrTail(chunk: string): void {
+  stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_LIMIT);
+}
 
 let serverProcess: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
@@ -26,10 +46,25 @@ function serverEntry(): string {
   return path.join(root, 'build', 'index.js');
 }
 
-/** 동봉한 ffmpeg 폴더. 개발 중에는 null이라 PATH의 ffmpeg를 쓴다. */
+/**
+ * 동봉한 ffmpeg 폴더. 개발 중에는 null이라 PATH의 ffmpeg를 쓴다.
+ *
+ * process.platform으로 폴더를 고른다 — env.test.ts가 이미 'darwin' 같은
+ * 플랫폼 이름 폴더를 전제하고 있고(binaryDir + .exe 접미사 분기), 여기가
+ * 'win'으로 고정돼 있으면 그 계약과 어긋난다. electron-builder.yml의
+ * extraResources도 로컬 소스 폴더명(ffmpeg/win)과 무관하게 패키지 안
+ * 배치 경로를 ffmpeg/win32로 맞춰 뒀다.
+ *
+ * existsSync로 실제 존재를 확인하는 이유: 설계가 열어둔 미래의 mac 빌드처럼
+ * 그 플랫폼용 폴더를 아직 동봉하지 않은 경우, 확인 없이 경로만 만들면
+ * FFMPEG_PATH가 "존재하지 않는 절대경로"가 된다 — 이건 PATH 폴백보다
+ * 나쁘다. env.ts의 unset() 폴백은 FFMPEG_PATH가 "설정 안 됨"일 때만
+ * 동작하므로, 없는 경로를 굳이 만들어 넣으면 그 폴백 자체가 무력화된다.
+ */
 function binariesDir(): string | null {
   if (!app.isPackaged) return null;
-  return path.join(process.resourcesPath, 'ffmpeg', 'win');
+  const dir = path.join(process.resourcesPath, 'ffmpeg', process.platform);
+  return existsSync(dir) ? dir : null;
 }
 
 function delay(ms: number): Promise<void> {
@@ -72,7 +107,13 @@ async function startServer(): Promise<number> {
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   });
   child.stdout?.on('data', (c: Buffer) => process.stdout.write(`[서버] ${c}`));
-  child.stderr?.on('data', (c: Buffer) => process.stderr.write(`[서버] ${c}`));
+  child.stderr?.on('data', (c: Buffer) => {
+    const text = c.toString();
+    // 개발 중(콘솔이 있는 상태)에는 그대로도 보이지만, 패키징된 앱에서는
+    // 이 write가 사실상 /dev/null이다 — 그래서 링 버퍼에도 반드시 남긴다.
+    process.stderr.write(`[서버] ${text}`);
+    appendStderrTail(text);
+  });
   child.on('exit', onServerExit);
   serverProcess = child;
 
@@ -119,8 +160,21 @@ function stopServer(): void {
 
   const cmd = shutdownCommand(process.platform, proc.pid as number);
   if (cmd.kind === 'taskkill') {
-    execFile(cmd.command, cmd.args, () => {
-      // 이미 죽었으면 taskkill이 실패한다. 종료 중이므로 무시한다.
+    execFile(cmd.command, cmd.args, (err, _stdout, stderr) => {
+      // 빈 콜백으로 두면 "이미 죽어서 실패"(정상)와 "taskkill이 없거나
+      // 권한이 거부돼 실패"(비정상)를 구분할 방법이 아예 사라진다. 후자가
+      // 조용히 넘어가면 서버 프로세스도, 그 자식 ffmpeg도 살아남는다 —
+      // 이 함수 전체가 막으려는 바로 그 "Windows 고아 ffmpeg" 상태다.
+      // 두 경우를 정교하게 가르기보다(taskkill의 실패 메시지가 로캘마다
+      // 다르다) 실패하면 일단 로그로 남긴다 — 조용히 넘기지 않는 것 자체가
+      // 목적이다. 앱이 종료 중이라 대화상자로 띄울 곳이 없으므로 링
+      // 버퍼에라도 남겨, 다음에 fail()이 불리면(또는 사용자가 아직 켜져
+      // 있는 앱을 관찰할 때) 흔적이 남게 한다.
+      if (err) {
+        const msg = `[taskkill] 실패(pid=${proc.pid}): ${err.message}${stderr ? `\n${stderr}` : ''}`;
+        process.stderr.write(`${msg}\n`);
+        appendStderrTail(msg);
+      }
     });
   } else {
     proc.kill(cmd.signal);
@@ -129,7 +183,11 @@ function stopServer(): void {
 
 function onServerExit(code: number | null, signal: NodeJS.Signals | null): void {
   serverProcess = null;
-  fail('서버가 예기치 않게 종료되었습니다', `종료 코드 ${code}, 신호 ${signal}`);
+  const tail = stderrTail.trim();
+  const detail =
+    `종료 코드 ${code}, 신호 ${signal}` +
+    (tail ? `\n\n최근 서버 로그:\n${tail}` : '\n\n(서버가 stderr에 아무것도 남기지 않았습니다)');
+  fail('서버가 예기치 않게 종료되었습니다', detail);
 }
 
 function fail(title: string, detail: string): void {

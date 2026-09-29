@@ -21,8 +21,10 @@
  * 스크립트에서는 애초에 bare import로 보이지 않아야 정상이다.
  */
 import { builtinModules } from 'node:module';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const BUILD_DIR = path.resolve('build');
 
@@ -126,3 +128,137 @@ console.log(
   `[check-packaged-imports] OK — 남은 외부 모듈은 ${bundled.length > 0 ? bundled.join(', ') : '(없음)'}뿐이고 ` +
     `(resources/node_modules로 동봉), 그 외는 Node 내장 모듈이거나 번들에 인라인됐습니다.`
 );
+
+/**
+ * 회귀망 2단계: 위의 정적 스캔은 "bare import가 남아 있지 않다"만 증명한다.
+ * archiver가 ssr.noExternal로 번들에 실제로 인라인됐다는 것과, 그 인라인된
+ * 코드가 런타임에 실제로 동작한다는 것은 다른 질문이다 — 정적 스캔은 "이
+ * 이름을 해석할 수 있는가"만 보지 "이 코드를 실행하면 무슨 일이 일어나는가"는
+ * 보지 않는다. 인라인 과정에서 archiver 내부의 조건부 require, Node 버전
+ * 분기, circular import 등이 번들링 후 깨져도 1단계 스캔은 통과한다.
+ *
+ * 그래서 여기서는 실제로 /api/download 라우트의 빌드된 청크를 import해
+ * POST 핸들러를 직접 호출하고, 응답이 진짜 zip인지 바이트 단위(매직
+ * PK\x03\x04)로 확인한다. 서버를 띄우거나 electron을 실행할 필요 없이
+ * 모듈 하나만 부르면 되므로 dist:win 파이프라인 안에서 빠르게 돈다.
+ */
+const DOWNLOAD_CHUNK_DIR = path.join(
+  BUILD_DIR,
+  'server',
+  'chunks',
+  'entries',
+  'endpoints',
+  'api',
+  'download'
+);
+
+// 청크 파일명은 내용 해시가 붙어 빌드마다 달라진다 — 고정 경로를 쓰면 다음
+// 빌드에서 조용히 아무것도 검사하지 않게 된다. 디렉터리 안을 뒤져 .js
+// 파일(소스맵 제외)을 하나로 특정한다.
+function findDownloadRouteChunk() {
+  if (!statSync(DOWNLOAD_CHUNK_DIR, { throwIfNoEntry: false })) {
+    console.error(
+      `[check-packaged-imports] 실패 — ${DOWNLOAD_CHUNK_DIR}가 없습니다. ` +
+        `/api/download 라우트의 청크 위치가 바뀌었다면 이 스크립트도 함께 고쳐야 합니다.`
+    );
+    process.exit(1);
+  }
+  const candidates = readdirSync(DOWNLOAD_CHUNK_DIR).filter(
+    (f) => f.endsWith('.js') && !f.endsWith('.map')
+  );
+  if (candidates.length !== 1) {
+    console.error(
+      `[check-packaged-imports] 실패 — ${DOWNLOAD_CHUNK_DIR} 아래에서 청크 파일을 하나로 ` +
+        `특정하지 못했습니다 (찾은 것: ${candidates.length > 0 ? candidates.join(', ') : '없음'}).`
+    );
+    process.exit(1);
+  }
+  return path.join(DOWNLOAD_CHUNK_DIR, candidates[0]);
+}
+
+async function verifyDownloadRouteProducesZip() {
+  const chunkFile = findDownloadRouteChunk();
+
+  // 이 청크가 import하는 config 싱글턴(빌드된 chunks/atomic.js 계열)은
+  // 모듈 평가 시점에 process.env를 읽어 한 번 굳는다 — 그래서 동적 import
+  // 전에 DATA_DIR/MEDIA_DIR을 먼저 심어야 한다.
+  // src/routes/api/download/server.test.ts가 개발용 모듈(./+server)에
+  // 쓰는 것과 같은 이유, 같은 순서다.
+  const tmp = mkdtempSync(path.join(os.tmpdir(), 'uls-check-packaged-download-'));
+  const dataDir = path.join(tmp, 'data');
+  const mediaDir = path.join(tmp, 'media');
+  const previousDataDir = process.env.DATA_DIR;
+  const previousMediaDir = process.env.MEDIA_DIR;
+  process.env.DATA_DIR = dataDir;
+  process.env.MEDIA_DIR = mediaDir;
+
+  try {
+    mkdirSync(path.join(mediaDir, 'mp3'), { recursive: true });
+    writeFileSync(path.join(mediaDir, 'mp3', 'check.mp3'), '가짜 mp3 바이트');
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(
+      path.join(dataDir, 'recordings.json'),
+      JSON.stringify({
+        version: 1,
+        recordings: [
+          {
+            id: 'check',
+            title: '패키징 점검용',
+            description: '',
+            tags: [],
+            recordedAt: '2026-01-01T00:00:00+09:00',
+            durationSec: 1,
+            sourceName: 'check.mp3',
+            appleAutoTitle: null,
+            files: { mp3: {} },
+            bookmarks: [],
+            createdAt: '2026-01-01T00:00:00+09:00',
+            updatedAt: '2026-01-01T00:00:00+09:00',
+            favoritedAt: null,
+            deletedAt: null
+          }
+        ]
+      })
+    );
+
+    const mod = await import(pathToFileURL(chunkFile).href);
+    const form = new FormData();
+    form.append('ids', 'check');
+    form.append('format', 'mp3');
+    const request = new Request('http://localhost/api/download', { method: 'POST', body: form });
+
+    const res = await mod.POST({ request });
+    const contentType = res.headers.get('content-type');
+    if (res.status !== 200 || contentType !== 'application/zip') {
+      console.error(
+        `[check-packaged-imports] 실패 — 번들된 /api/download가 zip을 만들지 못했습니다 ` +
+          `(status=${res.status}, content-type=${contentType}). archiver가 noExternal로 번들에 ` +
+          `인라인은 됐어도 실제로 깨져 있을 수 있다 — 정적 스캔만으로는 이 차이를 알 수 없다.`
+      );
+      process.exit(1);
+    }
+
+    const buf = Buffer.from(await res.arrayBuffer());
+    const magic = buf.subarray(0, 4).toString('hex');
+    if (magic !== '504b0304') {
+      console.error(
+        `[check-packaged-imports] 실패 — 응답이 zip 매직 바이트(504b0304)로 시작하지 않습니다 ` +
+          `(실제: ${magic || '(본문 없음)'}, ${buf.length}바이트).`
+      );
+      process.exit(1);
+    }
+
+    console.log(
+      `[check-packaged-imports] OK — 번들된 /api/download가 실제로 zip을 만듭니다 ` +
+        `(status=200, content-type=application/zip, ${buf.length}바이트, 매직 ${magic}).`
+    );
+  } finally {
+    if (previousDataDir === undefined) delete process.env.DATA_DIR;
+    else process.env.DATA_DIR = previousDataDir;
+    if (previousMediaDir === undefined) delete process.env.MEDIA_DIR;
+    else process.env.MEDIA_DIR = previousMediaDir;
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+await verifyDownloadRouteProducesZip();
