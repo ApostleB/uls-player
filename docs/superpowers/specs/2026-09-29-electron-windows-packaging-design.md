@@ -156,19 +156,30 @@ sandbox:          true
 | e2e (macOS) | 앱을 닫으면 서버 자식이 남지 않는다 | 정리 제거 시 실패 |
 | 수동 (Windows) | 가져오기 → 변환 → 재생 → 내려받기 | — |
 
-e2e는 Playwright의 Electron 지원으로 macOS에서 돌린다. 기존 `test:e2e`(vite preview 4173)는 건드리지 않고 Playwright 프로젝트를 하나 더 단다.
+e2e는 Playwright의 Electron 지원(`_electron`)으로 macOS에서 돌린다. 기존 `test:e2e`(vite preview 4173)는 건드리지 않고, 별도 설정 파일로 분리한다(13절).
+
+e2e는 앱을 띄울 때 `DATA_DIR`/`MEDIA_DIR`을 임시 디렉터리로 넘긴다 — 개발자의 실제 라이브러리를 건드리지 않기 위해서이고, 동시에 9절의 "환경변수가 셸의 기본값을 이긴다"를 실제로 검증하는 경로이기도 하다.
 
 **Windows 전용 부분(동봉 바이너리 경로, `taskkill`, exe 기동)은 macOS에서 검증할 수 없다.** 사용자가 실제 머신에서 확인하고, 실패하면 로그를 받아 고친다.
 
 ## 13. 빌드
 
-`electron/main.cts`와 `electron/preload.cts`를 `tsconfig.electron.json`으로 컴파일해 `dist-electron/`에 `main.cjs`·`preload.cjs`로 낸다. `package.json`의 `main`은 `dist-electron/main.cjs`를 가리킨다.
+셸의 코드는 두 군데로 나뉜다.
 
-**확장자가 `.ts`가 아니라 `.cts`인 이유:** 이 저장소의 `package.json`에는 `"type": "module"`이 있다. 그래서 `dist-electron/main.js`로 내면 Node가 그것을 ESM으로 읽고 CommonJS 출력과 충돌한다. `.cts` 소스는 tsc가 `.cjs`로 내보내고, `.cjs`는 `"type"` 설정과 무관하게 항상 CommonJS로 해석된다. VOCAL_CRM에는 `"type": "module"`이 없어 이 문제가 없었다.
+| 위치 | 무엇 | 왜 거기인가 |
+|---|---|---|
+| `src/lib/desktop/*.ts` | 순수 함수 — 포트 고르기, env 조립, 종료 명령 | 기존 vitest `server` 프로젝트가 `src/**/*.test.ts`를 이미 줍는다. 테스트 설정을 새로 만들지 않아도 셸 로직이 단위 테스트를 받는다 |
+| `electron/*.ts` | Electron API를 실제로 부르는 얇은 층 | 단위 테스트가 불가능한 부분만 남긴다 |
 
-sandbox preload는 CommonJS여야 하므로 이 출력 형식이 양쪽 모두에 맞는다.
+둘 다 `tsconfig.electron.json`으로 컴파일해 `dist-electron/`에 낸다 (`module: commonjs`, `rootDir: "."`). `package.json`의 `main`은 `dist-electron/electron/main.js`를 가리킨다.
 
-렌더러가 SvelteKit 서버이므로 electron-vite의 렌더러 파이프라인은 할 일이 없다. 200줄짜리 main 하나를 위해 새 번들러를 들이지 않고, 이미 있는 typescript를 쓴다.
+**`"type": "module"` 문제와 그 해법:** 이 저장소의 `package.json`에는 `"type": "module"`이 있어서, 그냥 두면 Node가 `dist-electron/**/*.js`를 ESM으로 읽고 CommonJS 출력과 충돌한다. 빌드 마지막에 `dist-electron/package.json`에 `{"type":"commonjs"}` 한 줄을 써 넣어 그 디렉터리만 CommonJS로 되돌린다. 가장 가까운 `package.json`이 이긴다는 Node의 규칙을 그대로 쓰는 것이다. VOCAL_CRM에는 `"type": "module"`이 없어 이 문제가 없었다.
+
+출력이 CommonJS인 것은 sandbox preload의 요구사항이기도 하다 — 샌드박스 preload는 ESM을 지원하지 않는다.
+
+렌더러가 SvelteKit 서버이므로 electron-vite의 렌더러 파이프라인은 할 일이 없다. 200줄짜리 셸 하나를 위해 새 번들러를 들이지 않고, 이미 있는 typescript를 쓴다.
+
+**e2e는 별도 Playwright 설정 파일(`playwright.electron.config.ts`)을 쓴다.** 기존 `playwright.config.ts`의 `webServer`는 설정 최상위 항목이라 프로젝트별로 끌 수 없다 — 같은 설정에 Electron 스펙을 얹으면 쓰지도 않을 preview 서버(4173)를 매번 띄운다. Electron 앱은 자기 서버를 데리고 오므로 그 서버가 필요 없다.
 
 ```
 npm run dist:win
