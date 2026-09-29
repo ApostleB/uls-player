@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { execFile, fork, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { buildServerEnv } from '../src/lib/desktop/env';
@@ -148,7 +148,13 @@ function createWindow(port: number): void {
     show: false,
     autoHideMenuBar: true,
     title: 'ULS Player',
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      // 컴파일 결과가 dist-electron/electron/ 안에 나란히 놓인다.
+      preload: path.join(__dirname, 'preload.js')
+    }
   });
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
@@ -172,6 +178,14 @@ function createWindow(port: number): void {
 
 async function main(): Promise<void> {
   await app.whenReady();
+  ipcMain.handle('uls:pick-folder', async () => {
+    const parent = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    const result = parent
+      ? await dialog.showOpenDialog(parent, { properties: ['openDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory'] });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
   let port: number;
   try {
     port = await startServer();

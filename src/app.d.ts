@@ -8,6 +8,16 @@ declare global {
 		// interface PageState {}
 		// interface Platform {}
 	}
+
+	interface Window {
+		/**
+		 * Electron 셸에서만 존재한다. 브라우저로 열면 undefined이므로,
+		 * 쓰는 쪽은 반드시 존재를 먼저 확인해야 한다.
+		 */
+		ulsDesktop?: {
+			pickFolder(): Promise<string | null>;
+		};
+	}
 }
 
 export {};
