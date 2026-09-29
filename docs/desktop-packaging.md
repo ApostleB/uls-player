@@ -16,8 +16,8 @@
 
 ## 동봉 ffmpeg
 
-`ffmpeg/win/`에는 다음이 들어 있다(실행 파일 2개 + 공유 라이브러리 DLL 9개,
-합계 약 182MB):
+`ffmpeg/win/`에는 다음이 들어 있다(실행 파일 2개 + 공유 라이브러리 DLL 7개,
+총 9개 파일, 합계 약 182MB):
 
     ffmpeg.exe
     ffprobe.exe
@@ -31,17 +31,22 @@
 
 출처: [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) 공식 GitHub
 릴리스, `ffmpeg-n9.0-latest-win64-gpl-shared-9.0.zip` (2026-09-28 빌드), GPL
-shared 빌드. `ffplay.exe`는 이 앱이 쓰지 않아 내려받은 뒤 제거했다.
+shared 빌드. 정확한 빌드 ID(바이너리에서 직접 추출, `strings -a
+ffmpeg/win/avutil-61.dll | grep -oE 'n9\.[0-9]+[^ ]*'`로 확인 가능):
+`n9.0.2-14-gebafaee10a-20260928`. `ffplay.exe`는 이 앱이 쓰지 않아 내려받은
+뒤 제거했다.
 
-**shared 빌드이므로 DLL 9개가 exe와 같은 폴더에 함께 있어야 실행된다.** 하나만
-빠져도 Windows에서 `ffmpeg.exe`/`ffprobe.exe` 실행이 실패한다.
+**shared 빌드이므로 DLL 7개(실행 파일 2개와 합쳐 총 9개 파일)가 exe와 같은
+폴더에 함께 있어야 실행된다.** 하나만 빠져도 Windows에서
+`ffmpeg.exe`/`ffprobe.exe` 실행이 실패한다.
 
 **주의:** BtbN 릴리스의 `latest` 태그는 새 빌드가 나올 때마다 같은 URL 위에서
 덮어써진다 — 즉 URL만으로는 나중에 같은 바이너리를 재현할 수 없다. 같은
-버전이 다시 필요하면 위에 적은 파일명(`ffmpeg-n9.0-latest-win64-gpl-shared-9.0.zip`,
-2026-09-28 빌드)을 GitHub 릴리스 페이지의 과거 에셋 목록이나 Actions 아카이브
-에서 직접 찾아야 한다. 재현성이 필요하면 이 바이너리를 별도 저장소나
-아티팩트 스토리지에 보관해 두는 것을 고려한다.
+버전이 다시 필요하면 위 빌드 ID(`n9.0.2-14-gebafaee10a-20260928`)나 파일명
+(`ffmpeg-n9.0-latest-win64-gpl-shared-9.0.zip`, 2026-09-28 빌드)을 GitHub
+릴리스 페이지의 과거 에셋 목록이나 Actions 아카이브에서 직접 찾아야 한다.
+재현성이 필요하면 이 바이너리를 별도 저장소나 아티팩트 스토리지에 보관해
+두는 것을 고려한다.
 
 ## extraResources 배치
 

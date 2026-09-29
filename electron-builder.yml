@@ -9,10 +9,10 @@ files:
   - package.json
   # electron-builder는 files를 이렇게 좁혀도 package.json의 dependencies를
   # 보고 node_modules 전체(그 안의 네이티브 모듈 prebuild 전부 포함)를 asar에
-  # 자동으로 끼워 넣는다 — 실측 확인. archiver는 rollup이 이미 번들에 넣었고
-  # better-sqlite3는 위 extraResources로 따로 넣으므로, asar 안의 사본은
-  # 불필요한 중복이자 미필터링 prebuild가 섞여 들어오는 원인이다. 명시적으로
-  # 제외한다.
+  # 자동으로 끼워 넣는다 — 실측 확인. archiver는 vite.config.ts의
+  # ssr.noExternal로 rollup이 번들에 인라인하고, better-sqlite3는 아래
+  # extraResources로 따로 넣으므로, asar 안의 node_modules 사본은 불필요한
+  # 중복이자 미필터링 prebuild가 섞여 들어오는 원인이다. 명시적으로 제외한다.
   - '!node_modules/**'
 
 # asar 안에 들어가면 안 되는 것들.
@@ -23,7 +23,11 @@ extraResources:
   # better-sqlite3는 네이티브 모듈이라 rollup이 번들에 넣지 못한다 —
   # build/index.js가 런타임에 import한다(실측 확인). resources/node_modules에
   # 두면 resources/build/index.js에서 Node의 모듈 해석이 여기를 찾는다.
-  # archiver는 번들에 들어가므로 따로 넣을 필요가 없다.
+  # archiver는 vite.config.ts의 ssr.noExternal 설정으로 번들에 인라인되므로
+  # 따로 넣지 않는다 — adapter-node는 기본적으로 의존성을 전부 외부로
+  # 남기는데(archiver도 원래 그랬다), 이 앱은 /api/download 라우트가 지연
+  # 로드 청크라 서버 기동 확인만으로는 archiver가 빠진 걸 몰랐던 적이
+  # 있다(scripts/check-packaged-imports.mjs가 이걸 다시 잡아낸다).
   - from: node_modules/better-sqlite3
     to: node_modules/better-sqlite3
     filter:
