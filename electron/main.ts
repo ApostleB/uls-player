@@ -36,6 +36,23 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * url이 우리 서버(origin) 안쪽인지 판단한다.
+ *
+ * `url.startsWith(origin)`은 구분자가 없어 포트 접두사까지 통과시킨다 —
+ * origin이 http://127.0.0.1:5000이면 http://127.0.0.1:50001/...도 "내부"로
+ * 잘못 판정된다. URL을 파싱해 origin을 정확히 비교해야 이 앱이 지는 유일한
+ * 보안 경계(외부 탐색·새 창을 기본 브라우저로 돌리는 것)가 실제로 선다.
+ */
+function isInternal(url: string, origin: string): boolean {
+  try {
+    return new URL(url).origin === origin;
+  } catch {
+    // 파싱조차 안 되는 것은 우리 것이 아니다.
+    return false;
+  }
+}
+
 async function startServer(): Promise<number> {
   const port = await findFreePort();
   const env = buildServerEnv({
@@ -70,11 +87,21 @@ async function waitForServer(port: number): Promise<void> {
   const deadline = Date.now() + STARTUP_TIMEOUT_MS;
   for (;;) {
     try {
-      // 5xx도 "떴다"로 본다 — 포트가 응답하는 것이 여기서 확인할 전부다.
-      await fetch(`http://127.0.0.1:${port}/`);
+      // 마감 검사(아래 deadline 비교)는 fetch가 돌아온 뒤에야 돈다 — fetch
+      // 자체에 타임아웃을 안 주면, 포트는 열렸는데 응답을 못 주는 서버(초기화
+      // 도중 블로킹 등)를 만났을 때 undici 기본 헤더 타임아웃(300초)까지 이
+      // 한 번의 호출이 매달린다. 그동안 창도 오류 대화상자도 뜨지 않는다 —
+      // "15초 기동 대기"와 "흰 화면 방치 금지"를 둘 다 깨는 셈이라, 시도 하나
+      // 당 타임아웃을 폴링 간격 수준으로 짧게 준다.
+      // 5xx도 "떴다"로 본다 — 포트가 응답하는 것이 여기서 확인할 전부이므로
+      // 본문을 받을 필요가 없는 HEAD로 요청한다.
+      await fetch(`http://127.0.0.1:${port}/`, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(1_000)
+      });
       return;
     } catch {
-      // 아직 안 떴다.
+      // 아직 안 떴다(연결 거부) 또는 이번 시도가 타임아웃났다 — 둘 다 재시도.
     }
     if (Date.now() > deadline) {
       throw new Error(`서버가 ${STARTUP_TIMEOUT_MS / 1000}초 안에 응답하지 않았습니다`);
@@ -131,12 +158,12 @@ function createWindow(port: number): void {
 
   // 앱 바깥으로 나가는 이동은 창이 아니라 기본 브라우저가 받는다.
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (url.startsWith(origin)) return;
+    if (isInternal(url, origin)) return;
     event.preventDefault();
     void shell.openExternal(url);
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith(origin)) void shell.openExternal(url);
+    if (!isInternal(url, origin)) void shell.openExternal(url);
     return { action: 'deny' };
   });
 
