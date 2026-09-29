@@ -7,6 +7,10 @@ node_modules
 .wrangler
 /.svelte-kit
 /build
+/dist-electron
+/release
+# 동봉용 ffmpeg 바이너리 — 100MB가 넘어 커밋하지 않는다(Task 5)
+/ffmpeg
 
 # OS
 .DS_Store
