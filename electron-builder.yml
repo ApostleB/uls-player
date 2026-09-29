@@ -1,0 +1,50 @@
+# Windows 배포 파일 2개를 만든다. 실행: npm run dist:win
+appId: com.ulsplayer.app
+productName: ULS Player
+directories:
+  output: release
+
+files:
+  - dist-electron/**
+  - package.json
+  # electron-builder는 files를 이렇게 좁혀도 package.json의 dependencies를
+  # 보고 node_modules 전체(그 안의 네이티브 모듈 prebuild 전부 포함)를 asar에
+  # 자동으로 끼워 넣는다 — 실측 확인. archiver는 rollup이 이미 번들에 넣었고
+  # better-sqlite3는 위 extraResources로 따로 넣으므로, asar 안의 사본은
+  # 불필요한 중복이자 미필터링 prebuild가 섞여 들어오는 원인이다. 명시적으로
+  # 제외한다.
+  - '!node_modules/**'
+
+# asar 안에 들어가면 안 되는 것들.
+extraResources:
+  # SvelteKit 서버. ESM 로더와 asar의 조합이 알려진 문제군이라 밖에 둔다.
+  - from: build
+    to: build
+  # better-sqlite3는 네이티브 모듈이라 rollup이 번들에 넣지 못한다 —
+  # build/index.js가 런타임에 import한다(실측 확인). resources/node_modules에
+  # 두면 resources/build/index.js에서 Node의 모듈 해석이 여기를 찾는다.
+  # archiver는 번들에 들어가므로 따로 넣을 필요가 없다.
+  - from: node_modules/better-sqlite3
+    to: node_modules/better-sqlite3
+    filter:
+      - '**/*'
+      - '!{deps,src,build}/**'
+      - '!prebuilds/{darwin-arm64,darwin-x64,linux-arm64,linux-x64,linuxmusl-arm64,linuxmusl-x64,win32-arm64}.node'
+  # 동봉 ffmpeg. 실행 가능해야 하므로 asar 밖이어야 한다.
+  - from: ffmpeg/win
+    to: ffmpeg/win
+
+# N-API 바이너리라 Electron용으로 다시 빌드하지 않는다.
+npmRebuild: false
+
+win:
+  target:
+    - target: portable
+      arch: [x64]
+    - target: zip
+      arch: [x64]
+  # productName에 공백이 있어 파일명은 따로 정한다.
+  artifactName: ULS-Player-${version}-win.${ext}
+
+portable:
+  artifactName: ULS-Player-${version}-portable.${ext}
