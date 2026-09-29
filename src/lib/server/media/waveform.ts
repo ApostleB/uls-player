@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { FFMPEG } from './binaries';
 
 /** 피크 계산용 디코딩 샘플레이트. 파형 표시에는 이 정도면 충분하다. */
 const PEAK_SAMPLE_RATE = 8000;
@@ -26,7 +27,7 @@ export function generatePeaks(
   peaks: number
 ): Promise<number[]> {
   return new Promise((resolve, reject) => {
-    const ff = spawn('ffmpeg', [
+    const ff = spawn(FFMPEG, [
       '-v', 'error',
       '-i', input,
       '-map', `0:${streamIndex}`,

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { FFPROBE } from './binaries';
 
 const run = promisify(execFile);
 
@@ -36,7 +37,7 @@ interface RawProbe {
 export async function probe(filePath: string): Promise<ProbeResult> {
   let stdout: string;
   try {
-    ({ stdout } = await run('ffprobe', [
+    ({ stdout } = await run(FFPROBE, [
       '-v', 'error',
       '-show_streams',
       '-show_format',

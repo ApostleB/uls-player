@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { FormatSpec } from '$lib/types';
+import { FFMPEG } from './binaries';
 
 const run = promisify(execFile);
 
@@ -45,7 +46,7 @@ export async function convert(
   args.push(output);
 
   try {
-    await run('ffmpeg', args);
+    await run(FFMPEG, args);
   } catch (err) {
     // ffmpeg가 실패하면 잘린 출력이 남을 수 있다. 재시도가 깨끗하도록 지운다.
     await fs.rm(output, { force: true });
