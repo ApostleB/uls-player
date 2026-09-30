@@ -7,6 +7,7 @@ import { mediaFilePath } from '$lib/media';
 import { convert } from '../media/convert';
 import { probe } from '../media/probe';
 import { isSameFormat } from '../media/sameFormat';
+import { isVbrMp3 } from '../media/mp3Header';
 import { generatePeaks } from '../media/waveform';
 import { savePeaks } from '../store/waveforms';
 import { addMany, newId, patch, RecordingNotFoundError } from '../store/recordings';
@@ -136,6 +137,11 @@ export function makeRunner(cfg: AppConfig): Worker {
 
     const meta = await probe(originalPath);
 
+    // mp3 헤더를 읽는 IO라 포맷별 루프 앞에서 한 번만 한다 — 루프 안에서
+    // 매번 다시 읽으면 포맷 수만큼 같은 파일을 반복해서 연다.
+    // mp3가 아닌 원본에는 VBR 개념이 없으므로 계산하지 않는다.
+    const vbr = meta.formatName === 'mp3' ? await isVbrMp3(originalPath) : false;
+
     const files: Record<string, FileEntry> = {
       original: { ext, bytes: (await fs.stat(originalPath)).size }
     };
@@ -172,7 +178,7 @@ export function makeRunner(cfg: AppConfig): Worker {
       }
 
       try {
-        if (isSameFormat(spec.name, meta)) {
+        if (isSameFormat(spec.name, { ...meta, vbr })) {
           // 원본이 이미 이 포맷이다. 다시 인코딩하면 손실 압축을 한 번 더
           // 거쳐 음질만 잃고 시간을 쓴다. 출력 설정(비트레이트·샘플레이트·
           // 채널)보다 우선한다 — 사용자 결정이다(설계 문서 3절).

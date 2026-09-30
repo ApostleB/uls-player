@@ -540,4 +540,16 @@ describe('원본이 이미 출력 포맷이면', () => {
     expect(status).toBe('done');
     expect(convertedFormats()).toEqual(['mp3', 'wav']);
   });
+
+  it('VBR mp3 원본은 mp3 출력도 변환한다 — 복사하면 재생기 탐색이 부정확해진다', async () => {
+    // -q:a 2는 LAME이 Xing 태그를 쓰는 VBR이다(mp3Header.test.ts에서 확인).
+    const item = await makeSource('c.mp3', ['-c:a', 'libmp3lame', '-q:a', '2']);
+    const { id, status } = await runOne(item);
+
+    expect(status).toBe('done');
+    expect(convertedFormats()).toEqual(['mp3', 'wav']);
+    const original = await fs.readFile(path.join(cfg.mediaDir, 'original', `${id}.mp3`));
+    const out = await fs.readFile(path.join(cfg.mediaDir, 'mp3', `${id}.mp3`));
+    expect(out.equals(original)).toBe(false);
+  });
 });
