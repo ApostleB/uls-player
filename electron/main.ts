@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { execFile, fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { buildServerEnv } from '../src/lib/desktop/env';
 import { findFreePort } from '../src/lib/desktop/port';
@@ -95,7 +96,8 @@ async function startServer(): Promise<number> {
     userDataDir: app.getPath('userData'),
     binariesDir: binariesDir(),
     base: process.env,
-    platform: process.platform
+    platform: process.platform,
+    cpuCount: os.availableParallelism()
   });
 
   // execPath를 Electron 바이너리로 두고 env의 ELECTRON_RUN_AS_NODE=1을
