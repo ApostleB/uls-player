@@ -247,7 +247,9 @@
       bind:this={folderInput}
       class="input"
       aria-label="스캔할 서버 폴더 경로"
-      placeholder="서버에 있는 폴더 경로 (내 컴퓨터의 파일은 아래에서 올립니다)"
+      placeholder={hasDesktopPicker
+        ? '가져올 폴더 경로 (찾아보기로 고를 수 있습니다)'
+        : '서버에 있는 폴더 경로 (내 컴퓨터의 파일은 아래에서 올립니다)'}
       required
     />
     {#if hasDesktopPicker}
@@ -258,57 +260,65 @@
     <button type="submit" class="btn preset-filled">스캔</button>
   </form>
 
-  <form
-    method="POST"
-    action="?/upload"
-    enctype="multipart/form-data"
-    use:enhance={() => {
-      uploading = true;
-      return async ({ update }) => {
-        await update();
-        uploading = false;
-      };
-    }}
-    class="card preset-tonal p-4 border-2 border-dashed transition-colors"
-    class:border-primary-500={dragging}
-    ondragover={(e) => {
-      e.preventDefault();
-      dragging = true;
-    }}
-    ondragleave={() => (dragging = false)}
-    ondrop={(e) => {
-      e.preventDefault();
-      dragging = false;
-      if (e.dataTransfer?.files.length) submitFiles(e.dataTransfer.files);
-    }}
-  >
-    <label class="flex flex-col gap-2">
-      <span class="text-sm">
-        또는 파일을 여기로 끌어다 놓거나 클릭해서 올립니다
-        (CloudRecordings.db를 함께 올리면 제목이 복원됩니다)
-      </span>
-      <input
-        bind:this={fileInput}
-        type="file"
-        name="files"
-        class="input"
-        multiple
-        disabled={uploading}
-        accept="audio/*,.qta,.m4a,.caf,.db,.db-wal,.db-shm"
-        onchange={(e) => e.currentTarget.form?.requestSubmit()}
-      />
-
-      <!-- 전송이 끝날 때까지 이 줄이 자리를 지킨다. 브라우저의 네이티브
-           폼 전송이라 진행률(몇 %)까지는 알 수 없지만, "지금 올라가는
-           중"이라는 사실만이라도 보이면 사용자가 멈춘 줄 알고 다시
-           누르는 일은 막을 수 있다 — 다시 누르면 같은 전송이 두 번 간다. -->
-      {#if uploading}
-        <span class="text-surface-500 text-sm" role="status">
-          올리는 중입니다. 파일이 크면 몇 분 걸릴 수 있으니 이 화면을 닫지 마세요.
+  <!-- 데스크톱 앱에서는 업로드 칸을 그리지 않는다. 서버가 이 컴퓨터 자체라
+       위의 스캔이 디스크에서 바로 읽으므로 파일을 "올릴" 이유가 없고, 올리면
+       오히려 망가진다 — 업로드는 요청 전체를 메모리에 올린 뒤에야 처리하는데
+       (request.formData()의 제약), 음성 메모 폴더(313개, 약 3GB)를 넣자
+       "Failed to allocate memory"로 죽었다. 브라우저(서버 배포)에서는
+       내 컴퓨터의 파일을 서버로 보낼 유일한 길이라 그대로 둔다. -->
+  {#if !hasDesktopPicker}
+    <form
+      method="POST"
+      action="?/upload"
+      enctype="multipart/form-data"
+      use:enhance={() => {
+        uploading = true;
+        return async ({ update }) => {
+          await update();
+          uploading = false;
+        };
+      }}
+      class="card preset-tonal p-4 border-2 border-dashed transition-colors"
+      class:border-primary-500={dragging}
+      ondragover={(e) => {
+        e.preventDefault();
+        dragging = true;
+      }}
+      ondragleave={() => (dragging = false)}
+      ondrop={(e) => {
+        e.preventDefault();
+        dragging = false;
+        if (e.dataTransfer?.files.length) submitFiles(e.dataTransfer.files);
+      }}
+    >
+      <label class="flex flex-col gap-2">
+        <span class="text-sm">
+          또는 파일을 여기로 끌어다 놓거나 클릭해서 올립니다
+          (CloudRecordings.db를 함께 올리면 제목이 복원됩니다)
         </span>
-      {/if}
-    </label>
-  </form>
+        <input
+          bind:this={fileInput}
+          type="file"
+          name="files"
+          class="input"
+          multiple
+          disabled={uploading}
+          accept="audio/*,.qta,.m4a,.caf,.db,.db-wal,.db-shm"
+          onchange={(e) => e.currentTarget.form?.requestSubmit()}
+        />
+
+        <!-- 전송이 끝날 때까지 이 줄이 자리를 지킨다. 브라우저의 네이티브
+             폼 전송이라 진행률(몇 %)까지는 알 수 없지만, "지금 올라가는
+             중"이라는 사실만이라도 보이면 사용자가 멈춘 줄 알고 다시
+             누르는 일은 막을 수 있다 — 다시 누르면 같은 전송이 두 번 간다. -->
+        {#if uploading}
+          <span class="text-surface-500 text-sm" role="status">
+            올리는 중입니다. 파일이 크면 몇 분 걸릴 수 있으니 이 화면을 닫지 마세요.
+          </span>
+        {/if}
+      </label>
+    </form>
+  {/if}
 
   <!-- 업로드가 진행 중이면 지난 응답의 메시지를 감춘다. 그러지 않으면
        직전 스캔 실패 같은 옛 오류가 화면에 남아, 방금 시작한 업로드가

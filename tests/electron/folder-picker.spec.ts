@@ -67,3 +67,20 @@ test('취소하면 null을 돌려주고 이미 고른 경로를 덮어쓰지 않
   // 그리고 먼저 고른 값이 그대로 남아 있어야 한다.
   await expect(page.getByLabel('스캔할 서버 폴더 경로')).toHaveValue(pickedDir);
 });
+
+test('데스크톱에서는 업로드 칸을 그리지 않는다 — 스캔이 디스크에서 직접 읽는다', async () => {
+  const page = await app.firstWindow();
+  await expect(page.getByRole('heading', { name: 'ULS Player' })).toBeVisible();
+  await page.goto(page.url().replace(/\/$/, '') + '/import');
+
+  // 찾아보기 버튼이 보여야 데스크톱 판정(onMount)이 끝난 것이다. 그 전에
+  // 업로드 칸이 없는지 보면, 페이지가 아직 안 그려져서 "없음"으로 통과해
+  // 버린다.
+  await expect(page.getByRole('button', { name: '찾아보기' })).toBeVisible();
+
+  // 업로드는 요청 전체를 메모리에 올린 뒤에야 처리한다. 데스크톱에서
+  // 음성 메모 폴더(313개, 약 3GB)를 넣으면 "Failed to allocate memory"로
+  // 죽는다 — 실제로 겪었다.
+  await expect(page.getByText('끌어다 놓거나')).toHaveCount(0);
+  await expect(page.locator('input[type="file"]')).toHaveCount(0);
+});
