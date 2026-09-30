@@ -20,6 +20,12 @@ export interface ProbeResult {
   audioStreamIndex: number;
   codecName: string;
   channels: number;
+  /**
+   * ffprobe의 format.format_name. 예: 'mp3', 'wav', 'aiff',
+   * 'mov,mp4,m4a,3gp,3g2,mj2'. 확장자는 거짓말을 할 수 있어서, 원본이
+   * 이미 출력 포맷인지 판정할 때 이것을 본다(sameFormat.ts).
+   */
+  formatName: string;
 }
 
 interface RawStream {
@@ -31,7 +37,7 @@ interface RawStream {
 
 interface RawProbe {
   streams?: RawStream[];
-  format?: { duration?: string; tags?: Record<string, string> };
+  format?: { duration?: string; format_name?: string; tags?: Record<string, string> };
 }
 
 export async function probe(filePath: string): Promise<ProbeResult> {
@@ -77,6 +83,7 @@ export async function probe(filePath: string): Promise<ProbeResult> {
     creationTime: tags.creation_time ?? null,
     audioStreamIndex: usable.index,
     codecName: usable.codec_name ?? '',
-    channels: usable.channels ?? 0
+    channels: usable.channels ?? 0,
+    formatName: raw.format?.format_name ?? ''
   };
 }

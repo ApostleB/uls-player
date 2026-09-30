@@ -1,6 +1,7 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron';
 import { execFile, fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { buildServerEnv } from '../src/lib/desktop/env';
 import { findFreePort } from '../src/lib/desktop/port';
@@ -31,6 +32,34 @@ function appendStderrTail(chunk: string): void {
 
 let serverProcess: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * 앱 주소. 서버가 응답하기 전까지는 null이다 — 그동안 창에는 로딩 화면만
+ * 떠 있고, 이 값이 없으면 탐색 가드가 모든 이동을 바깥으로 본다.
+ */
+let appOrigin: string | null = null;
+
+/**
+ * 앱이 끝나는 중인가.
+ *
+ * waitForServer 자체는 이 플래그가 필요 없다 — fetch 오류를 삼키고
+ * 재시도하며, 15초 마감에서만 reject하는데 그때쯤이면 이미 종료 처리가
+ * 끝나 있다. 이 플래그가 실제로 막는 것은 세 가지다:
+ * - startServer의 fork 직전 검사(아래)가 종료 중에 오류를 던지는 경우,
+ *   그 오류가 오류 대화상자로 이어지지 않게 한다.
+ * - before-quit로 stopServer가 이미 불린 뒤 늦게 fork된 자식이 죽어도
+ *   (onServerExit) "예기치 않은 종료" 대화상자를 띄우지 않는다.
+ * - showApp이 종료 중에 loadURL하지 않게 한다(방금 죽인 서버로 이동하면
+ *   연결 거부 화면이 잠깐 보인다).
+ */
+let quitting = false;
+
+/**
+ * 로딩 화면의 배경색. 앱 테마(Skeleton cerberus)의 body 배경과 같게 맞춘다 —
+ * surface-950(oklch 0.18)과 surface-50(oklch 0.99)을 sRGB로 바꾼 값이다.
+ * 다르면 로딩 화면에서 앱으로 넘어가는 순간 색이 번쩍인다.
+ */
+const THEME_BG = { dark: '#121212', light: '#fcfcfc' } as const;
 
 // 개발 중에는 실제 데이터와 섞이지 않게 별도 폴더를 쓴다.
 if (!app.isPackaged) {
@@ -88,6 +117,26 @@ function isInternal(url: string, origin: string): boolean {
   }
 }
 
+/**
+ * 서버가 뜨기 전에 보여줄 화면. 파일을 따로 두지 않고 data: URL로 띄운다.
+ *
+ * heading 요소를 쓰지 않는다 — e2e가 getByRole('heading', { name: 'ULS Player' })로
+ * 앱 화면이 떴는지 판단하는데, 여기 같은 이름의 heading이 있으면 그 단언이
+ * 로딩 화면에서 통과해 버린다.
+ */
+function loadingPage(dark: boolean): string {
+  const bg = dark ? THEME_BG.dark : THEME_BG.light;
+  const fg = dark ? '#e5e5e5' : '#262626';
+  const html =
+    '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>ULS Player</title>' +
+    `<style>html,body{margin:0;height:100%;background:${bg};color:${fg};` +
+    'font-family:system-ui,sans-serif}body{display:grid;place-items:center}' +
+    '.name{font-size:20px;font-weight:600;margin-bottom:8px;text-align:center}' +
+    '.hint{font-size:14px;opacity:.6;text-align:center}</style></head>' +
+    '<body><div><div class="name">ULS Player</div><div class="hint">여는 중…</div></div></body></html>';
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
 async function startServer(): Promise<number> {
   const port = await findFreePort();
   const env = buildServerEnv({
@@ -95,8 +144,14 @@ async function startServer(): Promise<number> {
     userDataDir: app.getPath('userData'),
     binariesDir: binariesDir(),
     base: process.env,
-    platform: process.platform
+    platform: process.platform,
+    cpuCount: os.availableParallelism()
   });
+
+  // findFreePort로 대기하는 사이 before-quit가 올 수 있다. 그때 fork하면
+  // stopServer는 이미 지나갔으니(serverProcess가 아직 null) 죽일 게 없고,
+  // 이 자식만 아무도 죽이지 않는 고아로 남는다(Cmd+Q로 닿을 수 있다).
+  if (quitting) throw new Error('앱이 종료되는 중입니다');
 
   // execPath를 Electron 바이너리로 두고 env의 ELECTRON_RUN_AS_NODE=1을
   // 함께 넘기면, 그 바이너리가 순수 Node로 동작한다 — node.exe를 따로
@@ -191,19 +246,30 @@ function onServerExit(code: number | null, signal: NodeJS.Signals | null): void 
 }
 
 function fail(title: string, detail: string): void {
+  // 사용자가 로딩 중에 창을 닫아 이미 끝나는 중이면, 그 때문에 죽은
+  // 서버를 "실패"로 알릴 이유가 없다.
+  if (quitting) return;
   dialog.showErrorBox(title, detail);
   stopServer();
   app.exit(1);
 }
 
-function createWindow(port: number): void {
-  const origin = `http://127.0.0.1:${port}`;
+/**
+ * 창을 만들고 로딩 화면을 띄운다. 서버를 기다리지 않는다.
+ *
+ * 예전에는 서버가 응답한 뒤에야 창을 만들어, 서버 기동과 Chromium 창
+ * 생성 비용이 차례로 쌓였고 그동안 화면에 아무것도 없었다(설계 문서 6절).
+ */
+function createWindow(): void {
+  const dark = nativeTheme.shouldUseDarkColors;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 900,
     minHeight: 600,
     show: false,
+    // 창이 그려지기 전 한 프레임이라도 흰색이 보이지 않게 테마 배경을 준다.
+    backgroundColor: dark ? THEME_BG.dark : THEME_BG.light,
     autoHideMenuBar: true,
     title: 'ULS Player',
     webPreferences: {
@@ -221,17 +287,32 @@ function createWindow(port: number): void {
   });
 
   // 앱 바깥으로 나가는 이동은 창이 아니라 기본 브라우저가 받는다.
+  // appOrigin이 아직 없으면(로딩 중) 모든 이동을 바깥으로 본다 — 로딩
+  // 화면에는 링크가 없으니 실제로 일어날 일은 없다.
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (isInternal(url, origin)) return;
+    if (appOrigin !== null && isInternal(url, appOrigin)) return;
     event.preventDefault();
     void shell.openExternal(url);
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!isInternal(url, origin)) void shell.openExternal(url);
+    if (appOrigin === null || !isInternal(url, appOrigin)) void shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  void mainWindow.loadURL(origin);
+  void mainWindow.loadURL(loadingPage(dark));
+}
+
+/**
+ * 서버가 응답하면 창을 앱으로 옮긴다. loadURL은 프로그램이 부르는 이동이라
+ * will-navigate 가드를 거치지 않는다.
+ */
+function showApp(port: number): void {
+  appOrigin = `http://127.0.0.1:${port}`;
+  // 종료 중이면 mainWindow가 아직 null이 아닐 수 있다(Cmd+Q 직후 창이
+  // 닫히는 중) — 그때 방금 죽인 서버로 loadURL하면 연결 거부 화면이
+  // 잠깐 보인다. 로딩 중에 사용자가 창을 닫은 경우도 옮길 창이 없다.
+  if (quitting || mainWindow === null) return;
+  void mainWindow.loadURL(appOrigin);
 }
 
 async function main(): Promise<void> {
@@ -244,6 +325,9 @@ async function main(): Promise<void> {
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
   });
+  // 창을 먼저 만들고 서버를 띄운다. createWindow는 동기로 돌아오고 창
+  // 생성은 그 뒤에서 이어지므로, 두 비용이 겹친다.
+  createWindow();
   let port: number;
   try {
     port = await startServer();
@@ -252,7 +336,7 @@ async function main(): Promise<void> {
     fail('서버를 시작하지 못했습니다', (err as Error).message);
     return;
   }
-  createWindow(port);
+  showApp(port);
 }
 
 // 두 인스턴스가 뜨면 각자 잡 큐를 돌려 같은 recordings.json을 서로
@@ -267,6 +351,9 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow.focus();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('before-quit', stopServer);
+  app.on('before-quit', () => {
+    quitting = true;
+    stopServer();
+  });
   void main();
 }

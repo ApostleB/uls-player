@@ -14,6 +14,11 @@ describe('probe', () => {
     expect(r.channels).toBe(2);
   });
 
+  it('컨테이너 이름을 돌려준다 — 복사 판정이 확장자 대신 이것을 본다', async () => {
+    expect((await probe(SPATIAL)).formatName).toBe('mov,mp4,m4a,3gp,3g2,mj2');
+    expect((await probe(PLAIN)).formatName).toBe('mov,mp4,m4a,3gp,3g2,mj2');
+  });
+
   it('절대 인덱스가 apple_apac을 가리키지 않는다', async () => {
     const r = await probe(SPATIAL);
     expect(UNDECODABLE_CODECS.has(r.codecName)).toBe(false);

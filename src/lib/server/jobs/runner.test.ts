@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import type { AppConfig, JobItem, JobStatus, ScanItem } from '$lib/types';
 import { loadConfig } from '../config';
 import { listAll } from '../store/recordings';
@@ -477,5 +479,77 @@ describe('재시작 복구 — pendingRecordings에도 저장소에도 원본이
     expect(message).toContain('다시 가져오');
     // 개선 전 문구("녹음을 찾을 수 없습니다: <uuid>")가 그대로 새지 않아야 한다.
     expect(message).not.toMatch(/^녹음을 찾을 수 없습니다:/);
+  });
+});
+
+describe('원본이 이미 출력 포맷이면', () => {
+  const exec = promisify(execFile);
+
+  /**
+   * SPATIAL의 첫 오디오 스트림(aac)을 원하는 포맷으로 바꿔 원본 폴더를 하나
+   * 만들고 스캔한다. 픽스처에 mp3·wav 원본이 없어서 테스트 안에서 만든다.
+   */
+  async function makeSource(name: string, codecArgs: string[]): Promise<ScanItem> {
+    const folder = path.join(dir, `src-${path.parse(name).name}`);
+    await fs.mkdir(folder, { recursive: true });
+    await exec('ffmpeg', ['-v', 'error', '-i', SPATIAL, '-map', '0:a:0', ...codecArgs, path.join(folder, name)]);
+    const items = await scanFolder(cfg, folder);
+    return items[0];
+  }
+
+  async function runOne(item: ScanItem) {
+    const { recordings, jobs } = buildJobs(cfg, [{ scan: item, title: 't', description: '', tags: [] }]);
+    const q = new JobQueue(1, makeRunner(cfg));
+    q.enqueue(jobs);
+    await q.idle();
+    return { id: recordings[0].id, status: q.snapshot()[0].status };
+  }
+
+  /** 이번 실행에서 convert가 어떤 출력 포맷에 불렸는지. */
+  function convertedFormats(): string[] {
+    return vi.mocked(convertModule.convert).mock.calls.map((c) => c[3].name);
+  }
+
+  it('mp3 원본은 mp3 출력을 다시 인코딩하지 않고 원본 그대로 복사한다', async () => {
+    // 설정은 192k다. 128k 원본을 다시 인코딩했다면 바이트가 달라진다.
+    const item = await makeSource('a.mp3', ['-c:a', 'libmp3lame', '-b:a', '128k']);
+    const { id, status } = await runOne(item);
+
+    expect(status).toBe('done');
+    const original = await fs.readFile(path.join(cfg.mediaDir, 'original', `${id}.mp3`));
+    const out = await fs.readFile(path.join(cfg.mediaDir, 'mp3', `${id}.mp3`));
+    expect(out.equals(original)).toBe(true);
+    expect(convertedFormats()).toEqual(['wav']);
+  });
+
+  it('PCM wav 원본은 설정과 다른 규격이어도 wav로 복사하고, mp3는 변환한다', async () => {
+    // 설정은 44.1kHz 모노 16비트다. 48kHz 스테레오 24비트를 그대로 둬야 한다.
+    const item = await makeSource('b.wav', ['-c:a', 'pcm_s24le', '-ar', '48000', '-ac', '2']);
+    const { id, status } = await runOne(item);
+
+    expect(status).toBe('done');
+    const original = await fs.readFile(path.join(cfg.mediaDir, 'original', `${id}.wav`));
+    const out = await fs.readFile(path.join(cfg.mediaDir, 'wav', `${id}.wav`));
+    expect(out.equals(original)).toBe(true);
+    expect(convertedFormats()).toEqual(['mp3']);
+  });
+
+  it('QTA 원본은 지금처럼 두 포맷 모두 변환한다', async () => {
+    const { status } = await runOne(scan[0]);
+
+    expect(status).toBe('done');
+    expect(convertedFormats()).toEqual(['mp3', 'wav']);
+  });
+
+  it('VBR mp3 원본은 mp3 출력도 변환한다 — 복사하면 재생기 탐색이 부정확해진다', async () => {
+    // -q:a 2는 LAME이 Xing 태그를 쓰는 VBR이다(mp3Header.test.ts에서 확인).
+    const item = await makeSource('c.mp3', ['-c:a', 'libmp3lame', '-q:a', '2']);
+    const { id, status } = await runOne(item);
+
+    expect(status).toBe('done');
+    expect(convertedFormats()).toEqual(['mp3', 'wav']);
+    const original = await fs.readFile(path.join(cfg.mediaDir, 'original', `${id}.mp3`));
+    const out = await fs.readFile(path.join(cfg.mediaDir, 'mp3', `${id}.mp3`));
+    expect(out.equals(original)).toBe(false);
   });
 });

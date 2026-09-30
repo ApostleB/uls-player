@@ -7,7 +7,8 @@ const BASE = {
   userDataDir: '/Users/me/Library/Application Support/uls-player',
   binariesDir: null,
   base: {} as NodeJS.ProcessEnv,
-  platform: 'darwin' as NodeJS.Platform
+  platform: 'darwin' as NodeJS.Platform,
+  cpuCount: 12
 };
 
 describe('서버 자식에게 넘길 환경변수', () => {
@@ -88,5 +89,27 @@ describe('서버 자식에게 넘길 환경변수', () => {
   it('바깥 환경변수를 그대로 물려준다', () => {
     const env = buildServerEnv({ ...BASE, base: { CONVERT_CONCURRENCY: '2' } });
     expect(env.CONVERT_CONCURRENCY).toBe('2');
+  });
+
+  it('동시 변환 수를 코어 수보다 하나 적게 잡는다 — 하나는 재생과 화면에 남긴다', () => {
+    expect(buildServerEnv(BASE).CONVERT_CONCURRENCY).toBe('11');
+  });
+
+  it('코어가 하나뿐이어도 동시 변환 수는 1이다', () => {
+    expect(buildServerEnv({ ...BASE, cpuCount: 1 }).CONVERT_CONCURRENCY).toBe('1');
+  });
+
+  it('코어가 둘이면 동시 변환 수는 1이다', () => {
+    expect(buildServerEnv({ ...BASE, cpuCount: 2 }).CONVERT_CONCURRENCY).toBe('1');
+  });
+
+  it('이미 지정된 CONVERT_CONCURRENCY는 덮어쓰지 않는다', () => {
+    const env = buildServerEnv({ ...BASE, base: { CONVERT_CONCURRENCY: '3' } });
+    expect(env.CONVERT_CONCURRENCY).toBe('3');
+  });
+
+  it('빈 CONVERT_CONCURRENCY는 지정하지 않은 것으로 본다', () => {
+    const env = buildServerEnv({ ...BASE, base: { CONVERT_CONCURRENCY: '' } });
+    expect(env.CONVERT_CONCURRENCY).toBe('11');
   });
 });

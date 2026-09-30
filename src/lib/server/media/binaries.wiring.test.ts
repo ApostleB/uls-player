@@ -57,7 +57,7 @@ describe('호출부가 동봉 바이너리 경로를 쓴다', () => {
       path.join(os.tmpdir(), 'in.m4a'),
       path.join(os.tmpdir(), 'out.mp3'),
       0,
-      { name: 'mp3', ext: 'mp3', codec: 'libmp3lame', bitrate: '192k', sampleRate: 44100, channels: 2 }
+      { name: 'mp3', ext: 'mp3', codec: 'libmp3lame', bitrate: '192k', sampleRate: 44100, channels: 2, compressionLevel: null }
     );
     expect(execFileMock.mock.calls[0][0]).toBe('/opt/bundled/ffmpeg');
   });

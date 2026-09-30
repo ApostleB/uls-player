@@ -11,6 +11,12 @@ export interface ServerEnvOptions {
   base: NodeJS.ProcessEnv;
   /** 실행 플랫폼. 인자로 받는 이유는 win32 분기를 macOS에서 테스트하기 위해서다. */
   platform: NodeJS.Platform;
+  /**
+   * 이 기계의 논리 코어 수. 인자로 받는 이유는 platform과 같다 —
+   * os.availableParallelism()을 직접 부르면 1코어나 64코어 경우를
+   * 테스트할 수 없다.
+   */
+  cpuCount: number;
 }
 
 /** adapter-node의 요청 본문 한도. 기본값 512KB면 업로드가 첫 파일부터 막힌다. */
@@ -29,9 +35,10 @@ function unset(v: string | undefined): boolean {
  * - HOST/PORT/ORIGIN/ELECTRON_RUN_AS_NODE는 **셸이 이긴다.** 포트는 실행마다
  *   달라지고, ORIGIN이 실제 바인딩 주소와 어긋나면 SvelteKit의 CSRF 검사가
  *   form POST를 전부 403으로 막는다(가져오기 저장, 일괄 내려받기).
- * - DATA_DIR/MEDIA_DIR/FFMPEG_PATH/FFPROBE_PATH는 **바깥이 이긴다.** 셸이
- *   넣는 것은 기본값일 뿐이고, 사용자가 라이브러리를 다른 드라이브로
- *   옮기고 싶을 때 환경변수만으로 되게 둔다.
+ * - DATA_DIR/MEDIA_DIR/FFMPEG_PATH/FFPROBE_PATH/CONVERT_CONCURRENCY는
+ *   **바깥이 이긴다.** 셸이 넣는 것은 기본값일 뿐이고, 사용자가 라이브러리를
+ *   다른 드라이브로 옮기거나 변환 부하를 조절하고 싶을 때 환경변수만으로
+ *   되게 둔다.
  */
 export function buildServerEnv(o: ServerEnvOptions): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
@@ -54,6 +61,15 @@ export function buildServerEnv(o: ServerEnvOptions): NodeJS.ProcessEnv {
     if (unset(o.base.FFPROBE_PATH)) {
       env.FFPROBE_PATH = path.join(o.binariesDir, `ffprobe${suffix}`);
     }
+  }
+
+  // 서버 배포의 기본값(4)은 코어 수와 무관하게 고정이라, 12코어 PC에서
+  // 코어의 1/3만 쓰고 있었다. libmp3lame은 프로세스당 코어 하나를 쓰므로
+  // ffmpeg N개가 코어 N개를 쓴다 — 하나를 남겨야 변환 중에도 재생과
+  // 화면이 끊기지 않는다. 서버 배포는 몇 코어인지, 무엇이 함께 도는지
+  // 모르므로 건드리지 않는다. 이건 데스크톱 셸이 넘기는 기본값이다.
+  if (unset(o.base.CONVERT_CONCURRENCY)) {
+    env.CONVERT_CONCURRENCY = String(Math.max(1, o.cpuCount - 1));
   }
 
   return env;

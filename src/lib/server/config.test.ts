@@ -44,4 +44,24 @@ describe('loadConfig', () => {
   it('알 수 없는 포맷은 거부한다', () => {
     expect(() => loadConfig({ OUTPUT_FORMATS: 'mp3,flac' })).toThrow(/flac/);
   });
+
+  it('mp3 인코더 레벨은 지정하지 않으면 null이다 — 지금과 같은 인코딩', () => {
+    const cfg = loadConfig({});
+    for (const f of cfg.formats) expect(f.compressionLevel).toBeNull();
+  });
+
+  it('MP3_COMPRESSION_LEVEL을 읽는다', () => {
+    const mp3 = loadConfig({ MP3_COMPRESSION_LEVEL: '7' }).formats.find((f) => f.name === 'mp3')!;
+    expect(mp3.compressionLevel).toBe(7);
+  });
+
+  it('빈 MP3_COMPRESSION_LEVEL은 지정하지 않은 것으로 본다', () => {
+    const mp3 = loadConfig({ MP3_COMPRESSION_LEVEL: '  ' }).formats.find((f) => f.name === 'mp3')!;
+    expect(mp3.compressionLevel).toBeNull();
+  });
+
+  // 조용히 무시하면 사용자는 설정이 먹은 줄 믿고 느린 변환을 계속 본다.
+  it.each(['10', '-1', 'abc', '3.5'])('MP3_COMPRESSION_LEVEL=%s는 기동 시 거부한다', (v) => {
+    expect(() => loadConfig({ MP3_COMPRESSION_LEVEL: v })).toThrow(/0~9/);
+  });
 });

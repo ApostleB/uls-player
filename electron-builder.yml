@@ -1,6 +1,10 @@
 # Windows 배포 파일 2개를 만든다. 실행: npm run dist:win
 appId: com.ulsplayer.app
 productName: ULS Player
+# 이 앱은 한국어 화면 하나뿐인데 Electron은 언어 파일 48MB를 통째로 싣는다.
+# portable exe는 켤 때마다 이걸 풀고, Windows Defender는 새 파일로 보고 매번
+# 검사한다. en-US는 Chromium이 한국어 리소스를 못 찾을 때의 대비로 남긴다.
+electronLanguages: [ko, en-US]
 directories:
   output: release
 
@@ -59,13 +63,14 @@ win:
 
 portable:
   artifactName: ULS-Player-${version}-portable.${ext}
-  # 실측: release/win-unpacked가 580MB. portable.nsi 템플릿은 실행할 때마다
+  # 실측: release/win-unpacked가 533MB(언어 파일을 ko·en-US만 남기기 전에는
+  # 580MB였다). portable.nsi 템플릿은 실행할 때마다
   # $INSTDIR(=$TEMP\<UNPACK_DIR_NAME>)를 RMDir /r로 먼저 지우고 통째로
   # 다시 푼 뒤 실행하고, 종료 시 다시 지운다(node_modules/app-builder-lib/
   # templates/nsis/portable.nsi 확인). 문제는 UNPACK_DIR_NAME이 "빌드 한
   # 번"에 고정된다는 것 — 같은 exe를 두 번 실행하면 두 인스턴스가 같은
   # 폴더를 공유해, 뒤에 뜬 스텁의 RMDir /r이 앞선 인스턴스가 아직 쓰고
-  # 있는 resources/build/**를 지워버릴 수 있다(설계 검토 시나리오: 580MB
+  # 있는 resources/build/**를 지워버릴 수 있다(설계 검토 시나리오: 533MB
   # 해제+119MB avcodec-63.dll 백신 검사로 무반응 → 사용자가 다시 더블클릭).
   #
   # electron-builder 26.15.3의 실제 동작(NsisTarget.js:243-248, scheme.json의

@@ -6,6 +6,8 @@ import type {
 import { mediaFilePath } from '$lib/media';
 import { convert } from '../media/convert';
 import { probe } from '../media/probe';
+import { isSameFormat } from '../media/sameFormat';
+import { isVbrMp3 } from '../media/mp3Header';
 import { generatePeaks } from '../media/waveform';
 import { savePeaks } from '../store/waveforms';
 import { addMany, newId, patch, RecordingNotFoundError } from '../store/recordings';
@@ -81,6 +83,23 @@ export function buildJobs(
 }
 
 /**
+ * 원본이 이미 출력 포맷일 때 변환 대신 쓴다.
+ *
+ * convert가 실패 시 잘린 출력을 지우는 것과 같은 이유로, 복사가 도중에
+ * 실패해도 반쪽 파일을 남기지 않는다 — 남기면 다음 재시도의 done 판정이
+ * 그 파일을 멀쩡하다고 믿는다.
+ */
+async function copyAsFormat(original: string, out: string, format: string): Promise<void> {
+  await fs.mkdir(path.dirname(out), { recursive: true });
+  try {
+    await fs.copyFile(original, out);
+  } catch (err) {
+    await fs.rm(out, { force: true });
+    throw new Error(`복사 실패 (${format}): ${(err as Error).message}`);
+  }
+}
+
+/**
  * 항목 하나의 파이프라인.
  * 원본 복사 → 포맷별 변환 → 파형 → 저장소 기록.
  *
@@ -118,6 +137,11 @@ export function makeRunner(cfg: AppConfig): Worker {
 
     const meta = await probe(originalPath);
 
+    // mp3 헤더를 읽는 IO라 포맷별 루프 앞에서 한 번만 한다 — 루프 안에서
+    // 매번 다시 읽으면 포맷 수만큼 같은 파일을 반복해서 연다.
+    // mp3가 아닌 원본에는 VBR 개념이 없으므로 계산하지 않는다.
+    const vbr = meta.formatName === 'mp3' ? await isVbrMp3(originalPath) : false;
+
     const files: Record<string, FileEntry> = {
       original: { ext, bytes: (await fs.stat(originalPath)).size }
     };
@@ -154,7 +178,14 @@ export function makeRunner(cfg: AppConfig): Worker {
       }
 
       try {
-        await convert(originalPath, out, meta.audioStreamIndex, spec);
+        if (isSameFormat(spec.name, { ...meta, vbr })) {
+          // 원본이 이미 이 포맷이다. 다시 인코딩하면 손실 압축을 한 번 더
+          // 거쳐 음질만 잃고 시간을 쓴다. 출력 설정(비트레이트·샘플레이트·
+          // 채널)보다 우선한다 — 사용자 결정이다(설계 문서 3절).
+          await copyAsFormat(originalPath, out, spec.name);
+        } else {
+          await convert(originalPath, out, meta.audioStreamIndex, spec);
+        }
         files[spec.name] = { bytes: (await fs.stat(out)).size };
         result[spec.name] = 'done';
       } catch (err) {

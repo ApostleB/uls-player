@@ -15,7 +15,9 @@ zip을 기본으로 앞세운 이유: 한 번 풀어 두면 그 뒤로는 exe를
 것과 다르지 않으면서, portable이 매번 겪는 재추출 지연(아래)이 아예 없다.
 평소에 쓸 사본이라면 zip을 풀어 두고 쓰는 편이 낫다.
 
-**portable을 쓸 때 주의:** release/win-unpacked 실측 580MB를 NSIS
+**portable을 쓸 때 주의:** release/win-unpacked 실측 533MB(언어 파일을
+`ko`·`en-US`만 남기기 전에는 580MB였다 — `electronLanguages` 설정으로
+`locales/`가 48MB에서 1.3MB로 줄었다)를 NSIS
 portable 템플릿이 실행할 때마다 임시 폴더에 통째로 풀었다가 종료 시
 지운다. `splashImage`를 설정하지 않아 이 압축 해제 동안 화면에 정말
 아무것도 뜨지 않는다(`SetSilent silent`) — 119MB짜리 `avcodec-63.dll` 백신
@@ -77,6 +79,50 @@ ffmpeg/win/avutil-61.dll | grep -oE 'n9\.[0-9]+[^ ]*'`로 확인 가능):
     resources/build/client/...
     resources/node_modules/better-sqlite3/...   (win32-x64 prebuild만)
     resources/ffmpeg/win32/ffmpeg.exe, ffprobe.exe, *.dll
+
+## 변환 속도
+
+### 무엇이 시간을 쓰는가
+
+파일 하나를 가져오면 ffmpeg가 네 번 돈다 — ffprobe, mp3 인코딩, wav 인코딩,
+파형용 디코드. 이 중 **mp3 인코딩이 파일당 시간의 약 80%**다.
+
+### 설정
+
+| 환경변수 | 기본값 | 효과 |
+|---|---|---|
+| `CONVERT_CONCURRENCY` | 서버 4 / 데스크톱 코어 수 − 1 | 동시에 도는 변환 수 |
+| `MP3_COMPRESSION_LEVEL` | 비어 있음(인코더 기본값) | 0~9. 클수록 빠르고 덜 정밀. 7이면 mp3 인코딩 약 2.2배 |
+
+원본이 이미 mp3(또는 PCM wav)이면 그 포맷은 인코딩하지 않고 원본을 복사한다.
+출력 설정(비트레이트·샘플레이트·채널)보다 우선한다.
+
+**mp3는 CBR일 때만 복사한다.** VBR mp3를 복사하면 재생기의 탐색이
+부정확해진다 — 10분짜리 VBR로 실측한 결과 Electron은 최대 1.3초, Firefox는
+최대 22초 어긋났다. VBR은 지금처럼 192k CBR로 다시 인코딩해 탐색 오차를
+없앤다. 판정은 mp3 첫 프레임의 Xing/VBRI(VBR)·Info(CBR) 태그로 한다
+(`src/lib/server/media/mp3Header.ts`).
+
+**알려진 한계:** 64비트 float wav(`pcm_f64le`)는 코덱이 `pcm_`로 시작해
+복사 대상이지만, 데스크톱 앱(Chromium)은 이 포맷을 재생하지 못해 wav 탭이
+빈 화면으로 남는다. 사용자가 받아들인 결정이다 — 이런 원본은 드물고, 다른
+포맷 탭(mp3)은 영향받지 않는다.
+
+### 측정
+
+12코어 Apple M4 Pro, 원본 24개(`scripts/bench-convert.sh`):
+
+| 설정 | 시간 |
+|---|---|
+| 동시 4, 기본 (변경 전) | 11.6초 |
+| 동시 11, 기본 (데스크톱 기본값) | 9.4초 |
+| 동시 11, 레벨 7 | 6.9초 |
+
+mp3 원본 하나: 다시 인코딩 1.5초 → 복사 0.004초(사실상 즉시).
+
+이 수치는 앱이 아니라 앱의 파이프라인을 흉내 낸 ffmpeg 실행으로 잰 것이다.
+Windows에서는 ffmpeg를 실행할 때마다 DLL을 불러오는 비용이 더해져 더 느릴
+수 있다.
 
 ## 데이터가 쌓이는 곳
 
