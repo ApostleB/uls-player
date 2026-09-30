@@ -97,6 +97,17 @@ ffmpeg/win/avutil-61.dll | grep -oE 'n9\.[0-9]+[^ ]*'`로 확인 가능):
 원본이 이미 mp3(또는 PCM wav)이면 그 포맷은 인코딩하지 않고 원본을 복사한다.
 출력 설정(비트레이트·샘플레이트·채널)보다 우선한다.
 
+**mp3는 CBR일 때만 복사한다.** VBR mp3를 복사하면 재생기의 탐색이
+부정확해진다 — 10분짜리 VBR로 실측한 결과 Electron은 최대 1.3초, Firefox는
+최대 22초 어긋났다. VBR은 지금처럼 192k CBR로 다시 인코딩해 탐색 오차를
+없앤다. 판정은 mp3 첫 프레임의 Xing/VBRI(VBR)·Info(CBR) 태그로 한다
+(`src/lib/server/media/mp3Header.ts`).
+
+**알려진 한계:** 64비트 float wav(`pcm_f64le`)는 코덱이 `pcm_`로 시작해
+복사 대상이지만, 데스크톱 앱(Chromium)은 이 포맷을 재생하지 못해 wav 탭이
+빈 화면으로 남는다. 사용자가 받아들인 결정이다 — 이런 원본은 드물고, 다른
+포맷 탭(mp3)은 영향받지 않는다.
+
 ### 측정
 
 12코어 Apple M4 Pro, 원본 24개(`scripts/bench-convert.sh`):
