@@ -40,10 +40,17 @@ let mainWindow: BrowserWindow | null = null;
 let appOrigin: string | null = null;
 
 /**
- * 앱이 끝나는 중인가. 로딩 중에 사용자가 창을 닫으면 before-quit가 서버를
- * 죽이는데, 그때 돌고 있던 waitForServer가 나중에 실패로 끝나 종료 중인
- * 앱에 오류 대화상자를 띄우면 안 된다. 창을 서버보다 먼저 띄우면서 새로
- * 생긴 경우다 — 예전에는 서버가 뜨기 전에 닫을 창이 없었다.
+ * 앱이 끝나는 중인가.
+ *
+ * waitForServer 자체는 이 플래그가 필요 없다 — fetch 오류를 삼키고
+ * 재시도하며, 15초 마감에서만 reject하는데 그때쯤이면 이미 종료 처리가
+ * 끝나 있다. 이 플래그가 실제로 막는 것은 세 가지다:
+ * - startServer의 fork 직전 검사(아래)가 종료 중에 오류를 던지는 경우,
+ *   그 오류가 오류 대화상자로 이어지지 않게 한다.
+ * - before-quit로 stopServer가 이미 불린 뒤 늦게 fork된 자식이 죽어도
+ *   (onServerExit) "예기치 않은 종료" 대화상자를 띄우지 않는다.
+ * - showApp이 종료 중에 loadURL하지 않게 한다(방금 죽인 서버로 이동하면
+ *   연결 거부 화면이 잠깐 보인다).
  */
 let quitting = false;
 
@@ -140,6 +147,11 @@ async function startServer(): Promise<number> {
     platform: process.platform,
     cpuCount: os.availableParallelism()
   });
+
+  // findFreePort로 대기하는 사이 before-quit가 올 수 있다. 그때 fork하면
+  // stopServer는 이미 지나갔으니(serverProcess가 아직 null) 죽일 게 없고,
+  // 이 자식만 아무도 죽이지 않는 고아로 남는다(Cmd+Q로 닿을 수 있다).
+  if (quitting) throw new Error('앱이 종료되는 중입니다');
 
   // execPath를 Electron 바이너리로 두고 env의 ELECTRON_RUN_AS_NODE=1을
   // 함께 넘기면, 그 바이너리가 순수 Node로 동작한다 — node.exe를 따로
@@ -296,8 +308,10 @@ function createWindow(): void {
  */
 function showApp(port: number): void {
   appOrigin = `http://127.0.0.1:${port}`;
-  // 로딩 중에 사용자가 창을 닫았으면 옮길 창이 없다.
-  if (mainWindow === null) return;
+  // 종료 중이면 mainWindow가 아직 null이 아닐 수 있다(Cmd+Q 직후 창이
+  // 닫히는 중) — 그때 방금 죽인 서버로 loadURL하면 연결 거부 화면이
+  // 잠깐 보인다. 로딩 중에 사용자가 창을 닫은 경우도 옮길 창이 없다.
+  if (quitting || mainWindow === null) return;
   void mainWindow.loadURL(appOrigin);
 }
 
