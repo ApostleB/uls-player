@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron';
 import { execFile, fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
@@ -32,6 +32,27 @@ function appendStderrTail(chunk: string): void {
 
 let serverProcess: ChildProcess | null = null;
 let mainWindow: BrowserWindow | null = null;
+
+/**
+ * 앱 주소. 서버가 응답하기 전까지는 null이다 — 그동안 창에는 로딩 화면만
+ * 떠 있고, 이 값이 없으면 탐색 가드가 모든 이동을 바깥으로 본다.
+ */
+let appOrigin: string | null = null;
+
+/**
+ * 앱이 끝나는 중인가. 로딩 중에 사용자가 창을 닫으면 before-quit가 서버를
+ * 죽이는데, 그때 돌고 있던 waitForServer가 나중에 실패로 끝나 종료 중인
+ * 앱에 오류 대화상자를 띄우면 안 된다. 창을 서버보다 먼저 띄우면서 새로
+ * 생긴 경우다 — 예전에는 서버가 뜨기 전에 닫을 창이 없었다.
+ */
+let quitting = false;
+
+/**
+ * 로딩 화면의 배경색. 앱 테마(Skeleton cerberus)의 body 배경과 같게 맞춘다 —
+ * surface-950(oklch 0.18)과 surface-50(oklch 0.99)을 sRGB로 바꾼 값이다.
+ * 다르면 로딩 화면에서 앱으로 넘어가는 순간 색이 번쩍인다.
+ */
+const THEME_BG = { dark: '#121212', light: '#fcfcfc' } as const;
 
 // 개발 중에는 실제 데이터와 섞이지 않게 별도 폴더를 쓴다.
 if (!app.isPackaged) {
@@ -87,6 +108,26 @@ function isInternal(url: string, origin: string): boolean {
     // 파싱조차 안 되는 것은 우리 것이 아니다.
     return false;
   }
+}
+
+/**
+ * 서버가 뜨기 전에 보여줄 화면. 파일을 따로 두지 않고 data: URL로 띄운다.
+ *
+ * heading 요소를 쓰지 않는다 — e2e가 getByRole('heading', { name: 'ULS Player' })로
+ * 앱 화면이 떴는지 판단하는데, 여기 같은 이름의 heading이 있으면 그 단언이
+ * 로딩 화면에서 통과해 버린다.
+ */
+function loadingPage(dark: boolean): string {
+  const bg = dark ? THEME_BG.dark : THEME_BG.light;
+  const fg = dark ? '#e5e5e5' : '#262626';
+  const html =
+    '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>ULS Player</title>' +
+    `<style>html,body{margin:0;height:100%;background:${bg};color:${fg};` +
+    'font-family:system-ui,sans-serif}body{display:grid;place-items:center}' +
+    '.name{font-size:20px;font-weight:600;margin-bottom:8px;text-align:center}' +
+    '.hint{font-size:14px;opacity:.6;text-align:center}</style></head>' +
+    '<body><div><div class="name">ULS Player</div><div class="hint">여는 중…</div></div></body></html>';
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
 async function startServer(): Promise<number> {
@@ -193,19 +234,30 @@ function onServerExit(code: number | null, signal: NodeJS.Signals | null): void 
 }
 
 function fail(title: string, detail: string): void {
+  // 사용자가 로딩 중에 창을 닫아 이미 끝나는 중이면, 그 때문에 죽은
+  // 서버를 "실패"로 알릴 이유가 없다.
+  if (quitting) return;
   dialog.showErrorBox(title, detail);
   stopServer();
   app.exit(1);
 }
 
-function createWindow(port: number): void {
-  const origin = `http://127.0.0.1:${port}`;
+/**
+ * 창을 만들고 로딩 화면을 띄운다. 서버를 기다리지 않는다.
+ *
+ * 예전에는 서버가 응답한 뒤에야 창을 만들어, 서버 기동과 Chromium 창
+ * 생성 비용이 차례로 쌓였고 그동안 화면에 아무것도 없었다(설계 문서 6절).
+ */
+function createWindow(): void {
+  const dark = nativeTheme.shouldUseDarkColors;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
     minWidth: 900,
     minHeight: 600,
     show: false,
+    // 창이 그려지기 전 한 프레임이라도 흰색이 보이지 않게 테마 배경을 준다.
+    backgroundColor: dark ? THEME_BG.dark : THEME_BG.light,
     autoHideMenuBar: true,
     title: 'ULS Player',
     webPreferences: {
@@ -223,17 +275,30 @@ function createWindow(port: number): void {
   });
 
   // 앱 바깥으로 나가는 이동은 창이 아니라 기본 브라우저가 받는다.
+  // appOrigin이 아직 없으면(로딩 중) 모든 이동을 바깥으로 본다 — 로딩
+  // 화면에는 링크가 없으니 실제로 일어날 일은 없다.
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (isInternal(url, origin)) return;
+    if (appOrigin !== null && isInternal(url, appOrigin)) return;
     event.preventDefault();
     void shell.openExternal(url);
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!isInternal(url, origin)) void shell.openExternal(url);
+    if (appOrigin === null || !isInternal(url, appOrigin)) void shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  void mainWindow.loadURL(origin);
+  void mainWindow.loadURL(loadingPage(dark));
+}
+
+/**
+ * 서버가 응답하면 창을 앱으로 옮긴다. loadURL은 프로그램이 부르는 이동이라
+ * will-navigate 가드를 거치지 않는다.
+ */
+function showApp(port: number): void {
+  appOrigin = `http://127.0.0.1:${port}`;
+  // 로딩 중에 사용자가 창을 닫았으면 옮길 창이 없다.
+  if (mainWindow === null) return;
+  void mainWindow.loadURL(appOrigin);
 }
 
 async function main(): Promise<void> {
@@ -246,6 +311,9 @@ async function main(): Promise<void> {
     if (result.canceled || result.filePaths.length === 0) return null;
     return result.filePaths[0];
   });
+  // 창을 먼저 만들고 서버를 띄운다. createWindow는 동기로 돌아오고 창
+  // 생성은 그 뒤에서 이어지므로, 두 비용이 겹친다.
+  createWindow();
   let port: number;
   try {
     port = await startServer();
@@ -254,7 +322,7 @@ async function main(): Promise<void> {
     fail('서버를 시작하지 못했습니다', (err as Error).message);
     return;
   }
-  createWindow(port);
+  showApp(port);
 }
 
 // 두 인스턴스가 뜨면 각자 잡 큐를 돌려 같은 recordings.json을 서로
@@ -269,6 +337,9 @@ if (!app.requestSingleInstanceLock()) {
     mainWindow.focus();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('before-quit', stopServer);
+  app.on('before-quit', () => {
+    quitting = true;
+    stopServer();
+  });
   void main();
 }
