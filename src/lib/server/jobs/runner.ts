@@ -6,6 +6,7 @@ import type {
 import { mediaFilePath } from '$lib/media';
 import { convert } from '../media/convert';
 import { probe } from '../media/probe';
+import { isSameFormat } from '../media/sameFormat';
 import { generatePeaks } from '../media/waveform';
 import { savePeaks } from '../store/waveforms';
 import { addMany, newId, patch, RecordingNotFoundError } from '../store/recordings';
@@ -78,6 +79,23 @@ export function buildJobs(
   // 변환이 끝난 뒤 저장소에 넣을 수 있도록 레지스트리에 맡겨둔다
   pendingRecordings.put(recordings);
   return { jobs, recordings };
+}
+
+/**
+ * 원본이 이미 출력 포맷일 때 변환 대신 쓴다.
+ *
+ * convert가 실패 시 잘린 출력을 지우는 것과 같은 이유로, 복사가 도중에
+ * 실패해도 반쪽 파일을 남기지 않는다 — 남기면 다음 재시도의 done 판정이
+ * 그 파일을 멀쩡하다고 믿는다.
+ */
+async function copyAsFormat(original: string, out: string, format: string): Promise<void> {
+  await fs.mkdir(path.dirname(out), { recursive: true });
+  try {
+    await fs.copyFile(original, out);
+  } catch (err) {
+    await fs.rm(out, { force: true });
+    throw new Error(`복사 실패 (${format}): ${(err as Error).message}`);
+  }
 }
 
 /**
@@ -154,7 +172,14 @@ export function makeRunner(cfg: AppConfig): Worker {
       }
 
       try {
-        await convert(originalPath, out, meta.audioStreamIndex, spec);
+        if (isSameFormat(spec.name, meta)) {
+          // 원본이 이미 이 포맷이다. 다시 인코딩하면 손실 압축을 한 번 더
+          // 거쳐 음질만 잃고 시간을 쓴다. 출력 설정(비트레이트·샘플레이트·
+          // 채널)보다 우선한다 — 사용자 결정이다(설계 문서 3절).
+          await copyAsFormat(originalPath, out, spec.name);
+        } else {
+          await convert(originalPath, out, meta.audioStreamIndex, spec);
+        }
         files[spec.name] = { bytes: (await fs.stat(out)).size };
         result[spec.name] = 'done';
       } catch (err) {
