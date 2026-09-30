@@ -44,7 +44,12 @@ test('창이 뜨고 메인 화면이 보인다', async () => {
 });
 
 test('앱을 닫으면 서버 프로세스가 남지 않는다', async () => {
-  await app.firstWindow();
+  // firstWindow()는 창이 만들어지면 바로 끝난다 — 이제 창이 서버 fork보다
+  // 먼저 생기므로, 이 시점에 fork가 끝났다는 보장이 없다. heading이 보일
+  // 때까지 기다리면 서버가 응답했다는 뜻이고, 그러려면 fork가 이미 끝나
+  // 있어야 한다.
+  const page = await app.firstWindow();
+  await expect(page.getByRole('heading', { name: 'ULS Player' })).toBeVisible();
   const pid = Number(await app.evaluate(() => process.env.ULS_SERVER_PID));
   expect(pid).toBeGreaterThan(0);
   expect(isAlive(pid)).toBe(true);
