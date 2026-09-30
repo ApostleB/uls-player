@@ -15,6 +15,15 @@ import { sveltekit } from '@sveltejs/kit/vite';
 const ROOT = process.cwd();
 
 export default defineConfig({
+	ssr: {
+		// adapter-node는 기본적으로 의존성을 외부로 남긴다. archiver를
+		// 외부로 두면 패키징된 앱에서 resources/node_modules에 없어
+		// /api/download가 로드 실패한다 — 서버는 정상 기동하므로
+		// 기동 확인만으로는 드러나지 않는다(실제로 그렇게 놓쳤다).
+		// better-sqlite3는 네이티브 모듈이라 번들할 수 없어 계속 외부로
+		// 두고, extraResources로 동봉한다.
+		noExternal: ['archiver']
+	},
 	server: {
 		watch: {
 			// 소스가 아닌, 앱 자신이 세션 내내 반복해서 써 내려가는 런타임

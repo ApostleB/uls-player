@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    // TS 6.0.3은 moduleResolution: "Node"(="node10")를 더 이상 권장하지
+    // 않는 값으로 표시해, ignoreDeprecations로 그 경고를 죽이지 않으면
+    // 여기서 TS5107로 멈춘다. 문제는 "6.0"이라는 값 자체가 TS 7에서는
+    // 유효한 버전 태그가 아니게 되어(TS 7이 그 시점에 지원하는 폐기
+    // 유예 범위 밖) 이 줄이 "영문 모를" 하드 에러로 바뀐다는 것 —
+    // ignoreDeprecations를 생략하거나 "Bundler"로 바꾸면 당장 컴파일은
+    // 되지만, bundler 해석은 실제 CommonJS 런타임(Node가 require()로
+    // dist-electron/**를 읽는 방식)보다 관대해서 여기선 통과해도 실행
+    // 시점에만 터지는 해석 차이를 감출 수 있다. TS 7로 올릴 때의 진짜
+    // 조치는 이 값을 고쳐 넘기는 게 아니라 module을 "node16"으로 바꾸는
+    // 것이다 — CommonJS 산출물이라는 실제 런타임 의미와 맞아떨어지는
+    // moduleResolution이 함께 따라온다.
+    "ignoreDeprecations": "6.0",
+    "rootDir": ".",
+    "outDir": "dist-electron",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "sourceMap": true
+  },
+  "include": ["electron/**/*.ts", "src/lib/desktop/**/*.ts"],
+  "exclude": ["src/lib/desktop/**/*.test.ts"]
+}

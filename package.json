@@ -1,6 +1,7 @@
 {
 	"name": "uls-player",
 	"private": true,
+	"main": "dist-electron/electron/main.js",
 	"version": "0.0.1",
 	"type": "module",
 	"scripts": {
@@ -11,8 +12,12 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"test:unit": "vitest",
-		"test": "npm run test:unit -- --run && npm run test:e2e",
-		"test:e2e": "playwright install && playwright test"
+		"test": "npm run test:unit -- --run && npm run test:e2e:electron && npm run test:e2e",
+		"test:e2e": "playwright install && playwright test",
+		"desktop:build": "npm run build && tsc -p tsconfig.electron.json && node scripts/write-cjs-marker.mjs",
+		"desktop": "npm run desktop:build && electron .",
+		"test:e2e:electron": "npm run desktop:build && playwright test -c playwright.electron.config.ts",
+		"dist:win": "npm run desktop:build && node scripts/check-packaged-imports.mjs && electron-builder --win --publish never"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.60.0",
@@ -26,6 +31,8 @@
 		"@types/archiver": "^8.0.0",
 		"@types/better-sqlite3": "^9.6.0",
 		"@vitest/browser-playwright": "^4.1.8",
+		"electron": "^44.4.5",
+		"electron-builder": "^26.15.3",
 		"playwright": "^1.60.0",
 		"svelte": "^5.56.1",
 		"svelte-check": "^4.6.0",
