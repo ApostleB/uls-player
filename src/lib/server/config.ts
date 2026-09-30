@@ -3,8 +3,8 @@ import type { AppConfig, FormatSpec } from '$lib/types';
 
 /** 포맷별 기본값. env는 이 위에 덮어쓰기만 한다. */
 const FORMAT_DEFAULTS: Record<string, Omit<FormatSpec, 'name'>> = {
-  mp3: { ext: 'mp3', codec: 'libmp3lame', bitrate: '192k', sampleRate: 44100, channels: 2 },
-  wav: { ext: 'wav', codec: 'pcm_s16le', bitrate: null, sampleRate: 44100, channels: 1 }
+  mp3: { ext: 'mp3', codec: 'libmp3lame', bitrate: '192k', sampleRate: 44100, channels: 2, compressionLevel: null },
+  wav: { ext: 'wav', codec: 'pcm_s16le', bitrate: null, sampleRate: 44100, channels: 1, compressionLevel: null }
 };
 
 type Env = Record<string, string | undefined>;
@@ -14,6 +14,23 @@ function num(env: Env, key: string, fallback: number): number {
   if (raw === undefined || raw.trim() === '') return fallback;
   const n = Number(raw);
   if (!Number.isFinite(n)) throw new Error(`${key}는 숫자여야 합니다: ${raw}`);
+  return n;
+}
+
+/**
+ * 인코더 레벨(0~9의 정수). 비어 있으면 null.
+ *
+ * 범위를 벗어난 값을 조용히 무시하거나 잘라 쓰면, 사용자는 설정이 먹은
+ * 줄 믿은 채 느린 변환을 계속 보게 된다. 다른 설정 오류처럼 기동 시
+ * 거부한다.
+ */
+function level(env: Env, key: string): number | null {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === '') return null;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > 9) {
+    throw new Error(`${key}는 0~9의 정수여야 합니다: ${raw}`);
+  }
   return n;
 }
 
@@ -38,7 +55,8 @@ export function loadConfig(env: Env): AppConfig {
       codec: env[`${up}_CODEC`] ?? base.codec,
       bitrate: env[`${up}_BITRATE`] ?? base.bitrate,
       sampleRate: base.sampleRate === null ? null : num(env, `${up}_SAMPLE_RATE`, base.sampleRate),
-      channels: base.channels === null ? null : num(env, `${up}_CHANNELS`, base.channels)
+      channels: base.channels === null ? null : num(env, `${up}_CHANNELS`, base.channels),
+      compressionLevel: level(env, `${up}_COMPRESSION_LEVEL`) ?? base.compressionLevel
     };
   });
 

@@ -43,6 +43,13 @@ export async function convert(
     args.push('-ac', String(spec.channels));
   }
 
+  // null과 0을 구분한다 — 0은 "가장 정밀하게"라는 유효한 값이다.
+  // null이면 넘기지 않아 인코더 기본값을 쓴다. 그래야 설정하지 않은 서버
+  // 배포의 인코딩이 이 변경 전과 똑같다.
+  if (spec.compressionLevel !== null) {
+    args.push('-compression_level', String(spec.compressionLevel));
+  }
+
   args.push(output);
 
   try {

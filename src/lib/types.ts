@@ -64,6 +64,11 @@ export interface FormatSpec {
   bitrate: string | null;
   sampleRate: number | null;
   channels: number | null;
+  /**
+   * LAME의 인코딩 알고리즘 정밀도(0~9, 클수록 빠르고 덜 정밀).
+   * null이면 ffmpeg에 넘기지 않아 인코더 기본값을 쓴다.
+   */
+  compressionLevel: number | null;
 }
 
 export interface AppConfig {
