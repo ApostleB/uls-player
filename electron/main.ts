@@ -81,7 +81,7 @@ function serverEntry(): string {
  * process.platform으로 폴더를 고른다 — env.test.ts가 이미 'darwin' 같은
  * 플랫폼 이름 폴더를 전제하고 있고(binaryDir + .exe 접미사 분기), 여기가
  * 'win'으로 고정돼 있으면 그 계약과 어긋난다. electron-builder.yml의
- * extraResources도 로컬 소스 폴더명(ffmpeg/win)과 무관하게 패키지 안
+ * extraResources도 로컬 소스 폴더명(ffmpeg/win-x64·win-arm64)과 무관하게 패키지 안
  * 배치 경로를 ffmpeg/win32로 맞춰 뒀다.
  *
  * existsSync로 실제 존재를 확인하는 이유: 설계가 열어둔 미래의 mac 빌드처럼

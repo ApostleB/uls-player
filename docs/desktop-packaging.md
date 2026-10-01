@@ -2,18 +2,35 @@
 
 ## 만들기
 
-    npm run dist:win
+아키텍처별로 만든다.
 
-`release/`에 둘이 생긴다.
+    npm run dist:win          # x64·arm64 둘 다
+    npm run dist:win:x64      # x64만
+    npm run dist:win:arm64    # arm64만
+
+`release/`에 아키텍처마다 둘씩 생긴다.
 
 | 파일 | 쓰임 |
 |---|---|
-| `ULS-Player-<버전>-win.zip` | 풀어서 `ULS Player.exe` 실행 — **일상용 기본** |
-| `ULS-Player-<버전>-portable.exe` | 설치 없이 그대로 실행 |
+| `ULS-Player-<버전>-win-<아키텍처>.zip` | 풀어서 `ULS Player.exe` 실행 — **일상용 기본** |
+| `ULS-Player-<버전>-<아키텍처>-portable.exe` | 설치 없이 그대로 실행 |
 
-zip을 기본으로 앞세운 이유: 한 번 풀어 두면 그 뒤로는 exe를 바로 띄우는
-것과 다르지 않으면서, portable이 매번 겪는 재추출 지연(아래)이 아예 없다.
-평소에 쓸 사본이라면 zip을 풀어 두고 쓰는 편이 낫다.
+### 어느 아키텍처를 쓰나
+
+**PC에 맞는 것을 쓴다.** 설정 → 시스템 → 정보의 "시스템 종류"가 "ARM 기반
+프로세서"면 arm64, "x64 기반 프로세서"면 x64다. Mac의 Parallels에서 도는
+Windows는 arm64다.
+
+ARM64 Windows도 x64판을 실행할 수는 있지만 **에뮬레이션으로 돈다.** Electron도
+ffmpeg도 에뮬레이션 위에서 돌아 기동과 변환이 느려진다 — ffmpeg처럼 CPU를
+많이 쓰는 작업에서 특히 차이가 크다. 실제로 ARM64 PC에서 x64판을 쓰다
+"켜지는 것도 변환도 느리다"는 보고가 나왔다.
+
+### zip을 기본으로
+
+한 번 풀어 두면 그 뒤로는 exe를 바로 띄우는 것과 다르지 않으면서, portable이
+매번 겪는 재추출 지연(아래)이 아예 없다. 평소에 쓸 사본이라면 zip을 풀어 두고
+쓰는 편이 낫다.
 
 **portable을 쓸 때 주의:** release/win-unpacked 실측 533MB(언어 파일을
 `ko`·`en-US`만 남기기 전에는 580MB였다 — `electronLanguages` 설정으로
@@ -29,13 +46,45 @@ portable 템플릿이 실행할 때마다 임시 폴더에 통째로 풀었다�
 확인하지는 못했다. 그래도 무반응처럼 보이는 수십 초 자체는 여전히
 남으므로, "느린데 아무것도 안 뜬다"는 것 자체를 미리 안내해 둔다.)
 
-빌드에는 `ffmpeg/win/ffmpeg.exe`와 `ffmpeg/win/ffprobe.exe`가 있어야 한다.
-저장소에 커밋하지 않으므로(100MB가 넘는다) 새 환경에서는 먼저 받아 둔다.
+### 빌드 전에 ffmpeg를 받아 둔다
+
+ffmpeg는 저장소에 커밋하지 않는다(아키텍처마다 100MB가 넘는다). 새로 클론한
+곳에서는 빌드할 아키텍처의 ffmpeg를 먼저 받아 `ffmpeg/win-<아키텍처>/`에 둔다
+(아래 "동봉 ffmpeg"). 빠뜨리면 `scripts/check-ffmpeg.mjs`가 빌드 전에 받을
+주소와 넣을 위치를 알려 주며 멈춘다 — electron-builder는 원본 폴더가 없어도
+경고 한 줄만 남기고 **성공으로 끝나 ffmpeg가 0개 든 exe를 만든다**(실측).
+그 exe는 정상으로 켜지지만 변환이 전부 실패한다.
+
+### Windows에서 직접 빌드하기
+
+    npm ci --ignore-scripts
+    npm run dist:win:arm64
+
+`--ignore-scripts`가 필요한 이유: better-sqlite3 패키지에 `binding.gyp`가 들어
+있어서, npm은 install 스크립트가 없어도 알아서 `node-gyp rebuild`로 소스
+컴파일을 시도한다. Python과 C++ 빌드 도구가 없으면 여기서 멈춘다. 그런데 이
+패키지에는 8개 플랫폼(win32-x64·win32-arm64 포함)용 완성본이 이미 들어 있고
+실행할 때는 그것을 쓰므로(`node_modules/better-sqlite3/lib/binding.js`) 컴파일은
+필요 없다. 이 프로젝트에서 설치 스크립트가 있는 다른 패키지는
+`electron-winstaller`(이 앱이 쓰지 않는 Squirrel 설치본용)와 macOS 전용
+`fsevents`뿐이라 건너뛰어도 빠지는 것이 없다. `npm install` 대신 `npm ci`를
+쓰는 이유는 `package-lock.json`을 그대로 따르기 위해서다.
 
 ## 동봉 ffmpeg
 
-`ffmpeg/win/`에는 다음이 들어 있다(실행 파일 2개 + 공유 라이브러리 DLL 7개,
-총 9개 파일, 합계 약 182MB):
+아키텍처마다 같은 빌드의 해당 아키텍처판을 쓴다. 출처는
+[BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds)의 **날짜로 고정된
+릴리스** `autobuild-2026-09-28-13-06`, 빌드 ID `n9.0.2-14-gebafaee10a-20260928`,
+GPL shared 빌드다.
+
+| 폴더 | 받을 파일 |
+|---|---|
+| `ffmpeg/win-x64/` | `ffmpeg-n9.0.2-14-gebafaee10a-win64-gpl-shared-9.0.zip` |
+| `ffmpeg/win-arm64/` | `ffmpeg-n9.0.2-14-gebafaee10a-winarm64-gpl-shared-9.0.zip` (57MB) |
+
+받는 주소는 `https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-28-13-06/<파일>`이다.
+zip 안 `bin` 폴더의 파일을 전부 해당 폴더에 넣는다. `ffplay.exe`는 이 앱이
+쓰지 않으니 빼도 된다. x64판에는 다음 9개가 들어간다(합계 약 182MB):
 
     ffmpeg.exe
     ffprobe.exe
@@ -47,38 +96,35 @@ portable 템플릿이 실행할 때마다 임시 폴더에 통째로 풀었다�
     swresample-7.dll
     swscale-10.dll
 
-출처: [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds) 공식 GitHub
-릴리스, `ffmpeg-n9.0-latest-win64-gpl-shared-9.0.zip` (2026-09-28 빌드), GPL
-shared 빌드. 정확한 빌드 ID(바이너리에서 직접 추출, `strings -a
-ffmpeg/win/avutil-61.dll | grep -oE 'n9\.[0-9]+[^ ]*'`로 확인 가능):
-`n9.0.2-14-gebafaee10a-20260928`. `ffplay.exe`는 이 앱이 쓰지 않아 내려받은
-뒤 제거했다.
-
 **shared 빌드이므로 DLL 7개(실행 파일 2개와 합쳐 총 9개 파일)가 exe와 같은
 폴더에 함께 있어야 실행된다.** 하나만 빠져도 Windows에서
-`ffmpeg.exe`/`ffprobe.exe` 실행이 실패한다.
+`ffmpeg.exe`/`ffprobe.exe` 실행이 실패한다. `scripts/check-ffmpeg.mjs`가 빌드
+전에 이것까지 확인한다.
 
-**주의:** BtbN 릴리스의 `latest` 태그는 새 빌드가 나올 때마다 같은 URL 위에서
-덮어써진다 — 즉 URL만으로는 나중에 같은 바이너리를 재현할 수 없다. 같은
-버전이 다시 필요하면 위 빌드 ID(`n9.0.2-14-gebafaee10a-20260928`)나 파일명
-(`ffmpeg-n9.0-latest-win64-gpl-shared-9.0.zip`, 2026-09-28 빌드)을 GitHub
-릴리스 페이지의 과거 에셋 목록이나 Actions 아카이브에서 직접 찾아야 한다.
-재현성이 필요하면 이 바이너리를 별도 저장소나 아티팩트 스토리지에 보관해
-두는 것을 고려한다.
+**`latest` 태그를 쓰지 않는 이유:** BtbN의 `latest` 릴리스는 새 빌드가 나올
+때마다 같은 URL 위에서 덮어써진다. 날짜 태그(`autobuild-…`)는 고정된다. 다만
+BtbN이 오래된 자동 빌드를 정리하면 이 태그도 사라질 수 있다 — 그때는 같은 빌드
+ID를 다른 곳에서 찾거나 버전을 올려야 한다.
 
 ## extraResources 배치
 
-`build/`, `node_modules/better-sqlite3`, `ffmpeg/win`는 asar 안에 들어가지
-못하고(네이티브 모듈·ESM 로더·실행 파일이라는 이유는 `electron-builder.yml`의
-주석 참고) `resources/`(즉 `process.resourcesPath`) 아래 그대로 복사된다.
-동봉 ffmpeg만 로컬 소스 폴더명(`ffmpeg/win`)과 패키지 안 배치 경로
-(`ffmpeg/win32`)가 다르다 — `electron/main.ts`의 `binariesDir()`가
-`process.platform`(Windows에서 `'win32'`) 기준으로 폴더를 찾기 때문이다.
+`build/`, `node_modules/better-sqlite3`, `ffmpeg/win-<아키텍처>`는 asar 안에
+들어가지 못하고(네이티브 모듈·ESM 로더·실행 파일이라는 이유는
+`electron-builder.yml`의 주석 참고) `resources/`(즉 `process.resourcesPath`) 아래
+그대로 복사된다. 동봉 ffmpeg만 로컬 소스 폴더명(`ffmpeg/win-x64`,
+`ffmpeg/win-arm64`)과 패키지 안 배치 경로(`ffmpeg/win32`)가 다르다 —
+`electron/main.ts`의 `binariesDir()`가 `process.platform`(Windows에서 `'win32'`)
+기준으로 폴더를 찾기 때문이다. 각 패키지에는 자기 아키텍처의 ffmpeg 하나만
+들어가므로 배치 경로에 아키텍처를 넣을 필요가 없다.
 
     resources/build/index.js
     resources/build/client/...
-    resources/node_modules/better-sqlite3/...   (win32-x64 prebuild만)
+    resources/node_modules/better-sqlite3/...   (win32-<아키텍처> prebuild 하나만)
     resources/ffmpeg/win32/ffmpeg.exe, ffprobe.exe, *.dll
+
+macOS에서 두 아키텍처를 모두 크로스 빌드해 확인했다: x64 zip의 exe는
+`PE32+ x86-64`에 `win32-x64.node`만, arm64 zip의 exe는 `PE32+ Aarch64`에
+`win32-arm64.node`만 들어 있다.
 
 ## 변환 속도
 

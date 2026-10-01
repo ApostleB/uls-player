@@ -1,4 +1,5 @@
-# Windows 배포 파일 2개를 만든다. 실행: npm run dist:win
+# Windows 배포 파일을 아키텍처별로 만든다(x64·arm64 각각 portable exe + zip).
+# 실행: npm run dist:win (둘 다) / dist:win:x64 / dist:win:arm64
 appId: com.ulsplayer.app
 productName: ULS Player
 # 이 앱은 한국어 화면 하나뿐인데 Electron은 언어 파일 48MB를 통째로 싣는다.
@@ -37,32 +38,39 @@ extraResources:
     filter:
       - '**/*'
       - '!{deps,src,build}/**'
-      - '!prebuilds/{darwin-arm64,darwin-x64,linux-arm64,linux-x64,linuxmusl-arm64,linuxmusl-x64,win32-arm64}.node'
-  # 동봉 ffmpeg. 실행 가능해야 하므로 asar 밖이어야 한다. 로컬 소스 폴더명은
-  # (에셋을 내려받을 때부터 써 온) ffmpeg/win 그대로 두고, 패키지 안 배치
-  # 경로만 process.platform 값인 win32로 맞춘다 — electron/main.ts의
+      # 그 아키텍처의 Windows prebuild 하나만 남긴다. 예전에는 x64만 만들어서
+      # win32-arm64.node까지 일부러 뺐는데, 그 설정 그대로 arm64판을 만들면
+      # better-sqlite3를 불러오는 순간 서버가 죽는다.
+      - '!prebuilds/!(win32-${arch}).node'
+  # 동봉 ffmpeg. 실행 가능해야 하므로 asar 밖이어야 한다. 로컬 소스 폴더는
+  # 아키텍처별로 둔다(ffmpeg/win-x64, ffmpeg/win-arm64) — ARM64 Windows에서
+  # x64 ffmpeg를 쓰면 에뮬레이션으로 돌아 변환이 느려진다. 패키지 안 배치
+  # 경로는 아키텍처와 무관하게 process.platform 값인 win32로 맞춘다 — electron/main.ts의
   # binariesDir()가 `ffmpeg/${process.platform}`로 폴더를 찾는다(Task 6:
   # 'win' 고정이면 mac 빌드를 열어둔 설계와 env.test.ts의 darwin 케이스가
   # 죽은 코드가 되고, 반대로 여기를 'win'으로 두고 main.ts만 고치면 실제
   # Windows 패키지에서 존재 확인(existsSync)에 걸려 동봉 ffmpeg를 영영 못
   # 찾는다). 둘을 process.platform 기준으로 맞춰야 실제로 이어진다.
-  - from: ffmpeg/win
+  - from: ffmpeg/win-${arch}
     to: ffmpeg/win32
 
 # N-API 바이너리라 Electron용으로 다시 빌드하지 않는다.
 npmRebuild: false
 
 win:
-  target:
-    - target: portable
-      arch: [x64]
-    - target: zip
-      arch: [x64]
-  # productName에 공백이 있어 파일명은 따로 정한다.
-  artifactName: ULS-Player-${version}-win.${ext}
+  # 아키텍처는 여기 고정하지 않고 명령줄(--x64 / --arm64)로 고른다. ARM64
+  # Windows에서 직접 빌드할 때 x64 ffmpeg가 없어도 arm64판만 만들 수 있게.
+  target: [portable, zip]
+  # productName에 공백이 있어 파일명은 따로 정한다. 두 아키텍처가 같은
+  # release/에 나오므로 이름에 아키텍처를 넣는다.
+  artifactName: ULS-Player-${version}-win-${arch}.${ext}
 
 portable:
-  artifactName: ULS-Player-${version}-portable.${ext}
+  artifactName: ULS-Player-${version}-${arch}-portable.${ext}
+  # 두 아키텍처를 한 번에 빌드하면 electron-builder가 둘을 합친 portable
+  # (214MB)까지 만든다. 실행할 때마다 통째로 푸는 portable에서 쓰지 않을
+  # 아키텍처까지 싣는 것은 손해뿐이라 끈다 — 아키텍처별 portable만 남긴다.
+  buildUniversalInstaller: false
   # 실측: release/win-unpacked가 533MB(언어 파일을 ko·en-US만 남기기 전에는
   # 580MB였다). portable.nsi 템플릿은 실행할 때마다
   # $INSTDIR(=$TEMP\<UNPACK_DIR_NAME>)를 RMDir /r로 먼저 지우고 통째로
